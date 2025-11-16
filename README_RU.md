@@ -1,7 +1,6 @@
 # CADENCE-MD 🏥
 
-**C**linical **A**ssistant for **D**iagnosis, **E**vidence **N**avigation & **C**ase **E**valuation  
-**—** for **M**edical **D**octors
+**C**linical **A**ssistant for **D**iagnosis, **E**vidence **N**avigation & **C**ase **E**valuation for **M**edical **D**octors
 
 > Интеллектуальная система поддержки врачебных решений
 
