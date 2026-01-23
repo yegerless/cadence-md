@@ -1,0 +1,24 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    env_file:
+      - .env.dev
+    ports:
+      - 127.0.0.1:6333:6333
+      - 127.0.0.1:6334:6334
+    networks:
+      - backend-network
+    volumes:
+      - qdrant:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "https://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  qdrant:
+
+networks:
+  backend-network: {}
