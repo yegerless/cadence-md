@@ -35,6 +35,23 @@ Pre-commit tool configured yet, you need only install git hook:
 poetry run pre-commit install
 ```
 
+#### 4. Get data from DVC remote storage
+
+In that project we use Yandex Cloud object storage as dvc remote storage to
+store texts corpus of russian clinical recommendations. The basic settings for
+connecting to the remote storage of the DVC are already written in the file
+.dvc/config. Use next commands to set up DVC remote storage security settings
+and download texts corpus to your local computer.
+
+```bash
+# Add credentials for connection to remote DVC storage or use .dvc/config.local.example
+poetry run dvc remote modify --local yandex access_key_id '<your_access_key_id>'
+poetry run dvc remote modify --local yandex secret_access_key '<your_secret_access_key>'
+
+# Download data from DVC remote storage
+poetry run dvc pull
+```
+
 #### Additional info
 
 Always run pre-commit before create new commits:

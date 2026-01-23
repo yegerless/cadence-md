@@ -28,6 +28,10 @@ integration.
 - PubMed API Integration
 - Medical NLP Processing
 
+## Setup project
+
+You can find project setup instruction in docs/setup.md
+
 ## License
 
 Proprietary - See [LICENSE.md](LICENSE.md) for details.
