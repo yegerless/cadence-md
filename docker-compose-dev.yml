@@ -1,0 +1,32 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.16.3
+    env_file:
+      - .env.dev
+    ports:
+      - 127.0.0.1:6333:6333
+    networks:
+      - backend-network
+    volumes:
+      - qdrant:/qdrant/storage
+    configs:
+      - source: qdrant_config
+        target: /qdrant/config/config.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q '18BD' /proc/net/tcp || kill 1"]
+      # test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped # TODO: set autoheal container
+
+volumes:
+  qdrant:
+
+configs:
+  qdrant_config:
+    file: ./qdrant/config.yaml
+
+networks:
+  backend-network: {}

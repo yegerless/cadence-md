@@ -3,8 +3,16 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# credentials
+.env.dev
+.env.prod
+.env
+
 # C extensions
 *.so
+
+# Dataset files
+data/
 
 # Distribution / packaging
 .Python
@@ -205,3 +213,4 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+/data

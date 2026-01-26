@@ -1,0 +1,3 @@
+['remote "yandex"']
+    access_key_id = <here your YC access key identificator>
+    secret_access_key = <here your YC access key>

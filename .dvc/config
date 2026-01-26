@@ -1,0 +1,6 @@
+[core]
+    remote = yandex
+['remote "yandex"']
+    url = s3://clinical-recs
+    endpointurl = https://storage.yandexcloud.net/
+    region = ru-central1
