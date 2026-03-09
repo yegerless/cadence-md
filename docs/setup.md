@@ -68,3 +68,13 @@ docker:
 ```bash
 poetry export --without-hashes --format=requirements.txt --without dev > requirements.txt
 ```
+
+You can use next command to generate QA validation dataset (you need GigaChat
+API Key):
+
+```bash
+python commands.py generate-qa
+
+# Use for get help with command options
+python commands.py generate-qa --help
+```
