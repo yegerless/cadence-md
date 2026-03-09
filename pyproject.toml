@@ -16,7 +16,9 @@ dependencies = [
     "langchain (>=1.2.7,<2.0.0)",
     "langchain-huggingface (>=1.2.0,<2.0.0)",
     "langchain-qdrant (>=1.1.0,<2.0.0)",
-    "pypdf (>=6.6.0,<7.0.0)"
+    "pypdf (>=6.6.0,<7.0.0)",
+    "tqdm (>=4.67.3,<5.0.0)",
+    "langchain-gigachat (==0.3.13a1)"
 ]
 
 [dependency-groups]
@@ -74,6 +76,8 @@ ignore = [
     "RUF001",
     "RUF002",
     "RUF003",
+    "PLR0913",
+    "PLR2004"
 ]
 
 [tool.ruff.lint.pydocstyle]
