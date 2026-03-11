@@ -1,3 +1,4 @@
+import logging
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -5,11 +6,22 @@ from pathlib import Path
 import pypdf
 from tqdm import tqdm
 
-from app.cr_regexps import EXCLUDE_PATTERNS, ICD_RE, SECTION_HEADER_RE, SECTION_PATTERNS, STOP_RE
+from cadence_md.app.pdf_parser.regexps import (
+    EXCLUDE_PATTERNS,
+    ICD_RE,
+    SECTION_HEADER_RE,
+    SECTION_PATTERNS,
+    STOP_RE,
+)
+
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+logging.getLogger("pypdf._reader").setLevel(logging.ERROR)
 
 
+# TODO: refactor to pydantic
 @dataclass
 class ClinicalSection:
+    filename: str
     document_title: str
     section_type: str
     section_title: str
@@ -40,10 +52,12 @@ class ClinicalGuidelinesParser:
         pdf_files = list(Path(path).glob("*.pdf"))
 
         result = []
-        for pdf_file in tqdm(pdf_files):
-            parsed_pdf = self.parse_pdf(pdf_file)
-            if parsed_pdf:
-                result.extend(parsed_pdf)
+        with tqdm(pdf_files) as pbar:
+            for pdf_file in pbar:
+                pbar.set_description(f"{pdf_file.name}")
+                parsed_pdf = self.parse_pdf(pdf_file)
+                if parsed_pdf:
+                    result.extend(parsed_pdf)
         return result
 
     def parse_pdf(self, pdf_path: Path) -> list[ClinicalSection] | None:
@@ -70,6 +84,7 @@ class ClinicalGuidelinesParser:
             if len(cleaned) < 100:  # discard very short
                 continue
             section = ClinicalSection(
+                filename=pdf_path.name,
                 document_title=title,
                 section_type=sec_type,
                 section_title=sec_title,
@@ -81,7 +96,7 @@ class ClinicalGuidelinesParser:
         return result
 
     def _extract_text_with_page_markers(self, pdf_path: Path) -> tuple[str, int]:
-        reader = pypdf.PdfReader(pdf_path)
+        reader = pypdf.PdfReader(pdf_path, strict=True)
         text_parts = []
         for i, page in enumerate(reader.pages):
             if i < 3:
