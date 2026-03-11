@@ -20,3 +20,14 @@ class SectionType(StrEnum):
     TREATMENT = "treatment"
     PREVENTION = "prevention"
     REHABILITATION = "rehabilitation"
+
+
+class RerankerAggregationStrategy(StrEnum):
+    L2_NORM = "l2_norm"
+    MEAN = "mean"
+    MAX = "max"
+
+
+class QdrantVectorType(StrEnum):
+    DENSE = "dense"
+    SPARSE = "sparse"

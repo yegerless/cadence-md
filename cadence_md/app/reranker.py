@@ -1,5 +1,9 @@
+from collections.abc import Iterable, Sequence
+
+from langchain_core.documents import Document
 from openai import OpenAI
 
+from cadence_md.app.enums import RerankerAggregationStrategy
 from cadence_md.app.settings import (
     MODEL_INFERENCE_API_KEY,
     MODEL_INFERENCE_BASE_URL,
@@ -7,9 +11,48 @@ from cadence_md.app.settings import (
 )
 
 
-class BGERerankerWrapper:
+def _safe_vec(vec: Iterable[float]) -> list[float]:
+    v = list(vec)
+    return v if v else [0.0]
+
+
+def _l2_norm(vec: Iterable[float]) -> float:
+    v = _safe_vec(vec)
+    return float(sum(x * x for x in v) ** 0.5)
+
+
+def _mean(vec: Iterable[float]) -> float:
+    v = _safe_vec(vec)
+    return float(sum(v) / len(v))
+
+
+def _max_abs(vec: Iterable[float]) -> float:
+    v = _safe_vec(vec)
+    return float(max((abs(x) for x in v), default=0.0))
+
+
+def aggregate_embedding(
+    vec: Iterable[float],
+    strategy: RerankerAggregationStrategy,
+) -> float:
     """
-    A wrapper around bge-reranker-v2-m3, running via the OpenAI-compatible /embeddings endpoint.
+    Turns embedding into a scalar reranking score.
+    """
+    if strategy == RerankerAggregationStrategy.L2_NORM:
+        return _l2_norm(vec)
+    if strategy == RerankerAggregationStrategy.MEAN:
+        return _mean(vec)
+    if strategy == RerankerAggregationStrategy.MAX:
+        return _max_abs(vec)
+
+    # fallback — L2
+    return _l2_norm(vec)
+
+
+class RerankerWrapper:
+    """
+    A wrapper around reranker model (bge / qwen3-reranker / etc),
+    running via the OpenAI-compatible /embeddings endpoint.
 
     Semantics:
     - encode_pairs -> list of scores (float)
@@ -19,12 +62,18 @@ class BGERerankerWrapper:
     def __init__(
         self,
         model: str,
+        instruction: str,
         api_key: str,
         base_url: str,
+        embedding_agregation_strategy: RerankerAggregationStrategy,
+        top_k: int | None = None,
         return_score: bool = True,
     ):
         self.model = model
+        self.instruction = instruction
+        self.top_k = top_k
         self.return_score = return_score
+        self.embedding_agregation_strategy = embedding_agregation_strategy
         self.client = OpenAI(
             base_url=base_url,
             api_key=api_key,
@@ -33,106 +82,64 @@ class BGERerankerWrapper:
     def _build_inputs(
         self,
         query: str,
-        documents: list[str],
+        documents: list[Document],
     ) -> list[str]:
-        """
-        BGE-reranker — cross-encoder: на каждую пару (q, d)
-        отправляем конкатенированную строку или спец-формат.
-
-        Здесь для универсальности используем простой join:
-        '[query] [SEP] [doc]'. Если твой сервер ожидает другой формат,
-        поменяй эту функцию.
-        """
-        return [f"{query} [SEP] {doc}" for doc in documents]
+        return [(f"query: {query}\npassage: {doc.page_content}") for doc in documents]
 
     def encode_pairs(
         self,
-        queries: list[str],
-        documents_list: list[list[str]],
-    ) -> list[list[float]]:
-        """
-        Посчитать скоры для нескольких запросов и списков документов.
+        query: str,
+        documents: list[Document],
+    ) -> list[float]:
+        prompts = self._build_inputs(query, documents)
 
-        queries: список запросов, длина N
-        documents_list: список списков документов, длина N
-        return: [[score_doc1, score_doc2, ...] для каждого query]
-        """
-        assert len(queries) == len(documents_list), (
-            "queries и documents_list должны быть одинаковой длины"
-        )
-
-        all_inputs = []
-        group_sizes = []
-
-        for q, docs in zip(queries, documents_list, strict=True):
-            inputs = self._build_inputs(q, docs)
-            all_inputs.extend(inputs)
-            group_sizes.append(len(docs))
-
-        if not all_inputs:
-            return [[] for _ in queries]
-
-        # Вызываем OpenAI-совместимый /embeddings для bge-reranker-v2-m3
-        # и интерпретируем embedding как скалярный скор (например, 1D-вектор).
-        response = self.client.embeddings.create(
+        resp = self.client.embeddings.create(
             model=self.model,
-            input=all_inputs,
+            input=prompts,
             encoding_format="float",
         )
 
-        # Предполагаем, что сервер возвращает embedding как список из одного
-        # числа или небольшой вектор, который можно скаляризовать.
-        raw_vectors: list[list[float]] = [item.embedding for item in response.data]
+        scores: list[float] = []
+        for item in resp.data:
+            emb = item.embedding
+            score = aggregate_embedding(
+                emb,
+                strategy=self.embedding_agregation_strategy,
+            )
+            scores.append(score)
 
-        # Сводим к скаляру (например, берем первый элемент)
-        scores_flat: list[float] = [
-            float(vec[0]) if isinstance(vec, list) and len(vec) > 0 else float(vec)
-            for vec in raw_vectors
-        ]
-
-        # Распаковываем обратно по запросам
-        result: list[list[float]] = []
-        offset = 0
-        for size in group_sizes:
-            result.append(scores_flat[offset : offset + size])
-            offset += size
-
-        return result
+        return scores
 
     def rerank(
-        self,
-        query: str,
-        documents: list[str],
-        top_k: int | None = None,
-    ) -> list[tuple[str, float]]:
+        self, query: str, documents: list[Document]
+    ) -> Sequence[tuple[Document, float | None]]:
         """
-        Реранкает список documents для одного query.
-        Возвращает список (document, score) отсортированный по убыванию score.
+        Reranks a list of documents for a single query.
+        Returns a list of (document, score) sorted by score in descending order.
         """
         if not documents:
             return []
 
-        scores_list = self.encode_pairs([query], [documents])[0]
+        scores_list = self.encode_pairs(query, documents)
         pairs = list(zip(documents, scores_list, strict=True))
         pairs.sort(key=lambda x: x[1], reverse=True)
 
-        if top_k is not None:
-            pairs = pairs[:top_k]
+        if self.top_k is not None:
+            pairs = pairs[: self.top_k]
 
         if self.return_score:
             return pairs
 
-        # Если score не нужен — вернём только тексты
         return [(doc, None) for doc, _ in pairs]
 
 
-def get_reranker(config: RAGConfig) -> BGERerankerWrapper:
-    """
-    Фабрика по аналогии с get_embedder.
-    """
-    return BGERerankerWrapper(
+def get_reranker(config: RAGConfig) -> RerankerWrapper:
+    return RerankerWrapper(
         model=config.reranker.model_name,
-        return_score=True,
+        instruction=config.reranker.instruction,
+        top_k=config.reranker.top_k,
+        return_score=config.reranker.return_score,
+        embedding_agregation_strategy=config.reranker.embedding_agregation_strategy,
         base_url=MODEL_INFERENCE_BASE_URL,
         api_key=MODEL_INFERENCE_API_KEY,
     )

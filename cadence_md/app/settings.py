@@ -5,6 +5,8 @@ import torch
 from dotenv import load_dotenv
 from qdrant_client import models as qdrant_models
 
+from cadence_md.app.enums import RerankerAggregationStrategy
+
 load_dotenv(dotenv_path="../.env.dev", override=True)
 QDRANT_API_KEY = os.getenv("QDRANT__SERVICE__API_KEY", "")
 
@@ -33,29 +35,35 @@ class QdrantConfig:
 
 @dataclass
 class EmbeddingConfig:
-    model_name: str = "BAAI/bge-m3"
-    use_fp16: bool = True
+    model_name: str = "text-embedding-bge-m3"
     normalize_embeddings: bool = True
     return_score: bool = False
-    max_length: int = 512
-    return_dense: bool = True
-    return_sparse: bool = False
+    max_length: int = 8192
 
 
 @dataclass
 class RerankerConfig:
-    model_name: str = ""
+    model_name: str = "text-embedding-bge-reranker-v2-m3"
+    instruction: str = "Given a web search query, retrieve relevant passages that answer the query"
+    embedding_agregation_strategy: RerankerAggregationStrategy = RerankerAggregationStrategy.MAX
+    return_score: bool = False
+    top_k: int = 5
 
 
 @dataclass
 class RetrievalConfig:
-    top_k: int = 5
-    overfetch_k: int = 5
+    search_mode: str = "hybrid"  # "dense" | "sparse" | "hybrid"
+    fusion_method: str = "rrf"  # "rrf" | "dbsf"
+    sparse_top_k: int = 20
+    dense_top_k: int = 20
+    hybrid_top_k: int = 20
+    # bm25_k1: float = 1.5
+    # bm25_b: float = 0.75
 
 
 @dataclass
 class LLMConfig:
-    model_name: str = "Qwen/Qwen2.5-3B-Instruct"
+    model_name: str = "qwen2.5-3b-instruct"
     dtype: torch.dtype = torch.float16
     max_new_tokens: int = 512
     temperature: float = 0.3
@@ -71,4 +79,5 @@ class RAGConfig:
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    reranker: RerankerConfig = field(default_factory=RerankerConfig)
     qdrant_config: QdrantConfig = field(default_factory=QdrantConfig)
