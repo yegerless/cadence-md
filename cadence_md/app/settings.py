@@ -1,82 +1,103 @@
-import os
-from dataclasses import dataclass, field
-
-import torch
-from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from qdrant_client import models as qdrant_models
 
 from cadence_md.app.enums import QdrantFusionMethod, RerankerAggregationStrategy, VectorSearchType
 
-load_dotenv(dotenv_path=".env.dev", override=True)
-QDRANT_API_KEY = os.getenv("QDRANT__SERVICE__API_KEY", "")
 
-MODEL_INFERENCE_BASE_URL = "http://localhost:1234/v1"
-MODEL_INFERENCE_API_KEY = "lm-studio"
+class ChunkSettings(BaseModel):
+    """Text chunking settings for RAG"""
 
-
-@dataclass
-class ChunkingConfig:
     chunk_size: int = 1024
     chunk_overlap: int = 256
 
 
-@dataclass
-class QdrantConfig:
-    host: str = "localhost"
-    port: int = 6333
+class QdrantSettings(BaseModel):
+    """Qdrant connection settings"""
+
     collection_name: str = "clinical_recs"
-    rebuild_collection: bool = True
+    rebuild_collection: bool = False
     vector_size: int = 1024
-    distance = qdrant_models.Distance.COSINE
-    api_key: str = QDRANT_API_KEY
-    https: bool = False
+    distance: qdrant_models.Distance = qdrant_models.Distance.COSINE
     uploading_batch_size: int = 256
 
 
-@dataclass
-class EmbeddingConfig:
+class EmbeddingSettings(BaseModel):
+    """Embedder model settings"""
+
     model_name: str = "text-embedding-bge-m3"
     normalize_embeddings: bool = True
     return_score: bool = False
 
 
-@dataclass
-class RerankerConfig:
+class RerankerSettings(BaseModel):
+    """Reranker model settings"""
+
     model_name: str = "text-embedding-bge-reranker-v2-m3"
-    instruction: str = "Given a web search query, retrieve relevant passages that answer the query"
+    instruction: str | None = None
     embedding_agregation_strategy: RerankerAggregationStrategy = RerankerAggregationStrategy.MAX
     return_score: bool = False
     top_k: int = 5
 
 
-@dataclass
-class RetrievalConfig:
-    search_mode: VectorSearchType = VectorSearchType.HYBRID
+class RetrievalSettings(BaseModel):
+    """Retrieval settings"""
+
+    search_mode: VectorSearchType = VectorSearchType.DENSE
     fusion_method: QdrantFusionMethod = QdrantFusionMethod.RRF
     sparse_top_k: int = 20
     dense_top_k: int = 20
-    hybrid_top_k: int = 20
-    # bm25_k1: float = 1.5
-    # bm25_b: float = 0.75
+    hybrid_top_k: int = 30
 
 
-@dataclass
-class LLMConfig:
+class LLMSettings(BaseModel):
+    """LLM settings"""
+
     model_name: str = "qwen2.5-3b-instruct"
-    dtype: torch.dtype = torch.float16
     max_new_tokens: int = 512
-    temperature: float = 0.3
+    temperature: float = 0.5
     top_p: float = 0.8
-    do_sample: bool = True
-    repetition_penalty: float = 1.2
 
 
-@dataclass
-class RAGConfig:
-    name: str = "baseline"
-    chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
-    retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
-    llm: LLMConfig = field(default_factory=LLMConfig)
-    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
-    reranker: RerankerConfig = field(default_factory=RerankerConfig)
-    qdrant_config: QdrantConfig = field(default_factory=QdrantConfig)
+class RAGConfig(BaseModel):
+    """Configuration for a specific RAG mode"""
+
+    chunking: ChunkSettings
+    retrieval: RetrievalSettings
+    llm: LLMSettings
+    embedding: EmbeddingSettings
+    reranker: RerankerSettings
+    qdrant_config: QdrantSettings
+
+
+class Settings(BaseSettings):
+    """Global application settings"""
+
+    # Environment variables
+    QDRANT_BASE_URL: str = "http://localhost:6333"
+    QDRANT_API_KEY: str = Field(..., alias="QDRANT__SERVICE__API_KEY")
+    QDRANT_HTTPS: bool = False
+
+    # Model inference settings
+    MODEL_INFERENCE_BASE_URL: str = "http://localhost:1234/v1"
+    MODEL_INFERENCE_API_KEY: str = "lm-studio"
+
+    rag_config: RAGConfig = Field(
+        default_factory=lambda: RAGConfig(
+            chunking=ChunkSettings(),
+            retrieval=RetrievalSettings(),
+            llm=LLMSettings(),
+            embedding=EmbeddingSettings(),
+            reranker=RerankerSettings(),
+            qdrant_config=QdrantSettings(),
+        )
+    )
+
+    model_config = SettingsConfigDict(
+        env_file=".env.dev",
+        extra="ignore",
+    )
+
+
+# Global settings instance
+settings = Settings()  # type: ignore

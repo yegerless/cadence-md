@@ -1,7 +1,7 @@
 import numpy as np
 from openai import OpenAI
 
-from cadence_md.app.settings import MODEL_INFERENCE_API_KEY, MODEL_INFERENCE_BASE_URL, RAGConfig
+from cadence_md.app.settings import settings
 
 
 class EmbedderWrapper:
@@ -61,12 +61,13 @@ class EmbedderWrapper:
         return arr / norms
 
 
-def get_embedder(config: RAGConfig) -> EmbedderWrapper:
+def get_embedder() -> EmbedderWrapper:
     """ """
+
     return EmbedderWrapper(
-        model=config.embedding.model_name,
-        normalize=config.embedding.normalize_embeddings,
-        return_score=config.embedding.return_score,
-        base_url=MODEL_INFERENCE_BASE_URL,
-        api_key=MODEL_INFERENCE_API_KEY,
+        model=settings.rag_config.embedding.model_name,
+        normalize=settings.rag_config.embedding.normalize_embeddings,
+        return_score=settings.rag_config.embedding.return_score,
+        base_url=settings.MODEL_INFERENCE_BASE_URL,
+        api_key=settings.MODEL_INFERENCE_API_KEY,
     )

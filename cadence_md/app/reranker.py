@@ -4,11 +4,7 @@ from langchain_core.documents import Document
 from openai import OpenAI
 
 from cadence_md.app.enums import RerankerAggregationStrategy
-from cadence_md.app.settings import (
-    MODEL_INFERENCE_API_KEY,
-    MODEL_INFERENCE_BASE_URL,
-    RAGConfig,
-)
+from cadence_md.app.settings import settings
 
 
 def _safe_vec(vec: Iterable[float]) -> list[float]:
@@ -50,19 +46,12 @@ def aggregate_embedding(
 
 
 class RerankerWrapper:
-    """
-    A wrapper around reranker model (bge / qwen3-reranker / etc),
-    running via the OpenAI-compatible /embeddings endpoint.
-
-    Semantics:
-    - encode_pairs -> list of scores (float)
-    - rerank -> sort candidates by score
-    """
+    """ """
 
     def __init__(
         self,
         model: str,
-        instruction: str,
+        instruction: str | None,
         api_key: str,
         base_url: str,
         embedding_agregation_strategy: RerankerAggregationStrategy,
@@ -84,6 +73,7 @@ class RerankerWrapper:
         query: str,
         documents: list[Document],
     ) -> list[str]:
+        # TODO: refactor to versality input with optional instruction part
         return [(f"query: {query}\npassage: {doc.page_content}") for doc in documents]
 
     def encode_pairs(
@@ -113,10 +103,7 @@ class RerankerWrapper:
     def rerank(
         self, query: str, documents: list[Document]
     ) -> Sequence[tuple[Document, float | None]]:
-        """
-        Reranks a list of documents for a single query.
-        Returns a list of (document, score) sorted by score in descending order.
-        """
+        """ """
         if not documents:
             return []
 
@@ -133,13 +120,15 @@ class RerankerWrapper:
         return [(doc, None) for doc, _ in pairs]
 
 
-def get_reranker(config: RAGConfig) -> RerankerWrapper:
+def get_reranker() -> RerankerWrapper:
+    """ """
+
     return RerankerWrapper(
-        model=config.reranker.model_name,
-        instruction=config.reranker.instruction,
-        top_k=config.reranker.top_k,
-        return_score=config.reranker.return_score,
-        embedding_agregation_strategy=config.reranker.embedding_agregation_strategy,
-        base_url=MODEL_INFERENCE_BASE_URL,
-        api_key=MODEL_INFERENCE_API_KEY,
+        model=settings.rag_config.reranker.model_name,
+        instruction=settings.rag_config.reranker.instruction,
+        top_k=settings.rag_config.reranker.top_k,
+        return_score=settings.rag_config.reranker.return_score,
+        embedding_agregation_strategy=settings.rag_config.reranker.embedding_agregation_strategy,
+        base_url=settings.MODEL_INFERENCE_BASE_URL,
+        api_key=settings.MODEL_INFERENCE_API_KEY,
     )

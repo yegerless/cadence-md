@@ -12,7 +12,7 @@ from tqdm import tqdm
 from cadence_md.app.embedder import EmbedderWrapper
 from cadence_md.app.enums import QdrantFusionMethod, QdrantVectorType, VectorSearchType
 from cadence_md.app.pdf_parser import ClinicalGuidelinesParser, ClinicalSection
-from cadence_md.app.settings import RAGConfig
+from cadence_md.app.settings import settings
 
 # Configure logging for this module
 logger = logging.getLogger(__name__)
@@ -36,35 +36,36 @@ class QdrantManager:
         sparse_model: FastEmbed BM25 sparse embedding model
     """
 
-    def __init__(self, config: RAGConfig, embedder: EmbedderWrapper) -> None:
+    def __init__(self, embedder: EmbedderWrapper) -> None:
         """
         Initialize the QdrantManager with configuration and embedder.
 
         Args:
-            config: RAGConfig instance containing all configuration settings
-            embedder: EmbedderWrapper instance for generating embeddings
+            embedder: EmbedderWrapper instance for generating embeddings. If None, creates default
 
         Raises:
             RuntimeError: If connection to Qdrant database cannot be established
         """
-        self.chunking_cfg = config.chunking
-        self.retrieval_cfg = config.retrieval
-        self.qdrant_cfg = config.qdrant_config
+        # Use config if provided, otherwise use global settings
+
+        self.chunking_cfg = settings.rag_config.chunking
+        self.retrieval_cfg = settings.rag_config.retrieval
+        self.qdrant_cfg = settings.rag_config.qdrant_config
 
         try:
             self.qdrant_client = QdrantClient(
-                host=self.qdrant_cfg.host,
-                port=self.qdrant_cfg.port,
-                api_key=self.qdrant_cfg.api_key,
-                https=self.qdrant_cfg.https,
+                url=settings.QDRANT_BASE_URL,
+                api_key=settings.QDRANT_API_KEY,
+                https=settings.QDRANT_HTTPS,
             )
         except Exception as e:
             raise RuntimeError(
-                f"Cannot connect to Qdrant at {self.qdrant_cfg.host}:{self.qdrant_cfg.port}: {e}"
+                f"Cannot connect to Qdrant at {settings.QDRANT_BASE_URL}: {e}"
             ) from e
 
         # dense-embedder
         self.embedder = embedder
+
         self._collection_name = self.qdrant_cfg.collection_name
         self.uploading_batch_size = self.qdrant_cfg.uploading_batch_size
 

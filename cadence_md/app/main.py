@@ -5,21 +5,15 @@ from cadence_md.app.llm import get_llm
 from cadence_md.app.qdrant import QdrantManager
 from cadence_md.app.rag import RAGPipeline
 from cadence_md.app.reranker import get_reranker
-from cadence_md.app.settings import EmbeddingConfig, QdrantConfig, RAGConfig
-
-# Init configuration
-qdrant_config = QdrantConfig(rebuild_collection=False)
-embedding_config = EmbeddingConfig(return_score=True)
-baseline_config = RAGConfig(embedding=embedding_config, qdrant_config=qdrant_config)
 
 # Init models connection
-embedder = get_embedder(baseline_config)
-reranker = get_reranker(baseline_config)
-llm = get_llm(baseline_config)
+embedder = get_embedder()
+reranker = get_reranker()
+llm = get_llm()
 
 # Init qdrant
-qdrant_manager = QdrantManager(config=baseline_config, embedder=embedder)
-qdrant_manager.setup_qdrant(data_dir=Path("../data/clinical_recomendation_pdfs/"))
+qdrant_manager = QdrantManager(embedder)
+qdrant_manager.setup_qdrant(data_dir=Path("data/clinical_recomendation_pdfs/"))
 
 # Init RAG graph
 rag_pipeline = RAGPipeline(llm, qdrant_manager, reranker=reranker)
