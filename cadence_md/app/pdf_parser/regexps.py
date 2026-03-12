@@ -1,6 +1,6 @@
 import re
 
-from app.enums import SectionType
+from cadence_md.app.enums import SectionType
 
 ICD_RE = re.compile(r"[A-Z]\d{2}(?:\.\d{1,2})?")  # international classification of deseases
 

@@ -7,8 +7,9 @@ from qdrant_client import models as qdrant_models
 
 from cadence_md.app.enums import RerankerAggregationStrategy
 
-load_dotenv(dotenv_path="../.env.dev", override=True)
+load_dotenv(dotenv_path=".env.dev", override=True)
 QDRANT_API_KEY = os.getenv("QDRANT__SERVICE__API_KEY", "")
+print("QDRANT_API_KEY", QDRANT_API_KEY)
 
 MODEL_INFERENCE_BASE_URL = "http://localhost:1234/v1"
 MODEL_INFERENCE_API_KEY = "lm-studio"
