@@ -31,3 +31,14 @@ class RerankerAggregationStrategy(StrEnum):
 class QdrantVectorType(StrEnum):
     DENSE = "dense"
     SPARSE = "sparse"
+
+
+class QdrantFusionMethod(StrEnum):
+    RRF = "rrf"
+    DBSF = "dbsf"
+
+
+class VectorSearchType(StrEnum):
+    DENSE = "dense"
+    SPARSE = "sparse"
+    HYBRID = "hybrid"

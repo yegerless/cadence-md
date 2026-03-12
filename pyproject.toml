@@ -83,7 +83,8 @@ ignore = [
     "RUF002",
     "RUF003",
     "PLR0913",
-    "PLR2004"
+    "PLR2004",
+    "C901"
 ]
 
 [tool.ruff.lint.pydocstyle]
