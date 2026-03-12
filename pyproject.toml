@@ -28,7 +28,9 @@ dependencies = [
 dev = [
     "pre-commit (>=4.4.0,<5.0.0)",
     "ruff (>=0.14.5,<0.15.0)",
-    "ipykernel (>=7.1.0,<8.0.0)"
+    "ipykernel (>=7.1.0,<8.0.0)",
+    "pytest (>=9.0.2,<10.0.0)",
+    "pytest-cov (>=7.0.0,<8.0.0)"
 ]
 
 [tool.setuptools.packages.find]
@@ -96,3 +98,8 @@ docstring-code-line-length = 50
 
 [tool.codespell]
 skip = "*.lock"
+
+[tool.pytest.ini_options]
+addopts = "-p no:warnings"
+testpaths = ["tests"]
+pythonpath = ["."]
