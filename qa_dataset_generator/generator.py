@@ -5,8 +5,6 @@ from pathlib import Path
 from random import choice
 from typing import TypedDict
 
-from app.cr_parser import ClinicalSection
-from app.enums import QuestionType, SectionType
 from dotenv import load_dotenv
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -14,6 +12,8 @@ from langchain_gigachat.chat_models import GigaChat
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from cadence_md.app.enums import QuestionType, SectionType
+from cadence_md.app.pdf_parser import ClinicalSection
 from qa_dataset_generator.prompts import GENERATION_PROMPTS
 from qa_dataset_generator.schemas import QAPair, QAResponsePair
 

@@ -5,14 +5,14 @@ from qdrant_client import models as qdrant_models
 from cadence_md.app.enums import QdrantFusionMethod, RerankerAggregationStrategy, VectorSearchType
 
 
-class ChunkSettings(BaseModel):
+class ChunkConfig(BaseModel):
     """Text chunking settings for RAG"""
 
     chunk_size: int = 1024
     chunk_overlap: int = 256
 
 
-class QdrantSettings(BaseModel):
+class QdrantConfig(BaseModel):
     """Qdrant connection settings"""
 
     collection_name: str = "clinical_recs"
@@ -22,7 +22,7 @@ class QdrantSettings(BaseModel):
     uploading_batch_size: int = 256
 
 
-class EmbeddingSettings(BaseModel):
+class EmbeddingConfig(BaseModel):
     """Embedder model settings"""
 
     model_name: str = "text-embedding-bge-m3"
@@ -30,7 +30,7 @@ class EmbeddingSettings(BaseModel):
     return_score: bool = False
 
 
-class RerankerSettings(BaseModel):
+class RerankerConfig(BaseModel):
     """Reranker model settings"""
 
     model_name: str = "text-embedding-bge-reranker-v2-m3"
@@ -40,7 +40,7 @@ class RerankerSettings(BaseModel):
     top_k: int = 5
 
 
-class RetrievalSettings(BaseModel):
+class RetrievalConfig(BaseModel):
     """Retrieval settings"""
 
     search_mode: VectorSearchType = VectorSearchType.DENSE
@@ -50,7 +50,7 @@ class RetrievalSettings(BaseModel):
     hybrid_top_k: int = 30
 
 
-class LLMSettings(BaseModel):
+class LLMConfig(BaseModel):
     """LLM settings"""
 
     model_name: str = "qwen2.5-3b-instruct"
@@ -62,12 +62,12 @@ class LLMSettings(BaseModel):
 class RAGConfig(BaseModel):
     """Configuration for a specific RAG mode"""
 
-    chunking: ChunkSettings
-    retrieval: RetrievalSettings
-    llm: LLMSettings
-    embedding: EmbeddingSettings
-    reranker: RerankerSettings
-    qdrant_config: QdrantSettings
+    chunking: ChunkConfig
+    retrieval: RetrievalConfig
+    llm: LLMConfig
+    embedding: EmbeddingConfig
+    reranker: RerankerConfig
+    qdrant_config: QdrantConfig
 
 
 class Settings(BaseSettings):
@@ -84,12 +84,12 @@ class Settings(BaseSettings):
 
     rag_config: RAGConfig = Field(
         default_factory=lambda: RAGConfig(
-            chunking=ChunkSettings(),
-            retrieval=RetrievalSettings(),
-            llm=LLMSettings(),
-            embedding=EmbeddingSettings(),
-            reranker=RerankerSettings(),
-            qdrant_config=QdrantSettings(),
+            chunking=ChunkConfig(),
+            retrieval=RetrievalConfig(),
+            llm=LLMConfig(),
+            embedding=EmbeddingConfig(),
+            reranker=RerankerConfig(),
+            qdrant_config=QdrantConfig(),
         )
     )
 

@@ -345,7 +345,7 @@ class QdrantManager:
 
         logger.info("Qdrant database is ready for working with RAG")
 
-    def retrieve_documents(self, query: str) -> list[Document]:
+    def retrieve(self, query: str) -> list[tuple[Document, float]]:
         """
         Retrieve relevant documents using the configured search mode.
 
@@ -353,7 +353,8 @@ class QdrantManager:
             query: Search query text
 
         Returns:
-            List of relevant Document objects sorted by relevance
+            List of (Document, score) pairs sorted by descending relevance.
+            Score is the retriever score from Qdrant (cosine distance, fusion score, etc.).
 
         Raises:
             ValueError: If search_mode is not one of 'dense', 'sparse', or 'hybrid'
@@ -366,7 +367,7 @@ class QdrantManager:
             return self._retrieve_hybrid(query)
         raise ValueError(f"Unknown search_mode: {self.search_mode}")
 
-    def _retrieve_dense(self, query: str) -> list[Document]:
+    def _retrieve_dense(self, query: str) -> list[tuple[Document, float]]:
         """
         Retrieve documents using dense vector similarity search.
 
@@ -377,7 +378,7 @@ class QdrantManager:
             query: Text query to search for
 
         Returns:
-            List of relevant Document objects
+            List of (Document, retriever score) pairs
 
         Raises:
             RuntimeError: If query embedding or search fails
@@ -402,9 +403,9 @@ class QdrantManager:
             logger.error(f"Error querying Qdrant for query '{query}': {e}")
             raise RuntimeError(f"Failed to query Qdrant: {e}") from e
 
-        return self._scored_points_to_documents(res.points)
+        return self._scored_points_to_document_score_pairs(res.points)
 
-    def _retrieve_sparse(self, query: str) -> list[Document]:
+    def _retrieve_sparse(self, query: str) -> list[tuple[Document, float]]:
         """
         Retrieve documents using sparse BM25 vector search.
 
@@ -415,7 +416,7 @@ class QdrantManager:
             query: Text query to search for
 
         Returns:
-            List of relevant Document objects
+            List of (Document, retriever score) pairs
 
         Raises:
             RuntimeError: If query embedding or search fails
@@ -450,9 +451,9 @@ class QdrantManager:
             logger.error(f"Error querying Qdrant sparse collection: {e}")
             raise RuntimeError(f"Failed to query Qdrant sparse collection: {e}") from e
 
-        return self._scored_points_to_documents(res.points)
+        return self._scored_points_to_document_score_pairs(res.points)
 
-    def _retrieve_hybrid(self, query: str) -> list[Document]:
+    def _retrieve_hybrid(self, query: str) -> list[tuple[Document, float]]:
         """
         Retrieve documents using hybrid dense + sparse search with fusion.
 
@@ -465,7 +466,7 @@ class QdrantManager:
             query: Text query to search for
 
         Returns:
-            List of relevant Document objects
+            List of (Document, retriever score) pairs
 
         Raises:
             ValueError: If fusion_method is not 'rrf' or 'dbsf'
@@ -529,34 +530,30 @@ class QdrantManager:
             logger.error(f"Error performing hybrid search: {e}")
             raise RuntimeError(f"Failed to perform hybrid search: {e}") from e
 
-        return self._scored_points_to_documents(res.points)
+        return self._scored_points_to_document_score_pairs(res.points)
 
     @staticmethod
-    def _scored_points_to_documents(
+    def _scored_points_to_document_score_pairs(
         points: list[qdrant_models.ScoredPoint],
-    ) -> list[Document]:
+    ) -> list[tuple[Document, float]]:
         """
-        Convert Qdrant scored points to LangChain Document objects.
+        Convert Qdrant scored points to (Document, score) pairs.
 
         Args:
             points: List of ScoredPoint objects from Qdrant
 
         Returns:
-            List of Document objects with metadata and scores
+            List of (Document, retriever score). The ``text`` field is taken from payload
+            as ``page_content``; score is returned separately, not duplicated in metadata.
 
         Note:
-            The 'text' field is removed from payload and used as
-            page_content. The original score is added to metadata.
+            If Qdrant returns no score for a point, ``nan`` is used.
         """
-        docs: list[Document] = []
+        pairs: list[tuple[Document, float]] = []
         for pt in points:
-            payload = pt.payload or {}
+            payload = dict(pt.payload or {})
             page_content = payload.pop("text", "")
-
-            # Add score to metadata
-            if pt.score is not None:
-                payload["score"] = pt.score
-
+            score = float(pt.score) if pt.score is not None else float("nan")
             doc = Document(page_content=page_content, metadata=payload)
-            docs.append(doc)
-        return docs
+            pairs.append((doc, score))
+        return pairs

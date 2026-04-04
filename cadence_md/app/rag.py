@@ -10,77 +10,61 @@ from cadence_md.app.reranker import RerankerWrapper
 
 
 class RAGState(TypedDict):
-    """State for LangGraph"""
+    """State for LangGraph."""
 
     query: str
     retrieved_docs: list[Document]
+    retrieved_scores: list[float]
+    reranked_scores: list[float]
     context: str
+    context_chars: int
     answer: str
+    answer_word_count: int
 
 
 class RAGPipeline:
-    """ """
+    """RAG graph: retrieve → rerank → context → generate."""
 
     def __init__(
         self, llm: LLMWrapper, qdrant_manager: QdrantManager, reranker: RerankerWrapper
     ) -> None:
-        """ """
         self.llm = llm
         self.reranker = reranker
         self.qdrant_manager = qdrant_manager
         self._graph = None
 
     def retrieve_node(self, state: RAGState) -> RAGState:
-        """ """
-        print(f"[RETRIEVE] Query: {state['query']}")
-
-        docs = self.qdrant_manager.retrieve_documents(state["query"])
-
-        print(f"Retrieved {len(docs)} documents")
-        for i, doc in enumerate(docs, 1):
-            filename = doc.metadata.get("filename", "unknown")
-            print(f"  {i}. {filename}")
+        retrieved = self.qdrant_manager.retrieve(state["query"])
+        docs = [doc for doc, _ in retrieved]
+        scores = [score for _, score in retrieved]
 
         state["retrieved_docs"] = docs
+        state["retrieved_scores"] = scores
         return state
 
     def reranker_node(self, state: RAGState) -> RAGState:
-        """ """
         query = state["query"]
         docs = state["retrieved_docs"]
 
-        print(f"[RERANK] {len(docs)} documents")
-
-        docs = self.reranker.rerank(query, docs)
-        state["retrieved_docs"] = [doc[0] for doc in docs]
-
-        print(f"Reranked {len(docs)} documents")
-        for i, doc in enumerate(docs, 1):
-            filename = doc[0].metadata.get("filename", "unknown")
-            print(f"  {i}. {filename}")
+        pairs = self.reranker.rerank(query, docs)
+        state["retrieved_docs"] = [doc for doc, _ in pairs]
+        state["reranked_scores"] = [float(s) if s is not None else 0.0 for _, s in pairs]
 
         return state
 
     def context_node(self, state: RAGState) -> RAGState:
-        """ """
-        print(f"\n[CONTEXT] Preparing context from {len(state['retrieved_docs'])} documents")
-
-        # Combining documents into context
         context_parts = []
         for i, doc in enumerate(state["retrieved_docs"], 1):
-            context_parts.append(f"[Document {i} - {doc.metadata['filename']}]\n{doc.page_content}")
+            filename = doc.metadata.get("filename", "unknown")
+            context_parts.append(f"[Document {i} - {filename}]\n{doc.page_content}")
 
         context = "\n\n---\n\n".join(context_parts)
         state["context"] = context
-
-        print(f"Context prepared ({len(context)} chars)")
+        state["context_chars"] = len(context)
 
         return state
 
     def generate_node(self, state: RAGState) -> RAGState:
-        """ """
-        print("[GENERATE] Generating answer...")
-
         system_message = """Вы — отзывчивый медицинский ассистент.
         На основании предоставленных медицинских документов ответьте на вопрос пользователя точно и
         кратко.
@@ -94,15 +78,11 @@ class RAGPipeline:
         Answer:"""
 
         state["answer"] = self.llm.invoke(prompt)
-
-        print(f"Generated {len(state['answer'].split())} words")
+        state["answer_word_count"] = len(state["answer"].split())
 
         return state
 
     def _build_graph(self):
-        """ """
-        print("\n[GRAPH] Building LangGraph...")
-
         workflow = StateGraph(RAGState)
 
         workflow.add_node("retrieve", self.retrieve_node)
@@ -116,22 +96,21 @@ class RAGPipeline:
         workflow.add_edge("context", "generate")
         workflow.add_edge("generate", END)
 
-        graph = workflow.compile()
+        return workflow.compile()
 
-        print("✓ Graph built successfully")
-
-        return graph
-
-    def run(self, query: str):
-        """ """
+    def run(self, query: str) -> RAGState:
         if self._graph is None:
             self._graph = self._build_graph()
-        graph = self._graph
 
-        print(f"QUERY: {query}")
+        initial_state: RAGState = {
+            "query": query,
+            "retrieved_docs": [],
+            "retrieved_scores": [],
+            "reranked_scores": [],
+            "context": "",
+            "context_chars": 0,
+            "answer": "",
+            "answer_word_count": 0,
+        }
 
-        graph = self._build_graph()
-
-        initial_state = RAGState(query=query, retrieved_docs=[], context="", answer="")
-
-        return graph.invoke(initial_state)
+        return self._graph.invoke(initial_state)

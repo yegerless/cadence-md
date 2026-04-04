@@ -30,7 +30,9 @@ dev = [
     "ruff (>=0.14.5,<0.15.0)",
     "ipykernel (>=7.1.0,<8.0.0)",
     "pytest (>=9.0.2,<10.0.0)",
-    "pytest-cov (>=7.0.0,<8.0.0)"
+    "pytest-cov (>=7.0.0,<8.0.0)",
+    "jupyter (>=1.1.1,<2.0.0)",
+    "ipywidgets (>=8.1.8,<9.0.0)"
 ]
 
 [tool.setuptools.packages.find]
@@ -86,7 +88,9 @@ ignore = [
     "RUF003",
     "PLR0913",
     "PLR2004",
-    "C901"
+    "C901",
+    "PLR0915",
+    "PLR0912"
 ]
 
 [tool.ruff.lint.pydocstyle]

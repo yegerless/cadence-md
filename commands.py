@@ -1,7 +1,12 @@
 import argparse
 from pathlib import Path
 
-from qa_dataset_generator.generate_qa_dataset import generate_qa_dataset
+
+def _run_metrics_cli_argv(argv: list[str]) -> None:
+    """Lazy import so project CLI does not load RAG stack unless needed."""
+    from metrics.main import run_metrics_cli  # noqa: PLC0415
+
+    run_metrics_cli(argv)
 
 
 def main():
@@ -31,7 +36,7 @@ def main():
     gen_parser.add_argument(
         "--model",
         type=str,
-        default="GigaChat",
+        default="GigaChat-2-Max",
         help="LLM model name (GigaChat, GigaChat-2-Max, GigaChat-pro)",
     )
     gen_parser.add_argument(
@@ -55,15 +60,71 @@ def main():
     gen_parser.add_argument(
         "--max-context",
         type=int,
-        default=50000,
+        default=10000,
         help="Maximum context length in characters",
     )
 
-    # other_parser = subparsers.add_parser("something", help="...")
+    # command metrics-eval-full
+    metrics_full = subparsers.add_parser(
+        "metrics-eval-full",
+        help="Full RAG evaluation (RAGAS + retrieval metrics), see metrics/main.py",
+    )
+    metrics_full.add_argument(
+        "--dataset-file",
+        type=Path,
+        default=Path("data/metrics_evaluation_datasets/qa_dataset.jsonl"),
+        help="Path to QA JSONL",
+    )
+    metrics_full.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("metrics/results/"),
+        help="Directory for reports and metrics",
+    )
+    metrics_full.add_argument(
+        "--sample-size",
+        type=int,
+        default=None,
+        help="Optional cap on number of test cases",
+    )
+
+    # command metrics-eval-retriever
+    metrics_ret = subparsers.add_parser(
+        "metrics-eval-retriever",
+        help="Retriever-only evaluation (no RAGAS), see metrics/main.py",
+    )
+    metrics_ret.add_argument(
+        "--dataset-file",
+        type=Path,
+        default=Path("data/metrics_evaluation_datasets/qa_dataset.jsonl"),
+        help="Path to QA JSONL",
+    )
+    metrics_ret.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("metrics/results/"),
+        help="Directory for reports and metrics",
+    )
+    metrics_ret.add_argument(
+        "--sample-size",
+        type=int,
+        default=None,
+        help="Optional cap on number of test cases",
+    )
+    metrics_ret.add_argument(
+        "--k",
+        type=int,
+        default=None,
+        help="K for recall@K / precision@K",
+    )
 
     args = parser.parse_args()
 
     if args.command == "generate-qa":
+        from qa_dataset_generator.generate_qa_dataset import (  # noqa: PLC0415
+            generate_qa_dataset,
+        )
+
         generate_qa_dataset(
             sections_file=args.sections_file,
             output_file=args.output_file,
@@ -73,8 +134,30 @@ def main():
             temperature=args.temperature,
             max_context=args.max_context,
         )
-    # elif args.command == "something":
-    #     other_command_fn(...)
+    elif args.command == "metrics-eval-full":
+        argv: list[str] = [
+            "full",
+            "--dataset-file",
+            str(args.dataset_file),
+            "--output-dir",
+            str(args.output_dir),
+        ]
+        if args.sample_size is not None:
+            argv += ["--sample-size", str(args.sample_size)]
+        _run_metrics_cli_argv(argv)
+    elif args.command == "metrics-eval-retriever":
+        argv_ret: list[str] = [
+            "retriever",
+            "--dataset-file",
+            str(args.dataset_file),
+            "--output-dir",
+            str(args.output_dir),
+        ]
+        if args.sample_size is not None:
+            argv_ret += ["--sample-size", str(args.sample_size)]
+        if args.k is not None:
+            argv_ret += ["--k", str(args.k)]
+        _run_metrics_cli_argv(argv_ret)
     else:
         parser.print_help()
 
