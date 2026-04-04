@@ -9,7 +9,7 @@ from cadence_md.app.settings import settings
 
 def _safe_vec(vec: Iterable[float]) -> list[float]:
     v = list(vec)
-    return v if v else [0.0]
+    return v or [0.0]
 
 
 def _l2_norm(vec: Iterable[float]) -> float:
