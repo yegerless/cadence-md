@@ -32,6 +32,86 @@ integration.
 
 You can find project setup instruction in docs/setup.md
 
+## CLI commands
+
+Project tasks are exposed via [`commands.py`](commands.py). Run from the
+repository root with Poetry:
+
+```bash
+poetry run python commands.py --help
+poetry run python commands.py <subcommand> --help
+```
+
+### `generate-qa`
+
+Builds a synthetic QA dataset from a JSONL of clinical sections (parser output).
+
+| Option            | Default                                             | Description                                                  |
+| ----------------- | --------------------------------------------------- | ------------------------------------------------------------ |
+| `--sections-file` | `data/clinical_sections.jsonl`                      | Input sections JSONL                                         |
+| `--output-file`   | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Output QA JSONL                                              |
+| `--model`         | `GigaChat-2-Max`                                    | LLM name (e.g. `GigaChat`, `GigaChat-2-Max`, `GigaChat-pro`) |
+| `--base-url`      | —                                                   | Optional base URL for a local model                          |
+| `--load-api-key`  | on                                                  | Load API key from the environment                            |
+| `--temperature`   | `0.7`                                               | Sampling temperature                                         |
+| `--max-context`   | `50000`                                             | Max context length (characters)                              |
+
+Example:
+
+```bash
+poetry run python commands.py generate-qa --sections-file data/clinical_sections.jsonl
+```
+
+Requires LLM credentials (e.g. `GIGACHAT_API_KEY`) as configured for the QA
+generator.
+
+### `metrics-eval-full`
+
+Full RAG evaluation: answer generation, RAGAS metrics, retrieval metrics, and
+reports under the output directory.
+
+| Option           | Default                                             | Description                    |
+| ---------------- | --------------------------------------------------- | ------------------------------ |
+| `--dataset-file` | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Evaluation QA JSONL            |
+| `--output-dir`   | `metrics/results/`                                  | Reports and metric files       |
+| `--sample-size`  | —                                                   | Limit the number of test cases |
+
+Example:
+
+```bash
+poetry run python commands.py metrics-eval-full --sample-size 20
+```
+
+Expects a running Qdrant instance, an indexed corpus, and the rest of the stack
+described in the setup guide.
+
+### `metrics-eval-retriever`
+
+Retriever-only evaluation (retrieve + rerank): no RAGAS and no full answer
+generation. Writes `retriever_evaluation_report.md` and `retriever_metrics.json`
+into the output directory.
+
+Same options as `metrics-eval-full`, plus:
+
+| Option | Default          | Description                  |
+| ------ | ---------------- | ---------------------------- |
+| `--k`  | pipeline default | K for recall@K / precision@K |
+
+Example:
+
+```bash
+poetry run python commands.py metrics-eval-retriever --k 5
+```
+
+### Direct `metrics/main.py` entrypoint
+
+You can also run the metrics CLI directly (same subcommands and flags):
+
+```bash
+poetry run python metrics/main.py full --help
+poetry run python metrics/main.py retriever --help
+```
+
 ## License
 
 Proprietary - See [LICENSE.md](LICENSE.md) for details.
