@@ -8,6 +8,14 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 
+def _positive_int(value: str) -> int:
+    """Parse positive integer from CLI."""
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
 def _run_metrics_cli_argv(argv: list[str]) -> None:
     """Lazy import so project CLI does not load RAG stack unless needed."""
     from metrics.main import run_metrics_cli  # noqa: PLC0415
@@ -96,13 +104,13 @@ def main():
     )
     gen_parser.add_argument(
         "--max-context",
-        type=int,
+        type=_positive_int,
         default=10000,
         help="Maximum context length in characters",
     )
     gen_parser.add_argument(
         "--sections-per-pdf",
-        type=int,
+        type=_positive_int,
         default=3,
         help="Randomly sample up to N sections from each source PDF",
     )
@@ -132,9 +140,15 @@ def main():
     )
     metrics_full.add_argument(
         "--sample-size",
-        type=int,
+        type=_positive_int,
         default=None,
         help="Optional cap on number of test cases",
+    )
+    metrics_full.add_argument(
+        "--pdf-dir",
+        type=Path,
+        default=Path("data/main_specialities/"),
+        help="Directory with source PDF files used by Qdrant setup",
     )
 
     # command metrics-eval-retriever
@@ -156,15 +170,21 @@ def main():
     )
     metrics_ret.add_argument(
         "--sample-size",
-        type=int,
+        type=_positive_int,
         default=None,
         help="Optional cap on number of test cases",
     )
     metrics_ret.add_argument(
         "--k",
-        type=int,
+        type=_positive_int,
         default=None,
         help="K for recall@K / precision@K",
+    )
+    metrics_ret.add_argument(
+        "--pdf-dir",
+        type=Path,
+        default=Path("data/main_specialities/"),
+        help="Directory with source PDF files used by Qdrant setup",
     )
 
     # command parse-pdf
@@ -186,7 +206,7 @@ def main():
     )
     parse_pdf.add_argument(
         "--max-files",
-        type=int,
+        type=_positive_int,
         default=None,
         help="Optional cap on number of PDF files to parse",
     )
@@ -223,6 +243,8 @@ def main():
             str(args.dataset_file),
             "--output-dir",
             str(args.output_dir),
+            "--pdf-dir",
+            str(args.pdf_dir),
         ]
         if args.sample_size is not None:
             argv += ["--sample-size", str(args.sample_size)]
@@ -234,6 +256,8 @@ def main():
             str(args.dataset_file),
             "--output-dir",
             str(args.output_dir),
+            "--pdf-dir",
+            str(args.pdf_dir),
         ]
         if args.sample_size is not None:
             argv_ret += ["--sample-size", str(args.sample_size)]

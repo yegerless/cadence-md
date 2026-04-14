@@ -1,12 +1,12 @@
 import json
 import logging
 import random
+import re
 import statistics
 from pathlib import Path
 
 import pandas as pd
 from datasets import Dataset
-from dotenv import load_dotenv
 from langchain_gigachat.chat_models import GigaChat
 from langchain_gigachat.embeddings import GigaChatEmbeddings
 from ragas import evaluate
@@ -28,8 +28,6 @@ from tqdm import tqdm
 from cadence_md.app.rag import RAGPipeline, RAGState
 from cadence_md.app.settings import settings
 from metrics.schemas import QATestCase, RAGTestResult
-
-load_dotenv(".env.dev", override=True)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -94,10 +92,18 @@ class RAGEvaluationPipeline:
         test_cases: list[QATestCase] = []
 
         with Path(dataset_file).open("r", encoding="utf-8") as f:
-            for line in f:
+            for line_num, line in enumerate(f, start=1):
                 if line.strip():
-                    data = json.loads(line)
-                    test_cases.append(QATestCase.from_dict(data))
+                    try:
+                        data = json.loads(line)
+                        test_cases.append(QATestCase.from_dict(data))
+                    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                        logger.warning(
+                            "Skipping malformed QA row at %s:%s (%s)",
+                            dataset_file,
+                            line_num,
+                            exc,
+                        )
 
         logger.info(f"Loaded {len(test_cases)} test cases")
         return test_cases
@@ -223,6 +229,10 @@ class RAGEvaluationPipeline:
 
     def evaluate_with_ragas(self, results: list[RAGTestResult]) -> pd.DataFrame:
         """Assessing results using RAGAS metrics (legacy evaluate API)"""
+        if not results:
+            logger.warning("No RAG results provided for RAGAS evaluation")
+            return pd.DataFrame(columns=["question_type", "section_type", "test_case_id"])
+
         logger.info("Converting to RAGAS format...")
         ragas_dataset = self.convert_to_ragas_format(results)
 
@@ -247,13 +257,15 @@ class RAGEvaluationPipeline:
         self,
         results: list[RAGTestResult],
         k: int | None = None,
-    ) -> dict:
+    ) -> dict[str, float | int]:
         """
         Calculation of retriever metrics.
         """
         k = k if k is not None else settings.rag_config.retrieval.dense_top_k
+        if k <= 0:
+            raise ValueError("k must be a positive integer")
 
-        metrics = {
+        metrics: dict[str, float | int] = {
             "hit_rate": 0.0,
             "mrr": 0.0,
             "avg_score": 0.0,
@@ -278,7 +290,6 @@ class RAGEvaluationPipeline:
             for i, retrieved_ctx in enumerate(result.retrieved_contexts):
                 retrieved_normalized = retrieved_ctx.page_content.lower().strip()
 
-                # TODO: change _contexts_match method to use the new context similarity method
                 if self.contexts_match(gt_context_normalized, retrieved_normalized):
                     hits += 1
                     reciprocal_ranks.append(1.0 / (i + 1))
@@ -295,7 +306,6 @@ class RAGEvaluationPipeline:
             relevant_in_top_k = sum(
                 1
                 for doc in top_k_docs
-                # TODO: change _contexts_match method to use the new context similarity method
                 if self.contexts_match(gt_context_normalized, doc.page_content.lower().strip())
             )
             recall_at_k_values.append(1.0 if relevant_in_top_k > 0 else 0.0)
@@ -309,7 +319,12 @@ class RAGEvaluationPipeline:
 
         return metrics
 
-    def generate_report(self, ragas_df: pd.DataFrame, retrieval_metrics: dict, output_dir: Path):
+    def generate_report(
+        self,
+        ragas_df: pd.DataFrame,
+        retrieval_metrics: dict[str, float | int],
+        output_dir: Path,
+    ) -> None:
         """Generating a detailed report"""
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -345,34 +360,44 @@ class RAGEvaluationPipeline:
         # 4. Analysis by question types
         report_lines.append("## 4. ANALYSIS BY QUESTION TYPES\n")
 
-        for qtype in ragas_df["question_type"].unique():
-            subset = ragas_df[ragas_df["question_type"] == qtype]
-            report_lines.append(f"### {qtype} (n={len(subset)})\n")
+        if "question_type" in ragas_df.columns:
+            for qtype in ragas_df["question_type"].dropna().unique():
+                subset = ragas_df[ragas_df["question_type"] == qtype]
+                report_lines.append(f"### {qtype} (n={len(subset)})\n")
 
-            if "faithfulness" in subset.columns:
-                report_lines.append(f"  Faithfulness: {subset['faithfulness'].mean():.3f}\n")
-            if "context_recall" in subset.columns:
-                report_lines.append(f"  Context Recall: {subset['context_recall'].mean():.3f}\n")
-            if "answer_correctness" in subset.columns:
-                report_lines.append(
-                    f"  Answer Correctness: {subset['answer_correctness'].mean():.3f}\n\n"
-                )
+                if "faithfulness" in subset.columns:
+                    report_lines.append(f"  Faithfulness: {subset['faithfulness'].mean():.3f}\n")
+                if "context_recall" in subset.columns:
+                    report_lines.append(
+                        f"  Context Recall: {subset['context_recall'].mean():.3f}\n"
+                    )
+                if "answer_correctness" in subset.columns:
+                    report_lines.append(
+                        f"  Answer Correctness: {subset['answer_correctness'].mean():.3f}\n\n"
+                    )
+        else:
+            report_lines.append("No question_type data available\n\n")
 
         # 5. Analysis by section types
         report_lines.append("## 5. ANALYSIS BY SECTION TYPES")
 
-        for stype in ragas_df["section_type"].unique():
-            subset = ragas_df[ragas_df["section_type"] == stype]
-            report_lines.append(f"### {stype} (n={len(subset)})")
+        if "section_type" in ragas_df.columns:
+            for stype in ragas_df["section_type"].dropna().unique():
+                subset = ragas_df[ragas_df["section_type"] == stype]
+                report_lines.append(f"### {stype} (n={len(subset)})")
 
-            if "faithfulness" in subset.columns:
-                report_lines.append(f"  Faithfulness: {subset['faithfulness'].mean():.3f}\n")
-            if "context_recall" in subset.columns:
-                report_lines.append(f"  Context Recall: {subset['context_recall'].mean():.3f}\n")
-            if "answer_correctness" in subset.columns:
-                report_lines.append(
-                    f"  Answer Correctness: {subset['answer_correctness'].mean():.3f}\n\n"
-                )
+                if "faithfulness" in subset.columns:
+                    report_lines.append(f"  Faithfulness: {subset['faithfulness'].mean():.3f}\n")
+                if "context_recall" in subset.columns:
+                    report_lines.append(
+                        f"  Context Recall: {subset['context_recall'].mean():.3f}\n"
+                    )
+                if "answer_correctness" in subset.columns:
+                    report_lines.append(
+                        f"  Answer Correctness: {subset['answer_correctness'].mean():.3f}\n\n"
+                    )
+        else:
+            report_lines.append("\nNo section_type data available\n\n")
 
         # 6. Problematic cases
         report_lines.append("## 6. PROBLEM CASES")
@@ -381,7 +406,7 @@ class RAGEvaluationPipeline:
             low_faithfulness = ragas_df[ragas_df["faithfulness"] < 0.5]
             report_lines.append(f"Low faithfulness (< 0.5): {len(low_faithfulness)} cases\n")
 
-        if "context_recall" in subset.columns:
+        if "context_recall" in ragas_df.columns:
             low_recall = ragas_df[ragas_df["context_recall"] < 0.5]
             report_lines.append(f"Low context recall: {len(low_recall)} cases\n")
 
@@ -396,7 +421,7 @@ class RAGEvaluationPipeline:
         with Path(report_file).open("w", encoding="utf-8") as f:
             f.write(report_text)
 
-        print(report_text)
+        logger.info("RAG evaluation report:\n%s", report_text.rstrip())
         logger.info(f"✓ Report saved to {report_file}")
 
         # Saving detailed results
@@ -442,7 +467,7 @@ class RAGEvaluationPipeline:
         output_dir: Path,
         sample_size: int | None = None,
         k: int | None = None,
-    ) -> dict:
+    ) -> dict[str, float | int]:
         """Evaluate retrieve + rerank only: no RAGAS and no answer generation."""
         logger.info("Starting retriever-only evaluation...")
 
@@ -459,7 +484,7 @@ class RAGEvaluationPipeline:
         dataset_file: Path,
         output_dir: Path,
         sample_size: int | None = None,
-    ):
+    ) -> tuple[pd.DataFrame, dict[str, float | int]]:
         """Full cycle of RAG system evaluation"""
         logger.info("Launch of a full RAG assessment cycle...")
 
@@ -484,4 +509,16 @@ class RAGEvaluationPipeline:
 
     @staticmethod
     def contexts_match(gt_norm: str, retrieved_norm: str) -> bool:
-        return gt_norm in retrieved_norm or retrieved_norm in gt_norm
+        gt_tokens = set(re.findall(r"\w+", gt_norm.lower()))
+        retrieved_tokens = set(re.findall(r"\w+", retrieved_norm.lower()))
+        if not gt_tokens or not retrieved_tokens:
+            return False
+
+        overlap = len(gt_tokens & retrieved_tokens)
+        gt_coverage = overlap / len(gt_tokens)
+        retrieved_coverage = overlap / len(retrieved_tokens)
+        jaccard = overlap / len(gt_tokens | retrieved_tokens)
+
+        if overlap < 5:
+            return False
+        return (gt_coverage >= 0.55 and retrieved_coverage >= 0.35) or jaccard >= 0.4

@@ -10,43 +10,57 @@ from cadence_md.app.reranker import get_reranker
 from metrics.evaluation_pipeline import RAGEvaluationPipeline
 from metrics.gigachat_api_wrapper import ThrottledGigaChat, ThrottledGigaChatEmbeddings
 
-GIGACHAT_API_KEY = os.getenv("GIGACHAT_API_KEY")
+DEFAULT_PDF_DIR = Path("data/main_specialities/")
 
 
-# Init models connection
-embedder = get_embedder()
-reranker = get_reranker()
-llm = get_llm()
-
-# Init qdrant
-qdrant_manager = QdrantManager(embedder)
-qdrant_manager.setup_qdrant(data_dir=Path("data/clinical_recomendation_pdfs/"))
-
-# Init RAG graph
-rag_pipeline = RAGPipeline(llm, qdrant_manager, reranker=reranker)
-
-gigachat_llm = ThrottledGigaChat(
-    credentials=GIGACHAT_API_KEY,
-    verify_ssl_certs=False,
-    scope="GIGACHAT_API_PERS",
-    model="GigaChat-Pro",
-    temperature=0.0,
-)
-
-gigachat_embeddings = ThrottledGigaChatEmbeddings(
-    credentials=GIGACHAT_API_KEY,
-    verify_ssl_certs=False,
-    scope="GIGACHAT_API_PERS",
-    model="Embeddings",
-)
+def _positive_int(value: str) -> int:
+    """Parse a positive integer CLI argument."""
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
 
 
-# Init evaluation pipeline
-evaluation_pipeline = RAGEvaluationPipeline(
-    rag_pipeline=rag_pipeline,
-    gigachat_llm=gigachat_llm,
-    gigachat_embeddings=gigachat_embeddings,
-)
+def _existing_dir(value: str) -> Path:
+    """Parse an existing directory path for CLI."""
+    directory = Path(value)
+    if not directory.exists():
+        raise argparse.ArgumentTypeError(f"Directory does not exist: {directory}")
+    if not directory.is_dir():
+        raise argparse.ArgumentTypeError(f"Expected directory path, got file: {directory}")
+    return directory
+
+
+def build_evaluation_pipeline(pdf_dir: Path) -> RAGEvaluationPipeline:
+    """Create and initialize evaluation dependencies lazily."""
+    embedder = get_embedder()
+    reranker = get_reranker()
+    llm = get_llm()
+
+    qdrant_manager = QdrantManager(embedder)
+    qdrant_manager.setup_qdrant(data_dir=pdf_dir)
+    rag_pipeline = RAGPipeline(llm, qdrant_manager, reranker=reranker)
+
+    gigachat_api_key = os.getenv("GIGACHAT_API_KEY")
+    gigachat_llm = ThrottledGigaChat(
+        credentials=gigachat_api_key,
+        verify_ssl_certs=False,
+        scope="GIGACHAT_API_PERS",
+        model="GigaChat-Pro",
+        temperature=0.0,
+    )
+    gigachat_embeddings = ThrottledGigaChatEmbeddings(
+        credentials=gigachat_api_key,
+        verify_ssl_certs=False,
+        scope="GIGACHAT_API_PERS",
+        model="Embeddings",
+    )
+
+    return RAGEvaluationPipeline(
+        rag_pipeline=rag_pipeline,
+        gigachat_llm=gigachat_llm,
+        gigachat_embeddings=gigachat_embeddings,
+    )
 
 
 def build_metrics_arg_parser() -> argparse.ArgumentParser:
@@ -72,9 +86,15 @@ def build_metrics_arg_parser() -> argparse.ArgumentParser:
     )
     full_p.add_argument(
         "--sample-size",
-        type=int,
+        type=_positive_int,
         default=None,
         help="Optional cap on number of test cases",
+    )
+    full_p.add_argument(
+        "--pdf-dir",
+        type=_existing_dir,
+        default=DEFAULT_PDF_DIR,
+        help="Directory with source PDF files used by Qdrant setup",
     )
 
     ret_p = sub.add_parser(
@@ -95,15 +115,21 @@ def build_metrics_arg_parser() -> argparse.ArgumentParser:
     )
     ret_p.add_argument(
         "--sample-size",
-        type=int,
+        type=_positive_int,
         default=None,
         help="Optional cap on number of test cases",
     )
     ret_p.add_argument(
         "--k",
-        type=int,
+        type=_positive_int,
         default=None,
         help="K for recall@K / precision@K (default: pipeline default)",
+    )
+    ret_p.add_argument(
+        "--pdf-dir",
+        type=_existing_dir,
+        default=DEFAULT_PDF_DIR,
+        help="Directory with source PDF files used by Qdrant setup",
     )
     return parser
 
@@ -111,6 +137,7 @@ def build_metrics_arg_parser() -> argparse.ArgumentParser:
 def run_metrics_cli(argv: list[str] | None = None) -> None:
     """Parse argv and run the selected evaluation mode."""
     args = build_metrics_arg_parser().parse_args(argv)
+    evaluation_pipeline = build_evaluation_pipeline(args.pdf_dir)
     if args.mode == "full":
         evaluation_pipeline.run_full_evaluation(
             dataset_file=args.dataset_file,

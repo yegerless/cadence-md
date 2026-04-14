@@ -50,7 +50,7 @@ poetry run python commands.py <подкоманда> --help
 | `--base-url`         | —                                                   | Опционально: base URL для локальной модели                      |
 | `--load-api-key`     | вкл.                                                | Брать API-ключ из окружения                                     |
 | `--no-load-api-key`  | выкл.                                               | Отключить загрузку API-ключа из окружения                       |
-| `--temperature`      | `0.7`                                               | Температура сэмплирования                                       |
+| `--temperature`      | `0.0`                                               | Температура сэмплирования                                       |
 | `--max-context`      | `10000`                                             | Максимальная длина контекста (символы)                          |
 | `--sections-per-pdf` | `3`                                                 | Случайно выбрать до N секций на каждый исходный PDF             |
 | `--seed`             | —                                                   | Seed для воспроизводимой случайной выборки                      |
@@ -101,6 +101,7 @@ poetry run python commands.py parse-pdf \
 | `--dataset-file` | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | JSONL с вопросами для оценки |
 | `--output-dir`   | `metrics/results/`                                  | Отчёты и файлы метрик        |
 | `--sample-size`  | —                                                   | Ограничить число тест-кейсов |
+| `--pdf-dir`      | `data/main_specialities/`                           | Папка PDF для setup Qdrant   |
 
 Пример:
 

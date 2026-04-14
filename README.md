@@ -42,33 +42,6 @@ poetry run python commands.py --help
 poetry run python commands.py <subcommand> --help
 ```
 
-### `generate-qa`
-
-Builds a synthetic QA dataset from a JSONL of clinical sections (parser output).
-
-| Option               | Default                                             | Description                                                  |
-| -------------------- | --------------------------------------------------- | ------------------------------------------------------------ |
-| `--sections-file`    | `data/clinical_sections.jsonl`                      | Input sections JSONL                                         |
-| `--output-file`      | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Output QA JSONL                                              |
-| `--model`            | `GigaChat-2-Max`                                    | LLM name (e.g. `GigaChat`, `GigaChat-2-Max`, `GigaChat-pro`) |
-| `--base-url`         | —                                                   | Optional base URL for a local model                          |
-| `--load-api-key`     | on                                                  | Load API key from the environment                            |
-| `--no-load-api-key`  | off                                                 | Disable loading API key from the environment                 |
-| `--temperature`      | `0.7`                                               | Sampling temperature                                         |
-| `--max-context`      | `10000`                                             | Max context length (characters)                              |
-| `--sections-per-pdf` | `3`                                                 | Randomly sample up to N sections from each source PDF        |
-| `--seed`             | —                                                   | Random seed for reproducible section sampling                |
-
-Example:
-
-```bash
-poetry run python commands.py generate-qa --sections-file data/clinical_sections.jsonl
-```
-
-Requires LLM credentials (e.g. `GIGACHAT_API_KEY`) as configured for the QA
-generator. The command fails if `--output-file` already exists to avoid
-accidental appends to stale datasets.
-
 ### `parse-pdf`
 
 Parses a directory of clinical guideline PDFs into a JSONL with extracted
@@ -95,6 +68,33 @@ poetry run python commands.py parse-pdf \
   --max-files 5
 ```
 
+### `generate-qa`
+
+Builds a synthetic QA dataset from a JSONL of clinical sections (parser output).
+
+| Option               | Default                                             | Description                                                  |
+| -------------------- | --------------------------------------------------- | ------------------------------------------------------------ |
+| `--sections-file`    | `data/clinical_sections.jsonl`                      | Input sections JSONL                                         |
+| `--output-file`      | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Output QA JSONL                                              |
+| `--model`            | `GigaChat-2-Max`                                    | LLM name (e.g. `GigaChat`, `GigaChat-2-Max`, `GigaChat-pro`) |
+| `--base-url`         | —                                                   | Optional base URL for a local model                          |
+| `--load-api-key`     | on                                                  | Load API key from the environment                            |
+| `--no-load-api-key`  | off                                                 | Disable loading API key from the environment                 |
+| `--temperature`      | `0.0`                                               | Sampling temperature                                         |
+| `--max-context`      | `10000`                                             | Max context length (characters)                              |
+| `--sections-per-pdf` | `3`                                                 | Randomly sample up to N sections from each source PDF        |
+| `--seed`             | —                                                   | Random seed for reproducible section sampling                |
+
+Example:
+
+```bash
+poetry run python commands.py generate-qa --sections-file data/clinical_sections.jsonl
+```
+
+Requires LLM credentials (e.g. `GIGACHAT_API_KEY`) as configured for the QA
+generator. The command fails if `--output-file` already exists to avoid
+accidental appends to stale datasets.
+
 ### `metrics-eval-full`
 
 Full RAG evaluation: answer generation, RAGAS metrics, retrieval metrics, and
@@ -105,6 +105,7 @@ reports under the output directory.
 | `--dataset-file` | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Evaluation QA JSONL            |
 | `--output-dir`   | `metrics/results/`                                  | Reports and metric files       |
 | `--sample-size`  | —                                                   | Limit the number of test cases |
+| `--pdf-dir`      | `data/main_specialities/`                           | PDF directory for Qdrant setup |
 
 Example:
 
