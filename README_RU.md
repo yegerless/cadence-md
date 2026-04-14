@@ -42,15 +42,18 @@ poetry run python commands.py <подкоманда> --help
 Генерация синтетического QA-датасета из JSONL с клиническими секциями (результат
 парсера).
 
-| Опция             | По умолчанию                                        | Описание                                                        |
-| ----------------- | --------------------------------------------------- | --------------------------------------------------------------- |
-| `--sections-file` | `data/clinical_sections.jsonl`                      | Входной JSONL секций                                            |
-| `--output-file`   | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Выходной QA JSONL                                               |
-| `--model`         | `GigaChat-2-Max`                                    | Имя LLM (например `GigaChat`, `GigaChat-2-Max`, `GigaChat-pro`) |
-| `--base-url`      | —                                                   | Опционально: base URL для локальной модели                      |
-| `--load-api-key`  | вкл.                                                | Брать API-ключ из окружения                                     |
-| `--temperature`   | `0.7`                                               | Температура сэмплирования                                       |
-| `--max-context`   | `10000`                                             | Максимальная длина контекста (символы)                          |
+| Опция                | По умолчанию                                        | Описание                                                        |
+| -------------------- | --------------------------------------------------- | --------------------------------------------------------------- |
+| `--sections-file`    | `data/clinical_sections.jsonl`                      | Входной JSONL секций                                            |
+| `--output-file`      | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Выходной QA JSONL                                               |
+| `--model`            | `GigaChat-2-Max`                                    | Имя LLM (например `GigaChat`, `GigaChat-2-Max`, `GigaChat-pro`) |
+| `--base-url`         | —                                                   | Опционально: base URL для локальной модели                      |
+| `--load-api-key`     | вкл.                                                | Брать API-ключ из окружения                                     |
+| `--no-load-api-key`  | выкл.                                               | Отключить загрузку API-ключа из окружения                       |
+| `--temperature`      | `0.7`                                               | Температура сэмплирования                                       |
+| `--max-context`      | `10000`                                             | Максимальная длина контекста (символы)                          |
+| `--sections-per-pdf` | `3`                                                 | Случайно выбрать до N секций на каждый исходный PDF             |
+| `--seed`             | —                                                   | Seed для воспроизводимой случайной выборки                      |
 
 Пример:
 
@@ -59,7 +62,34 @@ poetry run python commands.py generate-qa --sections-file data/clinical_sections
 ```
 
 Нужны учётные данные LLM (например `GIGACHAT_API_KEY`), как настроено у
-генератора QA.
+генератора QA. Команда завершается с ошибкой, если файл `--output-file` уже
+существует.
+
+### `parse-pdf`
+
+Парсит директорию с клиническими рекомендациями в PDF и сохраняет результат в
+JSONL с секциями (`ClinicalSection`).
+
+| Опция           | По умолчанию | Описание                                     |
+| --------------- | ------------ | -------------------------------------------- |
+| `--pdf-dir`     | —            | Входная директория с файлами `*.pdf`         |
+| `--output-file` | —            | Выходной JSONL-файл с распарсенными секциями |
+| `--max-files`   | —            | Опционально: ограничить число входных PDF    |
+
+Примеры:
+
+```bash
+poetry run python commands.py parse-pdf \
+  --pdf-dir data/main_specialities \
+  --output-file data/clinical_sections.jsonl
+```
+
+```bash
+poetry run python commands.py parse-pdf \
+  --pdf-dir data/main_specialities \
+  --output-file data/clinical_sections_sample.jsonl \
+  --max-files 5
+```
 
 ### `metrics-eval-full`
 

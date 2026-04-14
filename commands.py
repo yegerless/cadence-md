@@ -1,5 +1,11 @@
 import argparse
+import json
+import logging
 from pathlib import Path
+
+from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 
 def _run_metrics_cli_argv(argv: list[str]) -> None:
@@ -9,7 +15,38 @@ def _run_metrics_cli_argv(argv: list[str]) -> None:
     run_metrics_cli(argv)
 
 
+def _run_parse_pdf(
+    pdf_dir: Path,
+    output_file: Path,
+    max_files: int | None,
+) -> None:
+    """Parse clinical guideline PDFs and store sections JSONL."""
+    from cadence_md.app.pdf_parser import ClinicalGuidelinesParser  # noqa: PLC0415
+
+    parser = ClinicalGuidelinesParser()
+    pdf_files = sorted(pdf_dir.glob("*.pdf"))
+    if max_files is not None:
+        pdf_files = pdf_files[:max_files]
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    sections = []
+    for pdf_file in tqdm(pdf_files, desc="Parsing PDFs", unit="file"):
+        parsed = parser.parse_pdf(pdf_file)
+        if parsed:
+            sections.extend(parsed)
+
+    with output_file.open("w", encoding="utf-8") as f:
+        for section in sections:
+            f.write(json.dumps(section.to_dict(), ensure_ascii=False) + "\n")
+
+    logger.info(
+        "Parsed %s files, saved %s sections to %s", len(pdf_files), len(sections), output_file
+    )
+
+
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(
         description="Project CLI",
     )
@@ -47,14 +84,14 @@ def main():
     )
     gen_parser.add_argument(
         "--load-api-key",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help="Load api key from environment if True",
+        help="Load API key from environment",
     )
     gen_parser.add_argument(
         "--temperature",
         type=float,
-        default=0.7,
+        default=0,
         help="Temperature for LLM answer generation (0.0-1.0)",
     )
     gen_parser.add_argument(
@@ -62,6 +99,18 @@ def main():
         type=int,
         default=10000,
         help="Maximum context length in characters",
+    )
+    gen_parser.add_argument(
+        "--sections-per-pdf",
+        type=int,
+        default=3,
+        help="Randomly sample up to N sections from each source PDF",
+    )
+    gen_parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional random seed for reproducible sampling",
     )
 
     # command metrics-eval-full
@@ -118,6 +167,30 @@ def main():
         help="K for recall@K / precision@K",
     )
 
+    # command parse-pdf
+    parse_pdf = subparsers.add_parser(
+        "parse-pdf",
+        help="Parse clinical guideline PDFs into sections JSONL",
+    )
+    parse_pdf.add_argument(
+        "--pdf-dir",
+        type=Path,
+        required=True,
+        help="Directory with source PDF files",
+    )
+    parse_pdf.add_argument(
+        "--output-file",
+        type=Path,
+        required=True,
+        help="Output JSONL file for parsed sections",
+    )
+    parse_pdf.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        help="Optional cap on number of PDF files to parse",
+    )
+
     args = parser.parse_args()
 
     if args.command == "generate-qa":
@@ -125,15 +198,24 @@ def main():
             generate_qa_dataset,
         )
 
-        generate_qa_dataset(
-            sections_file=args.sections_file,
-            output_file=args.output_file,
-            model=args.model,
-            base_url=args.base_url,
-            load_api_key=args.load_api_key,
-            temperature=args.temperature,
-            max_context=args.max_context,
-        )
+        try:
+            generate_qa_dataset(
+                sections_file=args.sections_file,
+                output_file=args.output_file,
+                model=args.model,
+                base_url=args.base_url,
+                load_api_key=args.load_api_key,
+                temperature=args.temperature,
+                max_context=args.max_context,
+                sections_per_pdf=args.sections_per_pdf,
+                seed=args.seed,
+            )
+        except FileExistsError as error:
+            logger.error(
+                "Output file already exists: %s. Choose a different --output-file path.",
+                error,
+            )
+            raise SystemExit(2) from error
     elif args.command == "metrics-eval-full":
         argv: list[str] = [
             "full",
@@ -158,6 +240,12 @@ def main():
         if args.k is not None:
             argv_ret += ["--k", str(args.k)]
         _run_metrics_cli_argv(argv_ret)
+    elif args.command == "parse-pdf":
+        _run_parse_pdf(
+            pdf_dir=args.pdf_dir,
+            output_file=args.output_file,
+            max_files=args.max_files,
+        )
     else:
         parser.print_help()
 
