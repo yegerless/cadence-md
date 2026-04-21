@@ -145,6 +145,12 @@ def main():
         help="Optional cap on number of test cases",
     )
     metrics_full.add_argument(
+        "--k",
+        type=_positive_int,
+        default=5,
+        help="K for recall@K / precision@K",
+    )
+    metrics_full.add_argument(
         "--pdf-dir",
         type=Path,
         default=Path("data/main_specialities/"),
@@ -248,6 +254,8 @@ def main():
         ]
         if args.sample_size is not None:
             argv += ["--sample-size", str(args.sample_size)]
+        if args.k is not None:
+            argv += ["--k", str(args.k)]
         _run_metrics_cli_argv(argv)
     elif args.command == "metrics-eval-retriever":
         argv_ret: list[str] = [

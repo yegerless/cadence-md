@@ -91,6 +91,12 @@ def build_metrics_arg_parser() -> argparse.ArgumentParser:
         help="Optional cap on number of test cases",
     )
     full_p.add_argument(
+        "--k",
+        type=_positive_int,
+        default=5,
+        help="K for recall@K / precision@K (default: 5)",
+    )
+    full_p.add_argument(
         "--pdf-dir",
         type=_existing_dir,
         default=DEFAULT_PDF_DIR,
@@ -143,6 +149,7 @@ def run_metrics_cli(argv: list[str] | None = None) -> None:
             dataset_file=args.dataset_file,
             output_dir=args.output_dir,
             sample_size=args.sample_size,
+            k=args.k,
         )
     else:
         evaluation_pipeline.run_retriever_evaluation(

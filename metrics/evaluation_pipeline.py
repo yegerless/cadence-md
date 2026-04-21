@@ -484,6 +484,7 @@ class RAGEvaluationPipeline:
         dataset_file: Path,
         output_dir: Path,
         sample_size: int | None = None,
+        k: int = 5,
     ) -> tuple[pd.DataFrame, dict[str, float | int]]:
         """Full cycle of RAG system evaluation"""
         logger.info("Launch of a full RAG assessment cycle...")
@@ -498,7 +499,7 @@ class RAGEvaluationPipeline:
         ragas_df = self.evaluate_with_ragas(results)
 
         # Retriever metrics
-        retrieval_metrics = self.calculate_retrieval_metrics(results)
+        retrieval_metrics = self.calculate_retrieval_metrics(results, k=k)
 
         # Generating a report
         self.generate_report(ragas_df, retrieval_metrics, output_dir)

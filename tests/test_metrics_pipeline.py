@@ -126,7 +126,26 @@ def test_metrics_parser_accepts_valid_full_args(tmp_path: Path) -> None:
             str(tmp_path),
             "--sample-size",
             "10",
+            "--k",
+            "7",
         ]
     )
     assert args.mode == "full"
     assert args.sample_size == 10
+    assert args.k == 7
+
+
+def test_metrics_parser_full_uses_default_k(tmp_path: Path) -> None:
+    parser = build_metrics_arg_parser()
+    args = parser.parse_args(
+        [
+            "full",
+            "--dataset-file",
+            "data/metrics_evaluation_datasets/qa_dataset.jsonl",
+            "--output-dir",
+            str(tmp_path),
+            "--pdf-dir",
+            str(tmp_path),
+        ]
+    )
+    assert args.k == 5

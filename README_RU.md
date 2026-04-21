@@ -101,6 +101,7 @@ poetry run python commands.py parse-pdf \
 | `--dataset-file` | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | JSONL с вопросами для оценки |
 | `--output-dir`   | `metrics/results/`                                  | Отчёты и файлы метрик        |
 | `--sample-size`  | —                                                   | Ограничить число тест-кейсов |
+| `--k`            | `5`                                                 | K для recall@K / precision@K |
 | `--pdf-dir`      | `data/main_specialities/`                           | Папка PDF для setup Qdrant   |
 
 Пример:

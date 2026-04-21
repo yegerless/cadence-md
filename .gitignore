@@ -16,6 +16,7 @@ data/
 *.json
 *.jsonl
 test_data/
+metrics/results/
 
 # Distribution / packaging
 .Python

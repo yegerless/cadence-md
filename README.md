@@ -105,6 +105,7 @@ reports under the output directory.
 | `--dataset-file` | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Evaluation QA JSONL            |
 | `--output-dir`   | `metrics/results/`                                  | Reports and metric files       |
 | `--sample-size`  | —                                                   | Limit the number of test cases |
+| `--k`            | `5`                                                 | K for recall@K / precision@K   |
 | `--pdf-dir`      | `data/main_specialities/`                           | PDF directory for Qdrant setup |
 
 Example:
