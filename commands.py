@@ -150,12 +150,6 @@ def main():
         default=5,
         help="K for recall@K / precision@K",
     )
-    metrics_full.add_argument(
-        "--pdf-dir",
-        type=Path,
-        default=Path("data/main_specialities/"),
-        help="Directory with source PDF files used by Qdrant setup",
-    )
 
     # command metrics-eval-retriever
     metrics_ret = subparsers.add_parser(
@@ -185,12 +179,6 @@ def main():
         type=_positive_int,
         default=None,
         help="K for recall@K / precision@K",
-    )
-    metrics_ret.add_argument(
-        "--pdf-dir",
-        type=Path,
-        default=Path("data/main_specialities/"),
-        help="Directory with source PDF files used by Qdrant setup",
     )
 
     # command parse-pdf

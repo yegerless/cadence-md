@@ -4,25 +4,36 @@ from langchain_core.documents import Document
 from openai import OpenAI
 
 from cadence_md.app.enums import RerankerAggregationStrategy
-from cadence_md.app.settings import settings
 
 
 def _safe_vec(vec: Iterable[float]) -> list[float]:
+    """
+    Safe vector conversion.
+    """
     v = list(vec)
     return v or [0.0]
 
 
 def _l2_norm(vec: Iterable[float]) -> float:
+    """
+    L2 norm of a vector.
+    """
     v = _safe_vec(vec)
     return float(sum(x * x for x in v) ** 0.5)
 
 
 def _mean(vec: Iterable[float]) -> float:
+    """
+    Mean of a vector.
+    """
     v = _safe_vec(vec)
     return float(sum(v) / len(v))
 
 
 def _max_abs(vec: Iterable[float]) -> float:
+    """
+    Max absolute value of a vector.
+    """
     v = _safe_vec(vec)
     return float(max((abs(x) for x in v), default=0.0))
 
@@ -46,20 +57,45 @@ def aggregate_embedding(
 
 
 class RerankerWrapper:
-    """ """
+    """
+    Wrapper for the OpenAI reranker API.
+    Reranks a list of documents based on a query.
+
+    Args:
+        model: The model name to use.
+        instruction: Optional text prefixed to each embedding input (after
+            stripping whitespace), before the ``query:`` / ``passage:`` block.
+        top_k: The number of documents to return.
+        return_score: Whether to return the score.
+        embedding_agregation_strategy: The aggregation strategy to use.
+        base_url: The base URL of the model inference server.
+        api_key: The API key to use.
+    """
+
+    @staticmethod
+    def _normalize_instruction(instruction: str | None) -> str | None:
+        if instruction is None:
+            return None
+        stripped = instruction.strip()
+        return stripped or None
+
+    @staticmethod
+    def _query_passage_body(query: str, passage: str) -> str:
+        return f"query: {query}\npassage: {passage}"
 
     def __init__(
         self,
         model: str,
         instruction: str | None,
-        api_key: str,
-        base_url: str,
+        top_k: int,
+        return_score: bool,
         embedding_agregation_strategy: RerankerAggregationStrategy,
-        top_k: int | None = None,
-        return_score: bool = True,
+        base_url: str,
+        api_key: str,
     ):
         self.model = model
         self.instruction = instruction
+        self._instruction_for_prompt = self._normalize_instruction(instruction)
         self.top_k = top_k
         self.return_score = return_score
         self.embedding_agregation_strategy = embedding_agregation_strategy
@@ -68,13 +104,19 @@ class RerankerWrapper:
             api_key=api_key,
         )
 
+    def _format_rerank_input(self, query: str, passage: str) -> str:
+        body = self._query_passage_body(query, passage)
+        prefix = self._instruction_for_prompt
+        if prefix:
+            return f"{prefix}\n{body}"
+        return body
+
     def _build_inputs(
         self,
         query: str,
         documents: list[Document],
     ) -> list[str]:
-        # TODO: refactor to versality input with optional instruction part
-        return [(f"query: {query}\npassage: {doc.page_content}") for doc in documents]
+        return [self._format_rerank_input(query, doc.page_content) for doc in documents]
 
     def encode_pairs(
         self,
@@ -120,15 +162,36 @@ class RerankerWrapper:
         return [(doc, None) for doc, _ in pairs]
 
 
-def get_reranker() -> RerankerWrapper:
-    """ """
+def get_reranker(
+    model: str,
+    instruction: str | None,
+    top_k: int,
+    return_score: bool,
+    embedding_agregation_strategy: RerankerAggregationStrategy,
+    base_url: str,
+    api_key: str,
+) -> RerankerWrapper:
+    """
+    Get a RerankerWrapper instance.
+
+    Args:
+        model: The model name to use.
+        instruction: Optional per-input prefix for the embedding API.
+        top_k: The number of documents to return.
+        return_score: Whether to return the score.
+        embedding_agregation_strategy: The aggregation strategy to use.
+        base_url: The base URL of the model inference server.
+        api_key: The API key to use.
+    Returns:
+        RerankerWrapper: An instance of the RerankerWrapper class.
+    """
 
     return RerankerWrapper(
-        model=settings.rag_config.reranker.model_name,
-        instruction=settings.rag_config.reranker.instruction,
-        top_k=settings.rag_config.reranker.top_k,
-        return_score=settings.rag_config.reranker.return_score,
-        embedding_agregation_strategy=settings.rag_config.reranker.embedding_agregation_strategy,
-        base_url=settings.MODEL_INFERENCE_BASE_URL,
-        api_key=settings.MODEL_INFERENCE_API_KEY,
+        model=model,
+        instruction=instruction,
+        top_k=top_k,
+        return_score=return_score,
+        embedding_agregation_strategy=embedding_agregation_strategy,
+        base_url=base_url,
+        api_key=api_key,
     )

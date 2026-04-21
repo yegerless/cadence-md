@@ -4,8 +4,16 @@ from unittest.mock import MagicMock
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
+from cadence_md.app.settings import settings as app_settings
+
 # Add parent directory to path for imports
 sys.path.insert(0, "..")
+
+
+@pytest.fixture
+def settings():
+    """Глобальный singleton настроек (тот же объект, что в cadence_md.app.settings)."""
+    yield app_settings
 
 
 @pytest.fixture

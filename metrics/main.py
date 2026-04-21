@@ -7,6 +7,7 @@ from cadence_md.app.llm import get_llm
 from cadence_md.app.qdrant import QdrantManager
 from cadence_md.app.rag import RAGPipeline
 from cadence_md.app.reranker import get_reranker
+from cadence_md.app.settings import settings
 from metrics.evaluation_pipeline import RAGEvaluationPipeline
 from metrics.gigachat_api_wrapper import ThrottledGigaChat, ThrottledGigaChatEmbeddings
 
@@ -31,14 +32,52 @@ def _existing_dir(value: str) -> Path:
     return directory
 
 
-def build_evaluation_pipeline(pdf_dir: Path) -> RAGEvaluationPipeline:
+def build_evaluation_pipeline() -> RAGEvaluationPipeline:
     """Create and initialize evaluation dependencies lazily."""
-    embedder = get_embedder()
-    reranker = get_reranker()
-    llm = get_llm()
-
-    qdrant_manager = QdrantManager(embedder)
-    qdrant_manager.setup_qdrant(data_dir=pdf_dir)
+    embedder = get_embedder(
+        model=settings.rag_config.embedding.model_name,
+        normalize=settings.rag_config.embedding.normalize_embeddings,
+        return_score=settings.rag_config.embedding.return_score,
+        base_url=settings.MODEL_INFERENCE_BASE_URL,
+        api_key=settings.MODEL_INFERENCE_API_KEY,
+    )
+    reranker = get_reranker(
+        model=settings.rag_config.reranker.model_name,
+        instruction=settings.rag_config.reranker.instruction,
+        top_k=settings.rag_config.reranker.top_k,
+        return_score=settings.rag_config.reranker.return_score,
+        embedding_agregation_strategy=settings.rag_config.reranker.embedding_agregation_strategy,
+        base_url=settings.MODEL_INFERENCE_BASE_URL,
+        api_key=settings.MODEL_INFERENCE_API_KEY,
+    )
+    llm = get_llm(
+        model=settings.rag_config.llm.model_name,
+        base_url=settings.MODEL_INFERENCE_BASE_URL,
+        api_key=settings.MODEL_INFERENCE_API_KEY,
+        temperature=settings.rag_config.llm.temperature,
+        max_completion_tokens=settings.rag_config.llm.max_new_tokens,
+        top_p=settings.rag_config.llm.top_p,
+        streaming=settings.rag_config.llm.streaming,
+    )
+    qdrant_manager = QdrantManager(
+        data_dir=settings.rag_config.qdrant_config.data_dir,
+        chunking_cfg=settings.rag_config.chunking,
+        retrieval_cfg=settings.rag_config.retrieval,
+        qdrant_cfg=settings.rag_config.qdrant_config,
+        url=settings.QDRANT_BASE_URL,
+        api_key=settings.QDRANT_API_KEY,
+        https=settings.QDRANT_HTTPS,
+        embedder=embedder,
+        collection_name=settings.rag_config.qdrant_config.collection_name,
+        uploading_batch_size=settings.rag_config.qdrant_config.uploading_batch_size,
+        sparse_model=settings.rag_config.qdrant_config.sparse_model,
+        search_mode=settings.rag_config.retrieval.search_mode,
+        fusion_method=settings.rag_config.retrieval.fusion_method,
+        sparse_top_k=settings.rag_config.retrieval.sparse_top_k,
+        dense_top_k=settings.rag_config.retrieval.dense_top_k,
+        hybrid_top_k=settings.rag_config.retrieval.hybrid_top_k,
+    )
+    qdrant_manager.setup_qdrant()
     rag_pipeline = RAGPipeline(llm, qdrant_manager, reranker=reranker)
 
     gigachat_api_key = os.getenv("GIGACHAT_API_KEY")
@@ -68,6 +107,7 @@ def build_metrics_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="RAG evaluation (metrics/)")
     sub = parser.add_subparsers(dest="mode", required=True)
 
+    # Full evaluation pipeline (retrieval + rerank + generator)
     full_p = sub.add_parser(
         "full",
         help="Full evaluation: RAGAS + retrieval metrics + report",
@@ -96,13 +136,8 @@ def build_metrics_arg_parser() -> argparse.ArgumentParser:
         default=5,
         help="K for recall@K / precision@K (default: 5)",
     )
-    full_p.add_argument(
-        "--pdf-dir",
-        type=_existing_dir,
-        default=DEFAULT_PDF_DIR,
-        help="Directory with source PDF files used by Qdrant setup",
-    )
 
+    # Retriever-only evaluation (no RAGAS / no answer generation)
     ret_p = sub.add_parser(
         "retriever",
         help="Retriever-only evaluation (no RAGAS / no answer generation)",
@@ -131,19 +166,13 @@ def build_metrics_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="K for recall@K / precision@K (default: pipeline default)",
     )
-    ret_p.add_argument(
-        "--pdf-dir",
-        type=_existing_dir,
-        default=DEFAULT_PDF_DIR,
-        help="Directory with source PDF files used by Qdrant setup",
-    )
     return parser
 
 
 def run_metrics_cli(argv: list[str] | None = None) -> None:
     """Parse argv and run the selected evaluation mode."""
     args = build_metrics_arg_parser().parse_args(argv)
-    evaluation_pipeline = build_evaluation_pipeline(args.pdf_dir)
+    evaluation_pipeline = build_evaluation_pipeline()
     if args.mode == "full":
         evaluation_pipeline.run_full_evaluation(
             dataset_file=args.dataset_file,

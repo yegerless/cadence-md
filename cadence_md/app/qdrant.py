@@ -4,6 +4,7 @@ from pathlib import Path
 from fastembed import SparseTextEmbedding
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from pydantic import BaseModel
 from qdrant_client import QdrantClient
 from qdrant_client import models as qdrant_models
 from qdrant_client.models import SparseVector
@@ -12,7 +13,6 @@ from tqdm import tqdm
 from cadence_md.app.embedder import EmbedderWrapper
 from cadence_md.app.enums import QdrantFusionMethod, QdrantVectorType, VectorSearchType
 from cadence_md.app.pdf_parser import ClinicalGuidelinesParser, ClinicalSection
-from cadence_md.app.settings import settings
 
 # Configure logging for this module
 logger = logging.getLogger(__name__)
@@ -36,7 +36,25 @@ class QdrantManager:
         sparse_model: FastEmbed BM25 sparse embedding model
     """
 
-    def __init__(self, embedder: EmbedderWrapper) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        chunking_cfg: BaseModel,
+        retrieval_cfg: BaseModel,
+        qdrant_cfg: BaseModel,
+        url: str,
+        api_key: str,
+        https: bool,
+        embedder: EmbedderWrapper,
+        collection_name: str,
+        uploading_batch_size: int,
+        sparse_model: SparseTextEmbedding,
+        search_mode: VectorSearchType,
+        fusion_method: QdrantFusionMethod,
+        sparse_top_k: int,
+        dense_top_k: int,
+        hybrid_top_k: int,
+    ) -> None:
         """
         Initialize the QdrantManager with configuration and embedder.
 
@@ -47,37 +65,36 @@ class QdrantManager:
             RuntimeError: If connection to Qdrant database cannot be established
         """
         # Use config if provided, otherwise use global settings
+        self.data_dir = data_dir
 
-        self.chunking_cfg = settings.rag_config.chunking
-        self.retrieval_cfg = settings.rag_config.retrieval
-        self.qdrant_cfg = settings.rag_config.qdrant_config
+        self.chunking_cfg = chunking_cfg
+        self.retrieval_cfg = retrieval_cfg
+        self.qdrant_cfg = qdrant_cfg
 
         try:
             self.qdrant_client = QdrantClient(
-                url=settings.QDRANT_BASE_URL,
-                api_key=settings.QDRANT_API_KEY,
-                https=settings.QDRANT_HTTPS,
+                url=url,
+                api_key=api_key,
+                https=https,
             )
         except Exception as e:
-            raise RuntimeError(
-                f"Cannot connect to Qdrant at {settings.QDRANT_BASE_URL}: {e}"
-            ) from e
+            raise RuntimeError(f"Cannot connect to Qdrant at {url}: {e}") from e
 
         # dense-embedder
         self.embedder = embedder
 
-        self._collection_name = self.qdrant_cfg.collection_name
-        self.uploading_batch_size = self.qdrant_cfg.uploading_batch_size
+        self._collection_name = collection_name
+        self.uploading_batch_size = uploading_batch_size
 
         # sparse BM25-encoder with FastEmbed
-        self.sparse_model: SparseTextEmbedding = SparseTextEmbedding(model_name="Qdrant/bm25")
+        self.sparse_model = sparse_model
 
         # retrieve config
-        self.search_mode: str = self.retrieval_cfg.search_mode
-        self.fusion_method: str = self.retrieval_cfg.fusion_method
-        self.sparse_top_k: int = self.retrieval_cfg.sparse_top_k
-        self.dense_top_k: int = self.retrieval_cfg.dense_top_k
-        self.hybrid_top_k: int = self.retrieval_cfg.hybrid_top_k
+        self.search_mode = search_mode
+        self.fusion_method = fusion_method
+        self.sparse_top_k = sparse_top_k
+        self.dense_top_k = dense_top_k
+        self.hybrid_top_k = hybrid_top_k
 
         logger.info("QdrantManager initialized successfully")
 
@@ -321,23 +338,20 @@ class QdrantManager:
 
         logger.info("Indexed all chunks into Qdrant (dense + sparse BM25)")
 
-    def setup_qdrant(self, data_dir: Path) -> None:
+    def setup_qdrant(self) -> None:
         """
         Set up Qdrant collection for RAG operations.
 
         If rebuild_collection is enabled, deletes existing collection
         and re-indexes all documents. Otherwise, uses the existing
         collection without modifications.
-
-        Args:
-            data_dir: Path to directory containing PDF files for indexing
         """
         logger.info("Setting up Qdrant database for RAG operations")
 
         if self.qdrant_cfg.rebuild_collection:
             logger.info(f"Rebuilding collection '{self._collection_name}'")
             self._create_collection()
-            self._index_chunks(data_dir)
+            self._index_chunks(self.data_dir)
         else:
             logger.info(
                 f"Using existing collection '{self._collection_name}'; FastEmbed BM25 is stateless"

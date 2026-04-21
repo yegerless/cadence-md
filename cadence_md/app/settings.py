@@ -1,4 +1,7 @@
-from pydantic import BaseModel, Field
+from pathlib import Path
+
+from fastembed import SparseTextEmbedding
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from qdrant_client import models as qdrant_models
 
@@ -8,18 +11,24 @@ from cadence_md.app.enums import QdrantFusionMethod, RerankerAggregationStrategy
 class ChunkConfig(BaseModel):
     """Text chunking settings for RAG"""
 
-    chunk_size: int = 1024
+    chunk_size: int = 512
     chunk_overlap: int = 256
 
 
 class QdrantConfig(BaseModel):
     """Qdrant connection settings"""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    data_dir: Path = Path("test_data/")
     collection_name: str = "clinical_recs"
-    rebuild_collection: bool = False
+    rebuild_collection: bool = True
     vector_size: int = 1024
     distance: qdrant_models.Distance = qdrant_models.Distance.COSINE
     uploading_batch_size: int = 256
+    sparse_model: SparseTextEmbedding = Field(
+        default_factory=lambda: SparseTextEmbedding(model_name="Qdrant/bm25")
+    )
 
 
 class EmbeddingConfig(BaseModel):
@@ -35,7 +44,7 @@ class RerankerConfig(BaseModel):
 
     model_name: str = "text-embedding-bge-reranker-v2-m3"
     instruction: str | None = None
-    embedding_agregation_strategy: RerankerAggregationStrategy = RerankerAggregationStrategy.MAX
+    embedding_agregation_strategy: RerankerAggregationStrategy = RerankerAggregationStrategy.MEAN
     return_score: bool = False
     top_k: int = 5
 
@@ -43,7 +52,7 @@ class RerankerConfig(BaseModel):
 class RetrievalConfig(BaseModel):
     """Retrieval settings"""
 
-    search_mode: VectorSearchType = VectorSearchType.DENSE
+    search_mode: VectorSearchType = VectorSearchType.HYBRID
     fusion_method: QdrantFusionMethod = QdrantFusionMethod.RRF
     sparse_top_k: int = 20
     dense_top_k: int = 20
@@ -57,6 +66,7 @@ class LLMConfig(BaseModel):
     max_new_tokens: int = 512
     temperature: float = 0.5
     top_p: float = 0.8
+    streaming: bool = False
 
 
 class RAGConfig(BaseModel):
@@ -82,6 +92,7 @@ class Settings(BaseSettings):
     MODEL_INFERENCE_BASE_URL: str = "http://localhost:1234/v1"
     MODEL_INFERENCE_API_KEY: str = "lm-studio"
 
+    # RAG configuration
     rag_config: RAGConfig = Field(
         default_factory=lambda: RAGConfig(
             chunking=ChunkConfig(),

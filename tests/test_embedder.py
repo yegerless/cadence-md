@@ -458,18 +458,30 @@ class TestL2Normalize:
 class TestGetEmbedder:
     """Тесты функции get_embedder"""
 
-    def test_get_embedder_returns_correct_type(self, mock_openai_client):
+    def test_get_embedder_returns_correct_type(self, mock_openai_client, settings):
         """Проверяет тип возвращаемого объекта"""
 
-        result = get_embedder()
+        result = get_embedder(
+            model=settings.rag_config.embedding.model_name,
+            normalize=settings.rag_config.embedding.normalize_embeddings,
+            return_score=settings.rag_config.embedding.return_score,
+            base_url=settings.MODEL_INFERENCE_BASE_URL,
+            api_key=settings.MODEL_INFERENCE_API_KEY,
+        )
 
         assert isinstance(result, EmbedderWrapper)
 
-    def test_get_embedder_uses_settings(self, mock_openai_client):
+    def test_get_embedder_uses_settings(self, mock_openai_client, settings):
         """Проверяет использование настроек"""
 
-        embedder = get_embedder()
+        embedder = get_embedder(
+            model=settings.rag_config.embedding.model_name,
+            normalize=settings.rag_config.embedding.normalize_embeddings,
+            return_score=settings.rag_config.embedding.return_score,
+            base_url=settings.MODEL_INFERENCE_BASE_URL,
+            api_key=settings.MODEL_INFERENCE_API_KEY,
+        )
 
-        assert embedder.model == "text-embedding-bge-m3"
-        assert embedder.normalize is True
-        assert embedder.return_score is False
+        assert embedder.model == settings.rag_config.embedding.model_name
+        assert embedder.normalize == settings.rag_config.embedding.normalize_embeddings
+        assert embedder.return_score == settings.rag_config.embedding.return_score

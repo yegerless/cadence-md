@@ -23,22 +23,30 @@ class SectionType(StrEnum):
 
 
 class RerankerAggregationStrategy(StrEnum):
+    """Aggregation strategies for reranker"""
+
     L2_NORM = "l2_norm"
     MEAN = "mean"
     MAX = "max"
 
 
 class QdrantVectorType(StrEnum):
+    """Types of Qdrant vector types"""
+
     DENSE = "dense"
     SPARSE = "sparse"
 
 
 class QdrantFusionMethod(StrEnum):
+    """Types of Qdrant fusion methods"""
+
     RRF = "rrf"
     DBSF = "dbsf"
 
 
 class VectorSearchType(StrEnum):
+    """Types of vector search types"""
+
     DENSE = "dense"
     SPARSE = "sparse"
     HYBRID = "hybrid"

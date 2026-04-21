@@ -105,8 +105,6 @@ def test_metrics_parser_rejects_non_positive_k(tmp_path: Path) -> None:
                 "data/metrics_evaluation_datasets/qa_dataset.jsonl",
                 "--output-dir",
                 str(tmp_path),
-                "--pdf-dir",
-                str(tmp_path),
                 "--k",
                 "0",
             ]
@@ -121,8 +119,6 @@ def test_metrics_parser_accepts_valid_full_args(tmp_path: Path) -> None:
             "--dataset-file",
             "data/metrics_evaluation_datasets/qa_dataset.jsonl",
             "--output-dir",
-            str(tmp_path),
-            "--pdf-dir",
             str(tmp_path),
             "--sample-size",
             "10",
@@ -143,8 +139,6 @@ def test_metrics_parser_full_uses_default_k(tmp_path: Path) -> None:
             "--dataset-file",
             "data/metrics_evaluation_datasets/qa_dataset.jsonl",
             "--output-dir",
-            str(tmp_path),
-            "--pdf-dir",
             str(tmp_path),
         ]
     )
