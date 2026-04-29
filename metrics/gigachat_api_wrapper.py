@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import random
 import threading
 import time
@@ -15,13 +14,15 @@ from gigachat.exceptions import ResponseError
 from langchain_gigachat.chat_models import GigaChat
 from langchain_gigachat.embeddings import GigaChatEmbeddings
 
+from metrics.config import metrics_settings
+
 T = TypeVar("T")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Interval between any GigaChat requests (seconds). If 429, reduce load or increase.
-GIGACHAT_MIN_INTERVAL_SEC = float(os.getenv("GIGACHAT_MIN_INTERVAL_SEC", "3.0"))
+GIGACHAT_MIN_INTERVAL_SEC = metrics_settings.GIGACHAT_MIN_INTERVAL_SEC
 
 
 def _is_gigachat_rate_limit(exc: BaseException) -> bool:

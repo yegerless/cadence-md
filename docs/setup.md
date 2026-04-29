@@ -116,6 +116,10 @@ llama-server \
   --models-dir /path/to/you/models \
   --models-preset /path/to/you/models.ini \
   --models-max 3 \
+  --metrics \
+  --perf \
+  --log-timestamps \
+  --log-prefix
 ```
 
 Important:
