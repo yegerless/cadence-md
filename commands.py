@@ -237,8 +237,6 @@ def main():
             str(args.dataset_file),
             "--output-dir",
             str(args.output_dir),
-            "--pdf-dir",
-            str(args.pdf_dir),
         ]
         if args.sample_size is not None:
             argv += ["--sample-size", str(args.sample_size)]
@@ -252,8 +250,6 @@ def main():
             str(args.dataset_file),
             "--output-dir",
             str(args.output_dir),
-            "--pdf-dir",
-            str(args.pdf_dir),
         ]
         if args.sample_size is not None:
             argv_ret += ["--sample-size", str(args.sample_size)]

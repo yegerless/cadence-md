@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from qdrant_client import models as qdrant_models
 
-from cadence_md.app.enums import QdrantFusionMethod, RerankerAggregationStrategy, VectorSearchType
+from cadence_md.app.enums import QdrantFusionMethod, VectorSearchType
 
 
 class ChunkConfig(BaseModel):
@@ -22,7 +22,7 @@ class QdrantConfig(BaseModel):
 
     data_dir: Path = Path("test_data/")
     collection_name: str = "clinical_recs"
-    rebuild_collection: bool = True
+    rebuild_collection: bool = False
     vector_size: int = 1024
     distance: qdrant_models.Distance = qdrant_models.Distance.COSINE
     uploading_batch_size: int = 256
@@ -34,19 +34,19 @@ class QdrantConfig(BaseModel):
 class EmbeddingConfig(BaseModel):
     """Embedder model settings"""
 
-    model_name: str = "text-embedding-bge-m3"
+    model_name: str = "bge-m3"
     normalize_embeddings: bool = True
-    return_score: bool = False
+    return_score: bool = True
 
 
 class RerankerConfig(BaseModel):
-    """Reranker model settings"""
+    """Reranker: OpenAI-compatible ``POST /v1/rerank`` (e.g. llama.cpp ``--reranking``)."""
 
-    model_name: str = "text-embedding-bge-reranker-v2-m3"
-    instruction: str | None = None
-    embedding_agregation_strategy: RerankerAggregationStrategy = RerankerAggregationStrategy.MEAN
-    return_score: bool = False
-    top_k: int = 5
+    model_name: str = "bge-reranker-v2-m3"
+    return_score: bool = True
+    top_k: int = Field(default=5, ge=1)
+    timeout_seconds: float = Field(default=120.0, gt=0)
+    max_retries_on_rate_limit: int = Field(default=8, ge=0)
 
 
 class RetrievalConfig(BaseModel):
@@ -62,8 +62,8 @@ class RetrievalConfig(BaseModel):
 class LLMConfig(BaseModel):
     """LLM settings"""
 
-    model_name: str = "qwen2.5-3b-instruct"
-    max_new_tokens: int = 512
+    model_name: str = "qwen3.5-9b"
+    max_new_tokens: int = 5120
     temperature: float = 0.5
     top_p: float = 0.8
     streaming: bool = False
@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     QDRANT_HTTPS: bool = False
 
     # Model inference settings
-    MODEL_INFERENCE_BASE_URL: str = "http://localhost:1234/v1"
+    MODEL_INFERENCE_BASE_URL: str = "http://localhost:8080/v1"
     MODEL_INFERENCE_API_KEY: str = "lm-studio"
 
     # RAG configuration

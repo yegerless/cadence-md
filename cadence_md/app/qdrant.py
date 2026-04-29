@@ -411,7 +411,7 @@ class QdrantManager:
                 query=query_vec,
                 using=QdrantVectorType.DENSE,
                 with_payload=True,
-                limit=self.sparse_top_k,
+                limit=self.dense_top_k,
             )
         except Exception as e:
             logger.error(f"Error querying Qdrant for query '{query}': {e}")

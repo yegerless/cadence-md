@@ -22,14 +22,6 @@ class SectionType(StrEnum):
     REHABILITATION = "rehabilitation"
 
 
-class RerankerAggregationStrategy(StrEnum):
-    """Aggregation strategies for reranker"""
-
-    L2_NORM = "l2_norm"
-    MEAN = "mean"
-    MAX = "max"
-
-
 class QdrantVectorType(StrEnum):
     """Types of Qdrant vector types"""
 

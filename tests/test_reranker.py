@@ -1,237 +1,145 @@
 import sys
-from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.documents import Document
 
 sys.path.insert(0, "..")
 
-from cadence_md.app.enums import RerankerAggregationStrategy
 from cadence_md.app.reranker import (
+    RerankerAPIError,
     RerankerWrapper,
-    aggregate_embedding,
+    _parse_rerank_response,
+    _rerank_url,
     get_reranker,
 )
 
 
-class TestAggregateEmbedding:
-    """Тесты aggregate_embedding и веток агрегации."""
+class TestRerankUrl:
+    """``_rerank_url`` builds ``/v1/rerank`` from common base URL shapes."""
 
-    def test_l2_norm_strategy(self) -> None:
-        assert aggregate_embedding(
-            [3.0, 4.0], RerankerAggregationStrategy.L2_NORM
-        ) == pytest.approx(5.0)
+    def test_with_v1_suffix(self) -> None:
+        assert _rerank_url("http://127.0.0.1:1234/v1") == "http://127.0.0.1:1234/v1/rerank"
+        assert _rerank_url("http://127.0.0.1:1234/v1/") == "http://127.0.0.1:1234/v1/rerank"
 
-    def test_mean_strategy(self) -> None:
-        assert aggregate_embedding([3.0, 4.0], RerankerAggregationStrategy.MEAN) == pytest.approx(
-            3.5
-        )
-
-    def test_max_strategy(self) -> None:
-        assert aggregate_embedding([3.0, 4.0], RerankerAggregationStrategy.MAX) == pytest.approx(
-            4.0
-        )
-
-    def test_empty_vector_mean_uses_safe_vec(self) -> None:
-        """Пустой iterable даёт [0.0], mean = 0.0."""
-        assert aggregate_embedding([], RerankerAggregationStrategy.MEAN) == pytest.approx(0.0)
-
-    def test_empty_vector_l2_norm(self) -> None:
-        assert aggregate_embedding([], RerankerAggregationStrategy.L2_NORM) == pytest.approx(0.0)
-
-    def test_empty_vector_max_abs(self) -> None:
-        assert aggregate_embedding([], RerankerAggregationStrategy.MAX) == pytest.approx(0.0)
-
-    def test_unknown_strategy_falls_back_to_l2(self) -> None:
-        """Нестандартное значение strategy — fallback на L2."""
-        bogus = cast(Any, "not_a_listed_strategy")
-        assert aggregate_embedding([3.0, 4.0], bogus) == pytest.approx(5.0)
+    def test_without_v1_suffix(self) -> None:
+        assert _rerank_url("http://127.0.0.1:1234") == "http://127.0.0.1:1234/v1/rerank"
 
 
-class TestRerankerWrapperStaticHelpers:
-    """Статические хелперы форматирования."""
+class TestParseRerankResponse:
+    """``_parse_rerank_response`` maps ``results`` to ordered scores."""
 
-    def test_normalize_instruction_none(self) -> None:
-        assert RerankerWrapper._normalize_instruction(None) is None
-
-    def test_normalize_instruction_whitespace_only(self) -> None:
-        assert RerankerWrapper._normalize_instruction("  \n  ") is None
-
-    def test_normalize_instruction_strips_and_keeps_content(self) -> None:
-        assert RerankerWrapper._normalize_instruction("  hello  ") == "hello"
-
-    def test_query_passage_body(self) -> None:
-        body = RerankerWrapper._query_passage_body("q1", "p1")
-        assert body == "query: q1\npassage: p1"
-
-    def test_format_rerank_input_without_instruction(self, mock_openai_client: MagicMock) -> None:
-        reranker = RerankerWrapper(
-            model="m",
-            instruction=None,
-            top_k=10,
-            return_score=True,
-            embedding_agregation_strategy=RerankerAggregationStrategy.L2_NORM,
-            base_url="http://localhost",
-            api_key="k",
-        )
-        reranker.client = mock_openai_client
-        assert reranker._format_rerank_input("q", "p") == "query: q\npassage: p"
-
-    def test_format_rerank_input_with_instruction(self, mock_openai_client: MagicMock) -> None:
-        reranker = RerankerWrapper(
-            model="m",
-            instruction="  Instruct me  ",
-            top_k=10,
-            return_score=True,
-            embedding_agregation_strategy=RerankerAggregationStrategy.L2_NORM,
-            base_url="http://localhost",
-            api_key="k",
-        )
-        reranker.client = mock_openai_client
-        expected = "Instruct me\nquery: q\npassage: p"
-        assert reranker._format_rerank_input("q", "p") == expected
-
-    def test_build_inputs(self, mock_openai_client: MagicMock) -> None:
-        reranker = RerankerWrapper(
-            model="m",
-            instruction="prefix",
-            top_k=10,
-            return_score=True,
-            embedding_agregation_strategy=RerankerAggregationStrategy.L2_NORM,
-            base_url="http://localhost",
-            api_key="k",
-        )
-        reranker.client = mock_openai_client
-        docs = [Document(page_content="a"), Document(page_content="b")]
-        inputs = reranker._build_inputs("q", docs)
-        assert inputs == [
-            "prefix\nquery: q\npassage: a",
-            "prefix\nquery: q\npassage: b",
-        ]
-
-
-class TestEncodePairs:
-    """Тесты encode_pairs с моком клиента."""
-
-    def _make_reranker(
-        self,
-        mock_openai_client: MagicMock,
-        strategy: RerankerAggregationStrategy,
-    ) -> RerankerWrapper:
-        reranker = RerankerWrapper(
-            model="rerank-model",
-            instruction=None,
-            top_k=10,
-            return_score=True,
-            embedding_agregation_strategy=strategy,
-            base_url="http://localhost",
-            api_key="k",
-        )
-        reranker.client = mock_openai_client
-        return reranker
-
-    def test_encode_pairs_calls_api_and_returns_scores(self, mock_openai_client: MagicMock) -> None:
-        mock_openai_client.embeddings.create.return_value = MagicMock(
-            data=[
-                MagicMock(embedding=[3.0, 4.0]),
-                MagicMock(embedding=[0.0, 0.0, 2.0]),
+    def test_ordered_scores(self) -> None:
+        data = {
+            "results": [
+                {"index": 1, "relevance_score": 2.5},
+                {"index": 0, "relevance_score": 1.0},
             ]
+        }
+        assert _parse_rerank_response(data, expected_documents=2) == [1.0, 2.5]
+
+    def test_raises_on_missing_index(self) -> None:
+        data = {"results": [{"index": 0, "relevance_score": 1.0}]}
+        with pytest.raises(RerankerAPIError, match="Incomplete rerank results"):
+            _parse_rerank_response(data, expected_documents=2)
+
+    def test_raises_on_bad_results_type(self) -> None:
+        with pytest.raises(RerankerAPIError, match="missing 'results'"):
+            _parse_rerank_response({"results": None}, expected_documents=1)
+
+    def test_raises_on_index_out_of_range(self) -> None:
+        data = {"results": [{"index": 2, "relevance_score": 1.0}]}
+        with pytest.raises(RerankerAPIError, match="out of range"):
+            _parse_rerank_response(data, expected_documents=2)
+
+
+def _reranker_with_stub_post(
+    stub: MagicMock,
+    *,
+    top_k: int = 10,
+    return_score: bool = True,
+) -> RerankerWrapper:
+    r = RerankerWrapper(
+        model="rerank-model",
+        top_k=top_k,
+        return_score=return_score,
+        base_url="http://localhost:1234/v1",
+        api_key="k",
+        timeout_s=30.0,
+        max_retries_on_rate_limit=2,
+    )
+    r._post_rerank = stub  # type: ignore[method-assign]
+    return r
+
+
+class TestScorePairs:
+    """``score_pairs`` calls ``_post_rerank`` with query and document texts."""
+
+    def test_score_pairs_payload_and_order(self) -> None:
+        stub = MagicMock(
+            return_value={
+                "results": [
+                    {"index": 0, "relevance_score": -1.0},
+                    {"index": 1, "relevance_score": 5.0},
+                ]
+            }
         )
-        reranker = self._make_reranker(mock_openai_client, RerankerAggregationStrategy.L2_NORM)
-        docs = [Document(page_content="p1"), Document(page_content="p2")]
-        scores = reranker.encode_pairs("query", docs)
+        reranker = _reranker_with_stub_post(stub)
+        docs = [Document(page_content="a"), Document(page_content="b")]
+        scores = reranker.score_pairs("my query", docs)
 
-        assert len(scores) == 2
-        assert scores[0] == pytest.approx(5.0)
-        assert scores[1] == pytest.approx(2.0)
+        assert scores == [-1.0, 5.0]
+        stub.assert_called_once()
+        payload = stub.call_args[0][0]
+        assert payload["model"] == "rerank-model"
+        assert payload["query"] == "my query"
+        assert payload["documents"] == ["a", "b"]
 
-        mock_openai_client.embeddings.create.assert_called_once()
-        kwargs = mock_openai_client.embeddings.create.call_args[1]
-        assert kwargs["model"] == "rerank-model"
-        assert kwargs["encoding_format"] == "float"
-        assert kwargs["input"] == [
-            "query: query\npassage: p1",
-            "query: query\npassage: p2",
-        ]
-
-    def test_encode_pairs_mean_strategy_differs_from_l2(
-        self, mock_openai_client: MagicMock
-    ) -> None:
-        emb = [2.0, 2.0, 2.0]
-        mock_openai_client.embeddings.create.return_value = MagicMock(
-            data=[MagicMock(embedding=emb)]
-        )
-        reranker = self._make_reranker(mock_openai_client, RerankerAggregationStrategy.MEAN)
-        scores = reranker.encode_pairs("q", [Document(page_content="x")])
-        assert scores[0] == pytest.approx(2.0)
-
-        mock_openai_client.embeddings.create.return_value = MagicMock(
-            data=[MagicMock(embedding=emb)]
-        )
-        reranker_l2 = self._make_reranker(mock_openai_client, RerankerAggregationStrategy.L2_NORM)
-        scores_l2 = reranker_l2.encode_pairs("q", [Document(page_content="x")])
-        assert scores_l2[0] == pytest.approx(12.0**0.5)
+    def test_score_pairs_empty(self) -> None:
+        stub = MagicMock()
+        reranker = _reranker_with_stub_post(stub)
+        assert reranker.score_pairs("q", []) == []
+        stub.assert_not_called()
 
 
 class TestRerank:
-    """Тесты rerank: порядок, top_k, return_score, пустой список."""
+    """``rerank``: sorting, ``top_k``, ``return_score``, empty input."""
 
-    def test_rerank_empty_documents(self, mock_openai_client: MagicMock) -> None:
-        reranker = RerankerWrapper(
-            model="m",
-            instruction=None,
-            top_k=10,
-            return_score=True,
-            embedding_agregation_strategy=RerankerAggregationStrategy.L2_NORM,
-            base_url="http://localhost",
-            api_key="k",
-        )
-        reranker.client = mock_openai_client
+    def test_rerank_empty_documents(self) -> None:
+        stub = MagicMock()
+        reranker = _reranker_with_stub_post(stub)
         assert reranker.rerank("q", []) == []
+        stub.assert_not_called()
 
-    def test_rerank_sorts_by_score_descending(self, mock_openai_client: MagicMock) -> None:
-        mock_openai_client.embeddings.create.return_value = MagicMock(
-            data=[
-                MagicMock(embedding=[1.0, 0.0, 0.0]),
-                MagicMock(embedding=[3.0, 4.0, 0.0]),
-            ]
+    def test_rerank_sorts_by_score_descending(self) -> None:
+        stub = MagicMock(
+            return_value={
+                "results": [
+                    {"index": 0, "relevance_score": 1.0},
+                    {"index": 1, "relevance_score": 9.0},
+                ]
+            }
         )
-        reranker = RerankerWrapper(
-            model="m",
-            instruction=None,
-            top_k=10,
-            return_score=True,
-            embedding_agregation_strategy=RerankerAggregationStrategy.L2_NORM,
-            base_url="http://localhost",
-            api_key="k",
-        )
-        reranker.client = mock_openai_client
+        reranker = _reranker_with_stub_post(stub)
         low = Document(page_content="low")
         high = Document(page_content="high")
         pairs = reranker.rerank("q", [low, high])
+
         assert [d.page_content for d, _ in pairs] == ["high", "low"]
-        assert pairs[0][1] == pytest.approx(5.0)
+        assert pairs[0][1] == pytest.approx(9.0)
         assert pairs[1][1] == pytest.approx(1.0)
 
-    def test_rerank_top_k_truncates(self, mock_openai_client: MagicMock) -> None:
-        mock_openai_client.embeddings.create.return_value = MagicMock(
-            data=[
-                MagicMock(embedding=[1.0, 0.0]),
-                MagicMock(embedding=[0.0, 1.0]),
-                MagicMock(embedding=[3.0, 4.0]),
-            ]
+    def test_rerank_top_k_truncates(self) -> None:
+        stub = MagicMock(
+            return_value={
+                "results": [
+                    {"index": 0, "relevance_score": 1.0},
+                    {"index": 1, "relevance_score": 2.0},
+                    {"index": 2, "relevance_score": 3.0},
+                ]
+            }
         )
-        reranker = RerankerWrapper(
-            model="m",
-            instruction=None,
-            top_k=2,
-            return_score=True,
-            embedding_agregation_strategy=RerankerAggregationStrategy.L2_NORM,
-            base_url="http://localhost",
-            api_key="k",
-        )
-        reranker.client = mock_openai_client
+        reranker = _reranker_with_stub_post(stub, top_k=2)
         docs = [
             Document(page_content="a"),
             Document(page_content="b"),
@@ -241,48 +149,123 @@ class TestRerank:
         assert len(pairs) == 2
         assert pairs[0][1] >= pairs[1][1]
 
-    def test_rerank_return_score_false(self, mock_openai_client: MagicMock) -> None:
-        mock_openai_client.embeddings.create.return_value = MagicMock(
-            data=[
-                MagicMock(embedding=[0.0, 1.0]),
-                MagicMock(embedding=[3.0, 4.0]),
-            ]
+    def test_rerank_return_score_false(self) -> None:
+        stub = MagicMock(
+            return_value={
+                "results": [
+                    {"index": 0, "relevance_score": 1.0},
+                    {"index": 1, "relevance_score": 10.0},
+                ]
+            }
         )
-        reranker = RerankerWrapper(
-            model="m",
-            instruction=None,
-            top_k=10,
-            return_score=False,
-            embedding_agregation_strategy=RerankerAggregationStrategy.L2_NORM,
-            base_url="http://localhost",
-            api_key="k",
-        )
-        reranker.client = mock_openai_client
-        d1 = Document(page_content="first_by_score")
+        reranker = _reranker_with_stub_post(stub, return_score=False)
+        d1 = Document(page_content="first")
         d2 = Document(page_content="second")
         pairs = reranker.rerank("q", [d1, d2])
-        assert all(score is None for _, score in pairs)
+        assert all(s is None for _, s in pairs)
         assert pairs[0][0].page_content == "second"
 
 
-class TestGetReranker:
-    """Фабрика get_reranker."""
+class TestPostRerankHTTP:
+    """HTTP layer: success path and error handling."""
 
-    def test_get_reranker_returns_configured_wrapper(self, mock_openai_client: MagicMock) -> None:
+    def _client_context(self, post_return: MagicMock) -> tuple[MagicMock, MagicMock]:
+        """Return (context_manager, inner_client) for ``with httpx.Client(...)``."""
+        inner = MagicMock()
+        inner.post.return_value = post_return
+        cm = MagicMock()
+        cm.__enter__.return_value = inner
+        cm.__exit__.return_value = None
+        return cm, inner
+
+    def test_post_rerank_success(self) -> None:
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.text = ""
+        resp.json.return_value = {"results": [{"index": 0, "relevance_score": 3.14}]}
+        cm, inner = self._client_context(resp)
+
+        reranker = RerankerWrapper(
+            model="m",
+            top_k=5,
+            return_score=True,
+            base_url="http://h/v1",
+            api_key="secret",
+            max_retries_on_rate_limit=0,
+        )
+        with patch("cadence_md.app.reranker.httpx.Client", return_value=cm):
+            out = reranker._post_rerank({"model": "m", "query": "q", "documents": ["x"]})
+
+        assert out == {"results": [{"index": 0, "relevance_score": 3.14}]}
+        inner.post.assert_called_once()
+        _args, kwargs = inner.post.call_args
+        assert kwargs["json"]["query"] == "q"
+        assert kwargs["headers"]["Authorization"] == "Bearer secret"
+
+    def test_post_rerank_http_error(self) -> None:
+        resp = MagicMock()
+        resp.status_code = 500
+        resp.text = "boom"
+        cm, _inner = self._client_context(resp)
+        reranker = RerankerWrapper(
+            model="m",
+            top_k=5,
+            return_score=True,
+            base_url="http://h/v1",
+            api_key="k",
+            max_retries_on_rate_limit=0,
+        )
+        with (
+            patch("cadence_md.app.reranker.httpx.Client", return_value=cm),
+            pytest.raises(RerankerAPIError, match="Rerank HTTP 500"),
+        ):
+            reranker._post_rerank({"model": "m", "query": "q", "documents": ["a"]})
+
+    def test_post_rerank_429_then_success(self) -> None:
+        fail = MagicMock(status_code=429, text="")
+        ok = MagicMock(status_code=200, text="")
+        ok.json.return_value = {"results": [{"index": 0, "relevance_score": 1.0}]}
+        mock_client = MagicMock()
+        mock_client.post.side_effect = [fail, ok]
+        mock_cm = MagicMock()
+        mock_cm.__enter__.return_value = mock_client
+        mock_cm.__exit__.return_value = None
+
+        reranker = RerankerWrapper(
+            model="m",
+            top_k=5,
+            return_score=True,
+            base_url="http://h/v1",
+            api_key="k",
+            max_retries_on_rate_limit=2,
+        )
+        with (
+            patch("cadence_md.app.reranker.httpx.Client", return_value=mock_cm),
+            patch("cadence_md.app.reranker.time.sleep", MagicMock()),
+        ):
+            out = reranker._post_rerank({"model": "m", "query": "q", "documents": ["a"]})
+
+        assert out["results"][0]["relevance_score"] == 1.0
+        assert mock_client.post.call_count == 2
+
+
+class TestGetReranker:
+    """Factory ``get_reranker``."""
+
+    def test_get_reranker_returns_configured_wrapper(self) -> None:
         wrapper = get_reranker(
             model="rm",
-            instruction="  hi  ",
             top_k=3,
             return_score=False,
-            embedding_agregation_strategy=RerankerAggregationStrategy.MAX,
-            base_url="http://api",
+            base_url="http://api/v1",
             api_key="key",
+            timeout_s=60.0,
+            max_retries_on_rate_limit=5,
         )
-        wrapper.client = mock_openai_client
         assert isinstance(wrapper, RerankerWrapper)
         assert wrapper.model == "rm"
-        assert wrapper.instruction == "  hi  "
-        assert wrapper._instruction_for_prompt == "hi"
         assert wrapper.top_k == 3
         assert wrapper.return_score is False
-        assert wrapper.embedding_agregation_strategy == RerankerAggregationStrategy.MAX
+        assert wrapper._timeout_s == 60.0
+        assert wrapper._max_retries_on_rate_limit == 5
+        assert wrapper._api_url == "http://api/v1/rerank"

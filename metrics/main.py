@@ -43,12 +43,12 @@ def build_evaluation_pipeline() -> RAGEvaluationPipeline:
     )
     reranker = get_reranker(
         model=settings.rag_config.reranker.model_name,
-        instruction=settings.rag_config.reranker.instruction,
         top_k=settings.rag_config.reranker.top_k,
         return_score=settings.rag_config.reranker.return_score,
-        embedding_agregation_strategy=settings.rag_config.reranker.embedding_agregation_strategy,
         base_url=settings.MODEL_INFERENCE_BASE_URL,
         api_key=settings.MODEL_INFERENCE_API_KEY,
+        timeout_s=settings.rag_config.reranker.timeout_seconds,
+        max_retries_on_rate_limit=settings.rag_config.reranker.max_retries_on_rate_limit,
     )
     llm = get_llm(
         model=settings.rag_config.llm.model_name,
