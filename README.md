@@ -120,14 +120,29 @@ described in the setup guide.
 ### `metrics-eval-retriever`
 
 Retriever-only evaluation (retrieve + rerank): no RAGAS and no full answer
-generation. Writes `retriever_evaluation_report.md` and `retriever_metrics.json`
-into the output directory.
+generation.
 
 Same options as `metrics-eval-full`, plus:
 
 | Option | Default          | Description                  |
 | ------ | ---------------- | ---------------------------- |
 | `--k`  | pipeline default | K for recall@K / precision@K |
+
+Both `full` and `retriever` modes now create a dedicated run directory under
+`--output-dir`:
+
+```text
+metrics/results/<run_id>/
+  run_manifest.json
+  summary_metrics.json
+  report.md
+  errors.jsonl
+  # full mode
+  cases.jsonl
+  ragas_scores.parquet
+  # retriever mode
+  retrieval_cases.jsonl
+```
 
 Example:
 

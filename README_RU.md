@@ -116,14 +116,29 @@ poetry run python commands.py metrics-eval-full --sample-size 20
 ### `metrics-eval-retriever`
 
 Оценка только ретривера (поиск + реранк): без RAGAS и без полной генерации
-ответа. В каталоге вывода создаются `retriever_evaluation_report.md` и
-`retriever_metrics.json`.
+ответа.
 
 Те же опции, что у `metrics-eval-full`, плюс:
 
 | Опция | По умолчанию       | Описание                     |
 | ----- | ------------------ | ---------------------------- |
 | `--k` | значение пайплайна | K для recall@K / precision@K |
+
+Оба режима (`full` и `retriever`) создают отдельную директорию прогона в
+`--output-dir`:
+
+```text
+metrics/results/<run_id>/
+  run_manifest.json
+  summary_metrics.json
+  report.md
+  errors.jsonl
+  # режим full
+  cases.jsonl
+  ragas_scores.parquet
+  # режим retriever
+  retrieval_cases.jsonl
+```
 
 Пример:
 

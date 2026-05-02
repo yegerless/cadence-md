@@ -4,6 +4,7 @@ import random
 import re
 import statistics
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 from datasets import Dataset
@@ -27,7 +28,17 @@ from tqdm import tqdm
 
 from cadence_md.app.rag import RAGPipeline, RAGState
 from cadence_md.app.settings import settings
+from metrics.artifacts import (
+    append_jsonl,
+    build_run_directory,
+    create_run_manifest,
+    document_to_record,
+    write_json,
+)
+from metrics.report_renderer import render_validation_report
+from metrics.retrieval_utils import collect_missed_retrieval_case_ids
 from metrics.schemas import QATestCase, RAGTestResult
+from metrics.summary_builder import build_summary_metrics
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -253,6 +264,33 @@ class RAGEvaluationPipeline:
 
         return df
 
+    @staticmethod
+    def _extract_numeric_ragas_scores(ragas_row: pd.Series) -> dict[str, float]:
+        """Extract only numeric RAGAS scores from a mixed row."""
+        metadata_columns = {
+            "question",
+            "answer",
+            "contexts",
+            "ground_truth",
+            "question_type",
+            "section_type",
+            "test_case_id",
+        }
+        numeric_scores: dict[str, float] = {}
+        for column, value in ragas_row.items():
+            if column in metadata_columns:
+                continue
+            try:
+                numeric_value = pd.to_numeric(value, errors="coerce")
+            except (TypeError, ValueError):
+                continue
+            if not pd.api.types.is_scalar(numeric_value):
+                continue
+            if pd.isna(numeric_value):
+                continue
+            numeric_scores[column] = float(numeric_value)
+        return numeric_scores
+
     def calculate_retrieval_metrics(
         self,
         results: list[RAGTestResult],
@@ -319,147 +357,37 @@ class RAGEvaluationPipeline:
 
         return metrics
 
+    @staticmethod
+    def _serialize_retrieved_docs(result: RAGTestResult) -> list[dict[str, Any]]:
+        docs = result.retrieved_contexts
+        scores = result.retrieval_scores
+        return [
+            document_to_record(doc, score=scores[idx] if idx < len(scores) else None)
+            for idx, doc in enumerate(docs)
+        ]
+
     def generate_report(
         self,
-        ragas_df: pd.DataFrame,
-        retrieval_metrics: dict[str, float | int],
-        output_dir: Path,
+        *,
+        run_dir: Path,
+        manifest: dict[str, Any],
+        summary_metrics: dict[str, Any],
+        ragas_df: pd.DataFrame | None,
+        mode: str,
+        missed_retrieval_case_ids: list[int],
     ) -> None:
-        """Generating a detailed report"""
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        report_lines = []
-        report_lines.append("# RAG SYSTEM TEST REPORT\n\n")
-
-        # 1. General statistics
-        report_lines.append("## 1. GENERAL STATISTICS\n")
-        report_lines.append(f"Total test cases: {len(ragas_df)}\n")
-
-        # 2. Retriever metrics
-        report_lines.append("## 2. RETRIEVER METRICS")
-        rk = retrieval_metrics.get("k", settings.rag_config.reranker.top_k)
-        report_lines.append(f"Hit Rate (top-{rk}): {retrieval_metrics['hit_rate']:.3f}\n")
-        report_lines.append(f"MRR (Mean Reciprocal Rank): {retrieval_metrics['mrr']:.3f}\n")
-        report_lines.append(f"Recall@{rk}: {retrieval_metrics['recall_at_k']:.3f}\n")
-        report_lines.append(f"Precision@{rk}: {retrieval_metrics['precision_at_k']:.3f}\n")
-        report_lines.append(f"Average score top-1: {retrieval_metrics['avg_score']:.3f}\n\n")
-
-        # 3. RAGAS metrics
-        report_lines.append("## 3. RAGAS МЕТРИКИ\n")
-
-        for metric in self.ragas_metrics:
-            metric_name = metric.name
-            if metric_name in ragas_df.columns:
-                scores = ragas_df[metric_name].dropna()
-                report_lines.append(f"### {metric_name}\n")
-                report_lines.append(f"  Mean:  {scores.mean():.3f}\n")
-                report_lines.append(f"  Median:  {scores.median():.3f}\n")
-                report_lines.append(f"  Std Dev:  {scores.std():.3f}\n")
-                report_lines.append(f"  Min-Max: {scores.min():.3f} - {scores.max():.3f}\n\n")
-
-        # 4. Analysis by question types
-        report_lines.append("## 4. ANALYSIS BY QUESTION TYPES\n")
-
-        if "question_type" in ragas_df.columns:
-            for qtype in ragas_df["question_type"].dropna().unique():
-                subset = ragas_df[ragas_df["question_type"] == qtype]
-                report_lines.append(f"### {qtype} (n={len(subset)})\n")
-
-                if "faithfulness" in subset.columns:
-                    report_lines.append(f"  Faithfulness: {subset['faithfulness'].mean():.3f}\n")
-                if "context_recall" in subset.columns:
-                    report_lines.append(
-                        f"  Context Recall: {subset['context_recall'].mean():.3f}\n"
-                    )
-                if "answer_correctness" in subset.columns:
-                    report_lines.append(
-                        f"  Answer Correctness: {subset['answer_correctness'].mean():.3f}\n\n"
-                    )
-        else:
-            report_lines.append("No question_type data available\n\n")
-
-        # 5. Analysis by section types
-        report_lines.append("## 5. ANALYSIS BY SECTION TYPES")
-
-        if "section_type" in ragas_df.columns:
-            for stype in ragas_df["section_type"].dropna().unique():
-                subset = ragas_df[ragas_df["section_type"] == stype]
-                report_lines.append(f"### {stype} (n={len(subset)})")
-
-                if "faithfulness" in subset.columns:
-                    report_lines.append(f"  Faithfulness: {subset['faithfulness'].mean():.3f}\n")
-                if "context_recall" in subset.columns:
-                    report_lines.append(
-                        f"  Context Recall: {subset['context_recall'].mean():.3f}\n"
-                    )
-                if "answer_correctness" in subset.columns:
-                    report_lines.append(
-                        f"  Answer Correctness: {subset['answer_correctness'].mean():.3f}\n\n"
-                    )
-        else:
-            report_lines.append("\nNo section_type data available\n\n")
-
-        # 6. Problematic cases
-        report_lines.append("## 6. PROBLEM CASES")
-
-        if "faithfulness" in ragas_df.columns:
-            low_faithfulness = ragas_df[ragas_df["faithfulness"] < 0.5]
-            report_lines.append(f"Low faithfulness (< 0.5): {len(low_faithfulness)} cases\n")
-
-        if "context_recall" in ragas_df.columns:
-            low_recall = ragas_df[ragas_df["context_recall"] < 0.5]
-            report_lines.append(f"Low context recall: {len(low_recall)} cases\n")
-
-        if "answer_correctness" in ragas_df.columns:
-            low_correctness = ragas_df[ragas_df["answer_correctness"] < 0.4]
-            report_lines.append(f"Low answer correctness (< 0.4): {len(low_correctness)} cases\n\n")
-
-        # Save report
-        report_text = "".join(report_lines)
-        report_file = output_dir / "rag_evaluation_report.md"
-
-        with Path(report_file).open("w", encoding="utf-8") as f:
-            f.write(report_text)
-
-        logger.info("RAG evaluation report:\n%s", report_text.rstrip())
-        logger.info(f"✓ Report saved to {report_file}")
-
-        # Saving detailed results
-        csv_file = output_dir / "rag_evaluation_detailed.csv"
-        ragas_df.to_csv(csv_file, index=False)
-        logger.info(f"✓ Detailed results are saved to {csv_file}")
-
-    def generate_retrieval_report(
-        self,
-        retrieval_metrics: dict,
-        output_dir: Path,
-        n_cases: int,
-    ) -> None:
-        """Persist retriever-only metrics (no RAGAS / no generated answers)."""
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        rk = retrieval_metrics.get("k", settings.rag_config.retrieval.dense_top_k)
-        report_lines = [
-            "# RETRIEVER EVALUATION REPORT\n\n",
-            "## DATASET\n",
-            f"Test cases evaluated: {n_cases}\n\n",
-            "## RETRIEVER METRICS\n",
-            f"K (recall/precision): {rk}\n",
-            f"Hit rate: {retrieval_metrics['hit_rate']:.3f}\n",
-            f"MRR: {retrieval_metrics['mrr']:.3f}\n",
-            f"Recall@{rk}: {retrieval_metrics['recall_at_k']:.3f}\n",
-            f"Precision@{rk}: {retrieval_metrics['precision_at_k']:.3f}\n",
-            f"Average score (top-1): {retrieval_metrics['avg_score']:.3f}\n",
-        ]
-        report_text = "".join(report_lines)
-        report_file = output_dir / "retriever_evaluation_report.md"
+        """Generate human-readable report.md from manifest and metrics."""
+        report_text = render_validation_report(
+            manifest=manifest,
+            summary_metrics=summary_metrics,
+            ragas_df=ragas_df,
+            mode=mode,
+            missed_retrieval_case_ids=missed_retrieval_case_ids,
+        )
+        report_file = run_dir / "report.md"
         report_file.write_text(report_text, encoding="utf-8")
-        logger.info("Retriever evaluation report:\n%s", report_text.rstrip())
+        logger.info("Validation report:\n%s", report_text.rstrip())
         logger.info("✓ Report saved to %s", report_file)
-
-        metrics_path = output_dir / "retriever_metrics.json"
-        metrics_path.write_text(json.dumps(retrieval_metrics, indent=2), encoding="utf-8")
-        logger.info("✓ Metrics saved to %s", metrics_path)
 
     def run_retriever_evaluation(
         self,
@@ -474,7 +402,84 @@ class RAGEvaluationPipeline:
         test_cases = self.load_test_cases(dataset_file)
         results = self.run_retriever_pipeline(test_cases, sample_size)
         retrieval_metrics = self.calculate_retrieval_metrics(results, k=k)
-        self.generate_retrieval_report(retrieval_metrics, output_dir, len(results))
+        resolved_k = int(retrieval_metrics.get("k", settings.rag_config.retrieval.dense_top_k))
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        run_dir, run_id, timestamp_iso = build_run_directory(
+            output_dir=output_dir, mode="retriever"
+        )
+        manifest = create_run_manifest(
+            mode="retriever",
+            run_id=run_id,
+            timestamp_iso=timestamp_iso,
+            output_dir=output_dir,
+            run_dir=run_dir,
+            dataset_file=dataset_file,
+            sample_size=sample_size,
+            k=resolved_k,
+            ragas_metric_names=[metric.name for metric in self.ragas_metrics],
+        )
+        write_json(run_dir / "run_manifest.json", manifest)
+
+        retrieval_cases_file = run_dir / "retrieval_cases.jsonl"
+        errors_file = run_dir / "errors.jsonl"
+        for result in results:
+            gt_norm = result.ground_truth_context.lower().strip()
+            matched_rank = None
+            for idx, doc in enumerate(result.retrieved_contexts[:resolved_k], start=1):
+                if self.contexts_match(gt_norm, doc.page_content.lower().strip()):
+                    matched_rank = idx
+                    break
+            append_jsonl(
+                retrieval_cases_file,
+                {
+                    "test_case_id": result.test_case_id,
+                    "question": result.question,
+                    "question_type": result.question_type,
+                    "section_type": result.section_type,
+                    "ground_truth_context": result.ground_truth_context,
+                    "k": resolved_k,
+                    "matched": matched_rank is not None,
+                    "matched_rank": matched_rank,
+                    "retrieved_docs": self._serialize_retrieved_docs(result),
+                },
+            )
+
+        summary_metrics = build_summary_metrics(
+            mode="retriever",
+            total_loaded_cases=len(test_cases),
+            evaluated_cases=len(results),
+            rag_success_cases=len(results),
+            retrieval_metrics=retrieval_metrics,
+            ragas_df=None,
+            ragas_metric_names=[metric.name for metric in self.ragas_metrics],
+            rag_errors=max(len(test_cases) - len(results), 0),
+            ragas_errors=0,
+        )
+        write_json(run_dir / "summary_metrics.json", summary_metrics)
+
+        missed_retrieval_ids = collect_missed_retrieval_case_ids(
+            results=results,
+            k=resolved_k,
+            matcher=self.contexts_match,
+        )
+        self.generate_report(
+            run_dir=run_dir,
+            manifest=manifest,
+            summary_metrics=summary_metrics,
+            ragas_df=None,
+            mode="retriever",
+            missed_retrieval_case_ids=missed_retrieval_ids,
+        )
+
+        if not errors_file.exists():
+            append_jsonl(
+                errors_file,
+                {
+                    "note": "no_errors",
+                },
+            )
+            errors_file.unlink()
 
         logger.info("✓ Retriever evaluation completed")
         return retrieval_metrics
@@ -491,18 +496,152 @@ class RAGEvaluationPipeline:
 
         # Loading test cases
         test_cases = self.load_test_cases(dataset_file)
+        if sample_size and sample_size < len(test_cases):
+            test_cases = random.sample(test_cases, sample_size)
+            logger.info("A sample of %s cases is used", sample_size)
 
-        # Launching the RAG pipeline
-        results = self.run_rag_pipeline(test_cases, sample_size)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        run_dir, run_id, timestamp_iso = build_run_directory(output_dir=output_dir, mode="full")
+        manifest = create_run_manifest(
+            mode="full",
+            run_id=run_id,
+            timestamp_iso=timestamp_iso,
+            output_dir=output_dir,
+            run_dir=run_dir,
+            dataset_file=dataset_file,
+            sample_size=sample_size,
+            k=k,
+            ragas_metric_names=[metric.name for metric in self.ragas_metrics],
+        )
+        write_json(run_dir / "run_manifest.json", manifest)
+        cases_file = run_dir / "cases.jsonl"
+        errors_file = run_dir / "errors.jsonl"
+        ragas_parquet_file = run_dir / "ragas_scores.parquet"
 
-        # RAGAS evaluation
-        ragas_df = self.evaluate_with_ragas(results)
+        ragas_errors: list[dict[str, str | int]] = []
+        rag_errors: list[dict[str, str | int]] = []
+        results: list[RAGTestResult] = []
+        ragas_rows: list[pd.DataFrame] = []
+        logger.info("Running streaming full evaluation for %s cases...", len(test_cases))
+
+        for idx, test_case in enumerate(tqdm(test_cases, desc="RAG + RAGAS")):
+            try:
+                rag_result = self.rag_pipeline.run(test_case.question)
+            except Exception as e:
+                logger.error("Case processing error %s (RAG): %s", idx, e)
+                rag_error = {
+                    "test_case_id": idx,
+                    "stage": "rag",
+                    "question": test_case.question,
+                    "question_type": test_case.question_type,
+                    "section_type": test_case.section_type,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                }
+                rag_errors.append(rag_error)
+                append_jsonl(errors_file, rag_error)
+                append_jsonl(
+                    cases_file,
+                    {
+                        "test_case_id": idx,
+                        "status": "rag_error",
+                        "question": test_case.question,
+                        "ground_truth_answer": test_case.answer,
+                        "ground_truth_context": test_case.context,
+                        "question_type": test_case.question_type,
+                        "section_type": test_case.section_type,
+                        "generated_answer": "",
+                        "retrieved_docs": [],
+                        "ragas_scores": {},
+                    },
+                )
+                continue
+
+            result = RAGTestResult(
+                question=test_case.question,
+                ground_truth_answer=test_case.answer,
+                ground_truth_context=test_case.context,
+                retrieved_contexts=rag_result["retrieved_docs"],
+                retrieval_scores=rag_result["retrieved_scores"],
+                generated_answer=rag_result["answer"],
+                question_type=test_case.question_type,
+                section_type=test_case.section_type,
+                test_case_id=idx,
+            )
+            results.append(result)
+            case_row: dict[str, Any] = {
+                "test_case_id": idx,
+                "status": "ok",
+                "question": result.question,
+                "ground_truth_answer": result.ground_truth_answer,
+                "ground_truth_context": result.ground_truth_context,
+                "generated_answer": result.generated_answer,
+                "question_type": result.question_type,
+                "section_type": result.section_type,
+                "retrieved_docs": self._serialize_retrieved_docs(result),
+                "ragas_scores": {},
+            }
+
+            try:
+                case_ragas_df = self.evaluate_with_ragas([result])
+                ragas_rows.append(case_ragas_df)
+                case_row["ragas_scores"] = self._extract_numeric_ragas_scores(case_ragas_df.iloc[0])
+            except Exception as e:
+                logger.error("Case processing error %s (RAGAS): %s", idx, e)
+                case_row["status"] = "ragas_error"
+                ragas_errors.append(
+                    {
+                        "test_case_id": idx,
+                        "stage": "ragas",
+                        "question": test_case.question,
+                        "question_type": test_case.question_type,
+                        "section_type": test_case.section_type,
+                        "generated_answer": result.generated_answer,
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                    }
+                )
+                append_jsonl(errors_file, ragas_errors[-1])
+            finally:
+                append_jsonl(cases_file, case_row)
+
+        ragas_df = (
+            pd.concat(ragas_rows, ignore_index=True)
+            if ragas_rows
+            else pd.DataFrame(columns=["question_type", "section_type", "test_case_id"])
+        )
+        ragas_df.to_parquet(ragas_parquet_file, index=False)
 
         # Retriever metrics
         retrieval_metrics = self.calculate_retrieval_metrics(results, k=k)
+        missed_retrieval_ids = collect_missed_retrieval_case_ids(
+            results=results,
+            k=k,
+            matcher=self.contexts_match,
+        )
+
+        summary_metrics = build_summary_metrics(
+            mode="full",
+            total_loaded_cases=len(test_cases),
+            evaluated_cases=len(results),
+            rag_success_cases=len(results),
+            retrieval_metrics=retrieval_metrics,
+            ragas_df=ragas_df,
+            ragas_metric_names=[metric.name for metric in self.ragas_metrics],
+            rag_errors=len(rag_errors),
+            ragas_errors=len(ragas_errors),
+        )
+        write_json(run_dir / "summary_metrics.json", summary_metrics)
 
         # Generating a report
-        self.generate_report(ragas_df, retrieval_metrics, output_dir)
+        self.generate_report(
+            run_dir=run_dir,
+            manifest=manifest,
+            summary_metrics=summary_metrics,
+            ragas_df=ragas_df,
+            mode="full",
+            missed_retrieval_case_ids=missed_retrieval_ids,
+        )
 
         logger.info("✓ The full evaluation cycle has been completed")
 
