@@ -1,8 +1,42 @@
 from cadence_md.app.pdf_parser.parser import (
     MAX_SECTION_LENGTH,
     ClinicalGuidelinesParser,
+    ClinicalSection,
 )
 from cadence_md.app.pdf_parser.text_extraction import ExtractionResult, TextQuality
+
+
+def test_clinical_section_builds_stable_section_id() -> None:
+    section = ClinicalSection(
+        filename="guideline.pdf",
+        document_title="Клинические рекомендации",
+        section_type="treatment",
+        section_title="3. Лечение",
+        content="Текст раздела",
+        mkb_codes=["A00"],
+    )
+    same_section = ClinicalSection.from_dict(
+        {
+            "filename": "guideline.pdf",
+            "document_title": "Клинические рекомендации",
+            "section_type": "treatment",
+            "section_title": "3. Лечение",
+            "content": "Другой текст не влияет на id",
+            "mkb_codes": ["A00"],
+        }
+    )
+    other_section = ClinicalSection(
+        filename="guideline.pdf",
+        document_title="Клинические рекомендации",
+        section_type="treatment",
+        section_title="3.1 Хирургическое лечение",
+        content="Текст раздела",
+        mkb_codes=["A00"],
+    )
+
+    assert section.section_id == same_section.section_id
+    assert section.section_id != other_section.section_id
+    assert section.to_dict()["section_id"] == section.section_id
 
 
 def test_extract_sections_skips_toc_and_trims_tail() -> None:

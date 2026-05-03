@@ -11,14 +11,18 @@ def test_collect_missed_retrieval_case_ids_returns_missed_ids() -> None:
             ground_truth_answer="a1",
             ground_truth_context="aspirin daily 75mg for patient prevention",
             retrieved_contexts=[
-                Document(page_content="irrelevant text", metadata={}),
-                Document(page_content="completely different context", metadata={}),
+                Document(page_content="irrelevant text", metadata={"section_id": "other"}),
+                Document(
+                    page_content="completely different context",
+                    metadata={"section_id": "other"},
+                ),
             ],
             retrieval_scores=[0.4, 0.3],
             generated_answer="",
             question_type="factoid",
             section_type="therapy",
             test_case_id=1,
+            ground_truth_section_id="expected",
         ),
         RAGTestResult(
             question="q2",
@@ -26,8 +30,8 @@ def test_collect_missed_retrieval_case_ids_returns_missed_ids() -> None:
             ground_truth_context="acetylsalicylic acid daily 75mg for patient prevention",
             retrieved_contexts=[
                 Document(
-                    page_content="acetylsalicylic acid daily 75mg for patient prevention",
-                    metadata={},
+                    page_content="different text can still match by section id",
+                    metadata={"section_id": "expected"},
                 )
             ],
             retrieval_scores=[0.9],
@@ -35,13 +39,16 @@ def test_collect_missed_retrieval_case_ids_returns_missed_ids() -> None:
             question_type="factoid",
             section_type="therapy",
             test_case_id=2,
+            ground_truth_section_id="expected",
         ),
     ]
 
     missed = collect_missed_retrieval_case_ids(
         results=results,
         k=2,
-        matcher=lambda gt, retrieved: gt in retrieved or retrieved in gt,
+        matcher=lambda result, doc: (
+            doc.metadata.get("section_id") == result.ground_truth_section_id
+        ),
     )
 
     assert missed == [1]
@@ -51,6 +58,6 @@ def test_collect_missed_retrieval_case_ids_handles_empty_results() -> None:
     missed = collect_missed_retrieval_case_ids(
         results=[],
         k=5,
-        matcher=lambda _gt, _retrieved: False,
+        matcher=lambda _result, _doc: False,
     )
     assert missed == []

@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import re
 from dataclasses import asdict, dataclass
@@ -47,6 +48,16 @@ class ClinicalSection:
     section_title: str
     content: str
     mkb_codes: list[str]
+    section_id: str = ""
+
+    def __post_init__(self) -> None:
+        """Populate stable section id for old serialized sections."""
+        if not self.section_id:
+            self.section_id = self.build_section_id(
+                filename=self.filename,
+                document_title=self.document_title,
+                section_title=self.section_title,
+            )
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -54,6 +65,21 @@ class ClinicalSection:
     @classmethod
     def from_dict(cls, data: dict):
         return cls(**data)
+
+    @staticmethod
+    def build_section_id(*, filename: str, document_title: str, section_title: str) -> str:
+        """Build a deterministic section id shared by QA generation and RAG indexing."""
+        key_parts = [
+            ClinicalSection._normalize_id_part(filename),
+            ClinicalSection._normalize_id_part(document_title),
+            ClinicalSection._normalize_id_part(section_title),
+        ]
+        digest = hashlib.sha256("|".join(key_parts).encode("utf-8")).hexdigest()
+        return f"section_{digest[:16]}"
+
+    @staticmethod
+    def _normalize_id_part(value: str) -> str:
+        return re.sub(r"\s+", " ", value.casefold().strip())
 
 
 @dataclass(frozen=True)

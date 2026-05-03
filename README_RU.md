@@ -37,34 +37,6 @@ poetry run python commands.py --help
 poetry run python commands.py <подкоманда> --help
 ```
 
-### `generate-qa`
-
-Генерация синтетического QA-датасета из JSONL с клиническими секциями (результат
-парсера).
-
-| Опция                | По умолчанию                                        | Описание                                                        |
-| -------------------- | --------------------------------------------------- | --------------------------------------------------------------- |
-| `--sections-file`    | `data/clinical_sections.jsonl`                      | Входной JSONL секций                                            |
-| `--output-file`      | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Выходной QA JSONL                                               |
-| `--model`            | `GigaChat-2-Max`                                    | Имя LLM (например `GigaChat`, `GigaChat-2-Max`, `GigaChat-pro`) |
-| `--base-url`         | —                                                   | Опционально: base URL для локальной модели                      |
-| `--load-api-key`     | вкл.                                                | Брать API-ключ из окружения                                     |
-| `--no-load-api-key`  | выкл.                                               | Отключить загрузку API-ключа из окружения                       |
-| `--temperature`      | `0.0`                                               | Температура сэмплирования                                       |
-| `--max-context`      | `10000`                                             | Максимальная длина контекста (символы)                          |
-| `--sections-per-pdf` | `3`                                                 | Случайно выбрать до N секций на каждый исходный PDF             |
-| `--seed`             | —                                                   | Seed для воспроизводимой случайной выборки                      |
-
-Пример:
-
-```bash
-poetry run python commands.py generate-qa --sections-file data/clinical_sections.jsonl
-```
-
-Нужны учётные данные LLM (например `GIGACHAT_API_KEY`), как настроено у
-генератора QA. Команда завершается с ошибкой, если файл `--output-file` уже
-существует.
-
 ### `parse-pdf`
 
 Парсит директорию с клиническими рекомендациями в PDF и сохраняет результат в
@@ -91,18 +63,50 @@ poetry run python commands.py parse-pdf \
   --max-files 5
 ```
 
+### `generate-qa`
+
+Генерация синтетического QA-датасета из JSONL с клиническими секциями (результат
+парсера).
+
+| Опция                | По умолчанию                                        | Описание                                                        |
+| -------------------- | --------------------------------------------------- | --------------------------------------------------------------- |
+| `--sections-file`    | `data/clinical_sections.jsonl`                      | Входной JSONL секций                                            |
+| `--output-file`      | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Выходной QA JSONL                                               |
+| `--model`            | `GigaChat-2-Max`                                    | Имя LLM (например `GigaChat`, `GigaChat-2-Max`, `GigaChat-pro`) |
+| `--temperature`      | `0.0`                                               | Температура сэмплирования                                       |
+| `--max-context`      | `10000`                                             | Максимальная длина контекста (символы)                          |
+| `--sections-per-pdf` | `3`                                                 | Случайно выбрать до N секций на каждый исходный PDF             |
+| `--seed`             | —                                                   | Seed для воспроизводимой случайной выборки                      |
+
+Пример:
+
+```bash
+poetry run python commands.py generate-qa --sections-file data/clinical_sections.jsonl
+```
+
+После успешной генерации рядом с `--output-file` создаётся Markdown-отчёт:
+`{stem}_generation_report.md`, где `{stem}` — имя выходного файла без расширения
+(например `.../qa_dataset.jsonl` → `.../qa_dataset_generation_report.md`). В
+отчёте: параметры запуска, сводка конвейера (загрузка секций, пропуски битых
+строк JSONL, число сгенерированных пар и неудачных секций), распределения по
+типу вопроса и типу секции.
+
+Нужны учётные данные LLM (например `GIGACHAT_API_KEY`), как настроено у
+генератора QA. Команда завершается с ошибкой, если файл `--output-file` уже
+существует.
+
 ### `metrics-eval-full`
 
 Полная оценка RAG: генерация ответов, метрики RAGAS, метрики ретрива и отчёты в
 каталоге вывода.
 
-| Опция            | По умолчанию                                        | Описание                     |
-| ---------------- | --------------------------------------------------- | ---------------------------- |
-| `--dataset-file` | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | JSONL с вопросами для оценки |
-| `--output-dir`   | `metrics/results/`                                  | Отчёты и файлы метрик        |
-| `--sample-size`  | —                                                   | Ограничить число тест-кейсов |
-| `--k`            | `5`                                                 | K для recall@K / precision@K |
-| `--pdf-dir`      | `data/main_specialities/`                           | Папка PDF для setup Qdrant   |
+| Опция                           | По умолчанию                                        | Описание                                                     |
+| ------------------------------- | --------------------------------------------------- | ------------------------------------------------------------ |
+| `--dataset-file`                | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | JSONL с вопросами для оценки                                 |
+| `--output-dir`                  | `metrics/results/`                                  | Отчёты и файлы метрик                                        |
+| `--sample-size`                 | —                                                   | Ограничить число тест-кейсов                                 |
+| `--k`                           | `5`                                                 | K для recall@K / precision@K                                 |
+| `--enable-text-matcher-metrics` | выкл.                                               | Дополнительно считать диагностические `text_match_*` метрики |
 
 Пример:
 
@@ -140,21 +144,19 @@ metrics/results/<run_id>/
   retrieval_cases.jsonl
 ```
 
+Основные метрики ретривера теперь считаются по `section_id`, поэтому для точной
+оценки нужны новый QA-датасет и переиндексация корпуса в Qdrant. Флаг
+`--enable-text-matcher-metrics` включает только дополнительные диагностические
+метрики по текстовому overlap и сохраняет их отдельно как `text_match_*`.
+
 Пример:
 
 ```bash
 poetry run python commands.py metrics-eval-retriever --k 5
 ```
 
-### Прямой запуск `metrics/main.py`
-
-Тот же CLI метрик можно вызвать напрямую (подкоманды `full` и `retriever`, те же
-флаги):
-
-```bash
-poetry run python metrics/main.py full --help
-poetry run python metrics/main.py retriever --help
-```
+Список флагов: `poetry run python commands.py metrics-eval-full --help` и
+`metrics-eval-retriever --help`.
 
 ## Лицензия
 

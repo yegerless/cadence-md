@@ -62,3 +62,34 @@ def test_build_summary_metrics_without_ragas_scores() -> None:
     assert summary["total_loaded_cases"] == 12
     assert summary["retrieval_metrics"]["k"] == 7
     assert "ragas_metrics" not in summary
+
+
+def test_build_summary_metrics_includes_optional_text_match_metrics() -> None:
+    summary = build_summary_metrics(
+        mode="retriever",
+        total_loaded_cases=1,
+        evaluated_cases=1,
+        rag_success_cases=1,
+        retrieval_metrics={
+            "k": 5,
+            "hit_rate": 0.0,
+            "mrr": 0.0,
+            "recall_at_k": 0.0,
+            "precision_at_k": 0.0,
+            "avg_score": 0.5,
+        },
+        text_match_retrieval_metrics={
+            "text_match_k": 5,
+            "text_match_hit_rate": 1.0,
+            "text_match_mrr": 1.0,
+            "text_match_recall_at_k": 1.0,
+            "text_match_precision_at_k": 0.2,
+            "text_match_avg_score": 0.5,
+        },
+        ragas_df=None,
+        ragas_metric_names=[],
+        rag_errors=0,
+        ragas_errors=0,
+    )
+
+    assert summary["text_match_retrieval_metrics"]["text_match_hit_rate"] == 1.0

@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import random
 import time
 from collections import defaultdict
@@ -8,36 +7,49 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any, TypedDict
 
-from dotenv import load_dotenv
 from gigachat.exceptions import ResponseError
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_gigachat.chat_models import GigaChat
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from tqdm import tqdm
 
 from cadence_md.app.enums import QuestionType, SectionType
 from cadence_md.app.pdf_parser import ClinicalSection
+from qa_dataset_generator.config import (
+    CONTEXT_FALLBACK_MAX_LEN,
+    DEFAULT_MAX_CONTEXT_LENGTH,
+    DEFAULT_MIN_CONTEXT_LENGTH,
+    DEFAULT_MODEL_NAME,
+    DEFAULT_SECTIONS_PER_PDF,
+    DEFAULT_TEMPERATURE,
+    GENERATION_TQDM_DESC,
+    GENERATION_TQDM_UNIT,
+    GIGACHAT_API_KEY,
+    GIGACHAT_API_KEY_ENV,
+    GIGACHAT_VERIFY_SSL_CERTS,
+    INITIAL_RETRY_DELAY_SEC,
+    INTERMEDIATE_SAVE_SECTION_INTERVAL,
+    MAX_LLM_RETRY_ATTEMPTS,
+    MAX_RETRY_DELAY_SEC,
+    MIN_ANSWER_LENGTH,
+    MIN_QUESTION_LENGTH,
+    RETRY_JITTER_MAX_FACTOR,
+    SECTION_QUESTION_TYPES,
+    UNKNOWN_SOURCE_KEY,
+)
 from qa_dataset_generator.prompts import GENERATION_PROMPTS
-from qa_dataset_generator.schemas import QAPair, QAResponsePair
+from qa_dataset_generator.schemas import (
+    GenerationPipelineStats,
+    QAPair,
+    QAResponsePair,
+    _SelectionStats,
+)
 
+# setup logger
 logger = logging.getLogger(__name__)
-
-DEFAULT_MAX_CONTEXT_LENGTH = 10_000
-DEFAULT_SECTIONS_PER_PDF = 3
-MAX_LLM_RETRY_ATTEMPTS = 6
-INITIAL_RETRY_DELAY_SEC = 1.0
-MAX_RETRY_DELAY_SEC = 30.0
-
-# Mapping section types to question types
-SECTION_QUESTION_TYPES = {
-    SectionType.DEFINITION: [QuestionType.SIMPLE, QuestionType.REASONING],
-    SectionType.SYMPTOMS: [QuestionType.SIMPLE, QuestionType.CONDITIONAL],
-    SectionType.DIAGNOSIS: [QuestionType.SIMPLE, QuestionType.COMPARISON],
-    SectionType.TREATMENT: [QuestionType.SIMPLE, QuestionType.CONDITIONAL, QuestionType.COMPARISON],
-    SectionType.PREVENTION: [QuestionType.SIMPLE],
-    SectionType.REHABILITATION: [QuestionType.SIMPLE],
-}
+logger.setLevel(logging.INFO)
 
 
 # langgraph state
@@ -81,13 +93,10 @@ def _invoke_with_retry(
                 raise
             last_error = error
             logger.warning(
-                "Temporary LLM error, retrying in %.1f sec (%s/%s): %s",
-                delay,
-                attempt,
-                max_attempts,
-                error,
+                f"Temporary LLM error, retrying in {delay:.1f} sec ({attempt}/{max_attempts}): "
+                f"{error}"
             )
-            jitter = random.uniform(0, 0.5 * delay)
+            jitter = random.uniform(0, RETRY_JITTER_MAX_FACTOR * delay)
             time.sleep(delay + jitter)
             delay = min(MAX_RETRY_DELAY_SEC, delay * 2)
     if last_error is not None:
@@ -96,15 +105,37 @@ def _invoke_with_retry(
 
 
 class QAGeneratorNodes:
-    """Nodes for LangGraph QA generation graph"""
+    """
+    Nodes for LangGraph QA generation graph
+
+    Nodes:
+    - initialize_generation: Initialization - Defining Question Types
+    - generate_questions: Question generation via LLM
+    - validate_qa_pair: Validation of QA pairs
+    """
 
     def __init__(self, llm: GigaChat, max_context_length: int = DEFAULT_MAX_CONTEXT_LENGTH):
+        """
+        Initialization of the nodes
+
+        Args:
+            llm: LLM model
+            max_context_length: Maximum context length
+        """
         self.llm = llm
         self.max_context_length = max_context_length
+        # Parser for the LLM response
         self.parser = JsonOutputParser(pydantic_object=QAResponsePair)
 
     def initialize_generation(self, state: QAGenerationState) -> QAGenerationState:
-        """Node 1: Initialization - Defining Question Types"""
+        """
+        Node 1 (initialization) - defining question type for the section
+
+        Args:
+            state: State of the LangGraph graph with question section
+        Returns:
+            State of the LangGraph graph with the question type
+        """
         section = state["section"]
         section_type = SectionType(section.section_type)
 
@@ -115,14 +146,20 @@ class QAGeneratorNodes:
         state["errors"] = []
 
         logger.info(
-            f"Initialization for '{section.section_type}', "
-            f"types of questions: {state['question_type']}"
+            f"Initialization for section '{section.section_type}', "
+            f"question type: {state['question_type']}"
         )
 
         return state
 
     def generate_questions(self, state: QAGenerationState) -> QAGenerationState:
-        """Node 2: Question generation via LLM"""
+        """Node 2 (generation) - question generation via LLM
+
+        Args:
+            state: State of the LangGraph graph with question section and question type
+        Returns:
+            State of the LangGraph graph with the generated QA pair
+        """
         section = state["section"]
         question_type = state["question_type"]
 
@@ -152,7 +189,7 @@ class QAGeneratorNodes:
             # Call LLM
             result = _invoke_with_retry(chain=chain, payload={"context": context})
 
-            # Convert QAPair
+            # Convert result to QAPair
             pair = QAPair(
                 question=result.get("question", ""),
                 answer=result.get("answer", ""),
@@ -161,11 +198,12 @@ class QAGeneratorNodes:
                 document_title=section.document_title,
                 section_title=section.section_title,
                 mkb_codes=section.mkb_codes,
-                context=result.get("context", context[:1000]),
+                context=result.get("context", context[:CONTEXT_FALLBACK_MAX_LEN]),
+                section_id=section.section_id,
             )
             state["generated_pair"] = pair
 
-            logger.info("Generated QA pair")
+            logger.info("QA pair generated successfully")
 
         except Exception as e:
             error_msg = f"Generation error: {e}"
@@ -175,7 +213,13 @@ class QAGeneratorNodes:
         return state
 
     def validate_qa_pair(self, state: QAGenerationState) -> QAGenerationState:
-        """Node 3: Validation of QA pairs"""
+        """Node 3 (validation) - validation of QA pairs
+
+        Args:
+            state: State of the LangGraph graph with the generated QA pair
+        Returns:
+            State of the LangGraph graph with the validated QA pair or None if the pair is invalid
+        """
         invalid = False
         pair = state["generated_pair"]
 
@@ -183,10 +227,10 @@ class QAGeneratorNodes:
         if not pair:
             state["errors"].append("generated_pair not found")
             invalid = True
-        elif len(pair.question) < 10:
+        elif len(pair.question) < MIN_QUESTION_LENGTH:
             state["errors"].append(f"Question too short: {pair.question}")
             state["generated_pair"] = None
-        elif len(pair.answer) < 20:
+        elif len(pair.answer) < MIN_ANSWER_LENGTH:
             state["errors"].append(f"Answer too short: {pair.question}")
             state["generated_pair"] = None
 
@@ -203,14 +247,39 @@ class QAGeneratorNodes:
 
 
 class QAGenerationGraph:
-    """LangGraph graph for generating QA datasets"""
+    """
+    LangGraph graph for generating QA datasets
+
+    Nodes:
+    - initialize: Initialization - defining question type for the section
+    - generate: Question generation via LLM
+    - validate: Validation of QA pairs
+
+    Edges:
+    - START -> initialize
+    - initialize -> generate
+    - generate -> validate
+    - validate -> END
+    """
 
     def __init__(self, llm: GigaChat, max_context_length: int = DEFAULT_MAX_CONTEXT_LENGTH):
+        """
+        Initialization of the graph
+
+        Args:
+            llm: LLM model
+            max_context_length: Maximum context length
+        """
         self.nodes = QAGeneratorNodes(llm, max_context_length)
         self.graph = self._build_graph()
 
     def _build_graph(self) -> CompiledStateGraph:
-        """Construction of a graph"""
+        """
+        Construction of a graph
+
+        Returns:
+            CompiledStateGraph: Compiled graph
+        """
         workflow = StateGraph(QAGenerationState)
 
         # Add nodes
@@ -227,7 +296,14 @@ class QAGenerationGraph:
         return workflow.compile()
 
     def run(self, section: ClinicalSection) -> QAPair | None:
-        """Running a graph for one section"""
+        """
+        Running a graph for one section
+
+        Args:
+            section: Section to generate questions for
+        Returns:
+            QAPair: Generated QA pair or None if the generation failed
+        """
         logger.info(f"Start generation for: {section.document_title} / {section.section_title}")
 
         initial_state: QAGenerationState = {
@@ -251,52 +327,92 @@ class QAGenerationGraph:
 
 
 class QADatasetGenerator:
-    """Synthetic dataset generator for all sections"""
+    """
+    Synthetic dataset generator for all sections
+    This class is used to generate a synthetic dataset from a file with sections
+    and save it to a JSONL file
+
+    Raises:
+        ValueError: If sections_per_pdf is less than or equal to 0
+        ValueError: If min_context_length is less than 0
+        ValueError: If the output file already exists
+
+    Examples:
+        >>> generator = QADatasetGenerator(
+        >>>     model_name="GigaChat-2-Max",
+        >>>     temperature=0.0,
+        >>>     max_context_length=10000,
+        >>>     min_context_length=500,
+        >>>     sections_per_pdf=3,
+        >>>     seed=42,
+        >>> )
+        >>> generator.generate_from_sections_file(
+        >>>     sections_file="data/clinical_sections.jsonl",
+        >>>     output_file="data/qa_dataset.jsonl",
+        >>> )
+    """
 
     def __init__(
         self,
-        model_name: str = "GigaChat",  # "GigaChat-2-Max"
-        base_url: str | None = None,  # for local models
-        load_api_key: bool = True,
-        temperature: float = 0.7,
+        model_name: str = DEFAULT_MODEL_NAME,
+        temperature: float = DEFAULT_TEMPERATURE,
         max_context_length: int = DEFAULT_MAX_CONTEXT_LENGTH,
+        min_context_length: int = DEFAULT_MIN_CONTEXT_LENGTH,
         sections_per_pdf: int = DEFAULT_SECTIONS_PER_PDF,
         seed: int | None = None,
     ):
+        """
+        Initialization of the generator
+
+        Args:
+            model_name: Name of the LLM model
+            temperature: Temperature for the LLM model
+            max_context_length: Maximum context length for the LLM model
+            min_context_length: Minimum context length for the LLM model
+            sections_per_pdf: Number of sections per PDF for the LLM model
+            seed: Seed for the random number generator for the LLM model
+        """
         if sections_per_pdf <= 0:
             raise ValueError("sections_per_pdf must be greater than 0")
+        if min_context_length < 0:
+            raise ValueError("min_context_length must be >= 0")
         self.sections_per_pdf = sections_per_pdf
+        self.min_context_length = min_context_length
         self.rng = random.Random(seed)
-
-        load_dotenv(dotenv_path=".env.dev", override=True)
 
         # init LLM
         llm_kwargs = {
             "model": model_name,
-            "verify_ssl_certs": False,
+            "verify_ssl_certs": GIGACHAT_VERIFY_SSL_CERTS,
             "temperature": temperature,
         }
 
-        if base_url:
-            llm_kwargs["base_url"] = base_url
-
-        if load_api_key:
-            llm_kwargs["credentials"] = self._get_api_key()
+        if not GIGACHAT_API_KEY:
+            raise ValueError(
+                f"{GIGACHAT_API_KEY_ENV} is not set",
+            )
+        llm_kwargs["credentials"] = GIGACHAT_API_KEY
 
         self.llm = GigaChat(**llm_kwargs)
 
         # Build graph
         self.graph = QAGenerationGraph(llm=self.llm, max_context_length=max_context_length)
 
-    def _get_api_key(self) -> str:
-        """Get API key after env loading."""
-        api_key = os.getenv("GIGACHAT_API_KEY", "")
-        if not api_key:
-            raise ValueError("GIGACHAT_API_KEY is not set while load_api_key=True")
-        return api_key
+    def generate_from_sections_file(
+        self, sections_file: Path, output_file: Path
+    ) -> tuple[list[QAPair], GenerationPipelineStats]:
+        """
+        Generating QA from a file with sections
 
-    def generate_from_sections_file(self, sections_file: Path, output_file: Path) -> list[QAPair]:
-        """Generating QA from a file with sections"""
+        Args:
+            sections_file: Path to the file with sections
+            output_file: Path to the file to save the generated QA pairs
+        Returns:
+            tuple[list[QAPair], GenerationPipelineStats]: Generated QA pairs and statistics
+
+        Raises:
+            FileExistsError: If the output file already exists
+        """
         logger.info(f"Loading sections from {sections_file}")
         if output_file.exists():
             raise FileExistsError(f"Output file already exists: {output_file}")
@@ -312,28 +428,21 @@ class QADatasetGenerator:
                         data = json.loads(line)
                     except json.JSONDecodeError as error:
                         skipped_invalid_jsonl += 1
-                        logger.warning(
-                            "Skipping invalid JSON at line %s: %s",
-                            line_number,
-                            error,
-                        )
+                        logger.warning(f"Skipping invalid JSON at line {line_number}: {error}")
                         continue
                     try:
                         sections.append(ClinicalSection.from_dict(data))
                     except (TypeError, ValueError) as error:
                         skipped_invalid_jsonl += 1
-                        logger.warning(
-                            "Skipping invalid section at line %s: %s",
-                            line_number,
-                            error,
-                        )
+                        logger.warning(f"Skipping invalid section at line {line_number}: {error}")
                         continue
-        selected_sections = self._select_random_sections(sections)
+        selected_sections, selection_stats = self._select_random_sections(sections)
         logger.info(
-            "Loaded %s sections, selected %s for generation, skipped_invalid_jsonl=%s",
-            len(sections),
-            len(selected_sections),
-            skipped_invalid_jsonl,
+            f"Loaded {len(sections)} sections, selected {len(selected_sections)} for generation, "
+            f"skipped_invalid_jsonl={skipped_invalid_jsonl}, "
+            f"filtered_short={selection_stats.sections_filtered_short}, "
+            f"sources_total={selection_stats.sources_total}, "
+            f"sources_skipped_short={selection_stats.sources_skipped_short}",
         )
 
         # Generate QA for selected sections
@@ -342,102 +451,161 @@ class QADatasetGenerator:
         processed = 0
         failed = 0
 
-        for i, section in enumerate(selected_sections, 1):
-            logger.info(f"Section processing {i}/{len(selected_sections)}")
+        pbar = tqdm(
+            enumerate(selected_sections, 1),
+            total=len(selected_sections),
+            desc=GENERATION_TQDM_DESC,
+            unit=GENERATION_TQDM_UNIT,
+        )
+        for i, section in pbar:
             processed += 1
 
             try:
                 pair = self.graph.run(section)
                 if pair is None:
                     failed += 1
-                    continue
-                all_pairs.append(pair)
-                pending_pairs.append(pair)
-
-                # Intermediate save every 10 sections
-                if i % 10 == 0 and pending_pairs:
-                    self._append_pairs(pending_pairs, output_file)
-                    logger.info(
-                        "Intermediate storage: %s total generated, %s failed",
-                        len(all_pairs),
-                        failed,
-                    )
-                    pending_pairs = []
-
+                else:
+                    all_pairs.append(pair)
+                    pending_pairs.append(pair)
             except Exception as e:
                 failed += 1
                 logger.error(f"Error processing section {section.section_title}: {e}")
-                continue
+
+            # Intermediate save
+            if i % INTERMEDIATE_SAVE_SECTION_INTERVAL == 0 and pending_pairs:
+                self._append_pairs(pending_pairs, output_file)
+                logger.info(
+                    f"Intermediate storage: {len(all_pairs)} total generated, {failed} failed",
+                )
+                pending_pairs = []
+
+            pbar.set_postfix(generated=len(all_pairs), failed=failed)
 
         # Final save
         if pending_pairs:
             self._append_pairs(pending_pairs, output_file)
         logger.info(
-            "Generation complete: processed=%s generated=%s failed=%s skipped_invalid_jsonl=%s",
-            processed,
-            len(all_pairs),
-            failed,
-            skipped_invalid_jsonl,
+            f"Generation complete: processed={processed} generated={len(all_pairs)} failed={failed}"
+            f" skipped_invalid_jsonl={skipped_invalid_jsonl}"
         )
 
-        return all_pairs
+        stats = GenerationPipelineStats(
+            sections_loaded=len(sections),
+            sections_selected=len(selected_sections),
+            skipped_invalid_jsonl=skipped_invalid_jsonl,
+            sections_processed=processed,
+            pairs_generated=len(all_pairs),
+            sections_failed=failed,
+            min_context_length=self.min_context_length,
+            sources_total=selection_stats.sources_total,
+            sources_skipped_short=selection_stats.sources_skipped_short,
+            skipped_sources=tuple(selection_stats.skipped_sources),
+            sections_filtered_short=selection_stats.sections_filtered_short,
+        )
+        return all_pairs, stats
 
-    def _select_random_sections(self, sections: list[ClinicalSection]) -> list[ClinicalSection]:
-        """Select N sections per source with balanced section_type distribution."""
+    def _select_random_sections(
+        self, sections: list[ClinicalSection]
+    ) -> tuple[list[ClinicalSection], _SelectionStats]:
+        """
+        Select N sections per source with balanced section_type distribution.
+        Applies a minimum context length filter for balancing. Sources
+        that have no fragments remaining after the filter are included in the result and
+        are recorded in the returned statistics. If a source contains sections
+        smaller than `min_context_length`, all sections are retrieved without duplicates
+
+        Args:
+            sections: List of sections to select from
+        Returns:
+            tuple[list[ClinicalSection], _SelectionStats]: Selected sections and statistics
+        """
+        # Group sections by source
         sections_by_source: dict[str, list[ClinicalSection]] = defaultdict(list)
         for section in sections:
             source_key = section.filename.strip() if section.filename else section.document_title
             if not source_key:
-                source_key = "unknown_source"
+                source_key = UNKNOWN_SOURCE_KEY
             sections_by_source[source_key].append(section)
 
+        # Initialize statistics
+        stats = _SelectionStats(sources_total=len(sections_by_source))
         selected: list[ClinicalSection] = []
+
+        # Select sections
         for source_key, source_sections in sections_by_source.items():
+            # Filter sections by minimum context length
+            long_sections = [
+                section
+                for section in source_sections
+                if len(section.content) >= self.min_context_length
+            ]
+            stats.sections_filtered_short += len(source_sections) - len(long_sections)
+
+            # If no sections are left, skip the source
+            if not long_sections:
+                stats.sources_skipped_short += 1
+                stats.skipped_sources.append(source_key)
+                logger.warning(
+                    f"Source '{source_key}': no sections with content length >= "
+                    f"{self.min_context_length} (total sections: {len(source_sections)})"
+                )
+                continue
+
+            # If number of sections less than requested number, use all sections without balancing
+            if len(long_sections) < self.sections_per_pdf:
+                source_selected = list(long_sections)
+                self.rng.shuffle(source_selected)
+                logger.info(
+                    f"Source '{source_key}': only {len(long_sections)} long sections available "
+                    f"(< {self.sections_per_pdf} requested), using all of them without balancing",
+                )
+                selected.extend(source_selected)
+                continue
+
+            # Group sections by section type
             sections_by_type: dict[str, list[ClinicalSection]] = defaultdict(list)
-            for section in source_sections:
+            for section in long_sections:
                 sections_by_type[section.section_type].append(section)
 
             type_keys = list(sections_by_type.keys())
-            if not type_keys:
-                continue
 
-            # Distribute requested N as evenly as possible across section types.
+            # Distribute requested N as evenly as possible across section types
             base = self.sections_per_pdf // len(type_keys)
             remainder = self.sections_per_pdf % len(type_keys)
             counts_by_type = {section_type: base for section_type in type_keys}
 
+            # Sample remainder section types
             for section_type in self.rng.sample(type_keys, k=remainder):
                 counts_by_type[section_type] += 1
 
+            # Select sections by section type
             source_selected: list[ClinicalSection] = []
             for section_type, target_count in counts_by_type.items():
                 if target_count == 0:
                     continue
-                pool = list(sections_by_type[section_type])
-                if target_count <= len(pool):
-                    source_selected.extend(self.rng.sample(pool, k=target_count))
-                    continue
+                pool = sections_by_type[section_type]
+                effective_count = min(target_count, len(pool))
+                if effective_count < target_count:
+                    logger.info(
+                        f"Source '{source_key}', section_type '{section_type}': pool has "
+                        f"{len(pool)} sections (< quota {target_count}); taking all without reuse"
+                    )
+                source_selected.extend(self.rng.sample(pool, k=effective_count))
 
-                # If there are fewer sections than required quota,
-                # reuse random sections of that type.
-                source_selected.extend(pool)
-                missing = target_count - len(pool)
-                source_selected.extend(self.rng.choices(pool, k=missing))
-                logger.info(
-                    "Reused %s sections for source '%s' and section_type '%s' "
-                    "to satisfy balanced quota (%s requested, %s available).",
-                    missing,
-                    source_key,
-                    section_type,
-                    target_count,
-                    len(pool),
-                )
-
+            # Shuffle sections
             self.rng.shuffle(source_selected)
+            # Add sections to selected list
             selected.extend(source_selected)
-        return selected
+
+        return selected, stats
 
     def _append_pairs(self, pairs: list[QAPair], output_file: Path) -> None:
-        """Append QA pairs to JSONL file."""
+        """
+        Append QA pairs to JSONL file.
+
+        Args:
+            pairs: List of QA pairs to append to the file
+            output_file: Path to the file to append the QA pairs to
+        """
         with Path(output_file).open("a", encoding="utf-8") as f:
             f.writelines(pair.model_dump_json() + "\n" for pair in pairs)

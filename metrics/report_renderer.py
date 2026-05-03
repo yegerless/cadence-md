@@ -11,12 +11,24 @@ def render_validation_report(
     mode: str,
     missed_retrieval_case_ids: list[int],
 ) -> str:
-    """Render a human-readable markdown report for validation artifacts."""
+    """
+    Render a human-readable markdown report for validation artifacts
+
+    Args:
+        manifest: Manifest for the run
+        summary_metrics: Summary metrics for the run
+        ragas_df: RAGAS dataframe for the run
+        mode: Mode of the run
+        missed_retrieval_case_ids: List of case IDs that were missed in retrieval
+    Returns:
+        String containing the rendered report
+    """
     lines: list[str] = ["# RAG Validation Report\n\n"]
     lines.extend(_render_run_section(manifest=manifest, mode=mode))
     lines.extend(_render_rag_config_section(manifest=manifest))
     lines.extend(_render_execution_summary_section(summary_metrics=summary_metrics))
     lines.extend(_render_retriever_metrics_section(summary_metrics=summary_metrics))
+    lines.extend(_render_text_match_retriever_metrics_section(summary_metrics=summary_metrics))
     if mode == "full":
         lines.extend(_render_ragas_metrics_section(summary_metrics=summary_metrics))
         lines.extend(_render_breakdown_sections(ragas_df=ragas_df))
@@ -26,6 +38,15 @@ def render_validation_report(
 
 
 def _render_run_section(*, manifest: dict[str, Any], mode: str) -> list[str]:
+    """
+    Render the run section of the report
+
+    Args:
+        manifest: Manifest for the run
+        mode: Mode of the run
+    Returns:
+        List of strings containing the rendered run section
+    """
     return [
         "## Run\n",
         f"- Run ID: `{manifest['run_id']}`\n",
@@ -38,6 +59,14 @@ def _render_run_section(*, manifest: dict[str, Any], mode: str) -> list[str]:
 
 
 def _render_rag_config_section(*, manifest: dict[str, Any]) -> list[str]:
+    """
+    Render the RAG configuration section of the report
+
+    Args:
+        manifest: Manifest for the run
+    Returns:
+        List of strings containing the rendered RAG configuration section
+    """
     rag_cfg = manifest["rag_config"]
     retrieval_cfg = rag_cfg["retrieval"]
     return [
@@ -56,6 +85,14 @@ def _render_rag_config_section(*, manifest: dict[str, Any]) -> list[str]:
 
 
 def _render_execution_summary_section(*, summary_metrics: dict[str, Any]) -> list[str]:
+    """
+    Render the execution summary section of the report
+
+    Args:
+        summary_metrics: Summary metrics for the run
+    Returns:
+        List of strings containing the rendered execution summary section
+    """
     return [
         "## Execution Summary\n",
         f"- Total loaded cases: {summary_metrics['total_loaded_cases']}\n",
@@ -67,6 +104,14 @@ def _render_execution_summary_section(*, summary_metrics: dict[str, Any]) -> lis
 
 
 def _render_retriever_metrics_section(*, summary_metrics: dict[str, Any]) -> list[str]:
+    """
+    Render the retriever metrics section of the report
+
+    Args:
+        summary_metrics: Summary metrics for the run
+    Returns:
+        List of strings containing the rendered retriever metrics section
+    """
     retrieval_metrics = summary_metrics["retrieval_metrics"]
     rk = retrieval_metrics.get("k")
     return [
@@ -79,7 +124,39 @@ def _render_retriever_metrics_section(*, summary_metrics: dict[str, Any]) -> lis
     ]
 
 
+def _render_text_match_retriever_metrics_section(*, summary_metrics: dict[str, Any]) -> list[str]:
+    """
+    Render the text match retriever metrics section of the report
+
+    Args:
+        summary_metrics: Summary metrics for the run
+    Returns:
+        List of strings containing the rendered text match retriever metrics section
+    """
+    retrieval_metrics = summary_metrics.get("text_match_retrieval_metrics")
+    if not retrieval_metrics:
+        return []
+
+    rk = retrieval_metrics.get("text_match_k")
+    return [
+        "## Text Matcher Retriever Metrics\n",
+        f"- Hit Rate (top-{rk}): {retrieval_metrics['text_match_hit_rate']:.3f}\n",
+        f"- MRR: {retrieval_metrics['text_match_mrr']:.3f}\n",
+        f"- Recall@{rk}: {retrieval_metrics['text_match_recall_at_k']:.3f}\n",
+        f"- Precision@{rk}: {retrieval_metrics['text_match_precision_at_k']:.3f}\n",
+        f"- Average score top-1: {retrieval_metrics['text_match_avg_score']:.3f}\n\n",
+    ]
+
+
 def _render_ragas_metrics_section(*, summary_metrics: dict[str, Any]) -> list[str]:
+    """
+    Render the RAGAS metrics section of the report
+
+    Args:
+        summary_metrics: Summary metrics for the run
+    Returns:
+        List of strings containing the rendered RAGAS metrics section
+    """
     lines: list[str] = ["## RAGAS Metrics\n"]
     ragas_summary = summary_metrics.get("ragas_metrics", {})
     if not ragas_summary:
@@ -101,6 +178,14 @@ def _render_ragas_metrics_section(*, summary_metrics: dict[str, Any]) -> list[st
 
 
 def _render_breakdown_sections(*, ragas_df: pd.DataFrame | None) -> list[str]:
+    """
+    Render the breakdown sections of the report
+
+    Args:
+        ragas_df: RAGAS dataframe for the run
+    Returns:
+        List of strings containing the rendered breakdown sections
+    """
     if ragas_df is None or ragas_df.empty:
         return []
 
@@ -119,6 +204,14 @@ def _render_breakdown_sections(*, ragas_df: pd.DataFrame | None) -> list[str]:
 
 
 def _render_problem_cases_section(*, missed_retrieval_case_ids: list[int]) -> list[str]:
+    """
+    Render the problem cases section of the report
+
+    Args:
+        missed_retrieval_case_ids: List of case IDs that were missed in retrieval
+    Returns:
+        List of strings containing the rendered problem cases section
+    """
     lines = [
         "## Problem Cases\n",
         f"- Missed retrieval cases: {len(missed_retrieval_case_ids)}\n",
@@ -131,6 +224,14 @@ def _render_problem_cases_section(*, missed_retrieval_case_ids: list[int]) -> li
 
 
 def _render_artifacts_section(*, mode: str) -> list[str]:
+    """
+    Render the artifacts section of the report
+
+    Args:
+        mode: Mode of the run
+    Returns:
+        List of strings containing the rendered artifacts section
+    """
     lines = [
         "## Artifacts\n",
         "- `run_manifest.json`\n",

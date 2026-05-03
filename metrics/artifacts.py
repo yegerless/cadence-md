@@ -11,18 +11,34 @@ from metrics.config import metrics_settings
 
 
 def now_utc_iso() -> str:
-    """Return current UTC timestamp in ISO 8601 format."""
+    """Return current UTC timestamp in ISO 8601 format"""
     return datetime.now(UTC).isoformat()
 
 
 def build_run_id(mode: str, timestamp_iso: str) -> str:
-    """Build deterministic run id from mode and timestamp."""
+    """
+    Build deterministic run id from mode and timestamp
+
+    Args:
+        mode: Mode of the run (retriever or full)
+        timestamp_iso: Timestamp in ISO 8601 format
+    Returns:
+        String containing the run id
+    """
     ts = timestamp_iso.replace("-", "").replace(":", "").split(".")[0].replace("+0000", "Z")
     return f"{mode}_{ts.replace('+00', 'Z')}"
 
 
 def build_run_directory(output_dir: Path, mode: str) -> tuple[Path, str, str]:
-    """Create and return run directory, run id, and timestamp."""
+    """
+    Create and return run directory, run id, and timestamp
+
+    Args:
+        output_dir: Path to the output directory (usuallymetrics/results/)
+        mode: Mode of the run (retriever or full)
+    Returns:
+        Tuple containing the run directory, run id, and timestamp
+    """
     timestamp_iso = now_utc_iso()
     run_id = build_run_id(mode=mode, timestamp_iso=timestamp_iso)
     run_dir = output_dir / run_id
@@ -31,14 +47,26 @@ def build_run_directory(output_dir: Path, mode: str) -> tuple[Path, str, str]:
 
 
 def append_jsonl(path: Path, row: dict[str, Any]) -> None:
-    """Append a single JSON object to JSONL file."""
+    """
+    Append a single JSON object to JSONL file
+
+    Args:
+        path: Path to the JSONL file
+        row: JSON object to append
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(_normalize_json_value(row), ensure_ascii=False) + "\n")
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Write JSON payload using UTF-8 and pretty formatting."""
+    """
+    Write JSON payload using UTF-8 and pretty formatting
+
+    Args:
+        path: Path to the JSON file
+        payload: JSON object to write
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(_normalize_json_value(payload), ensure_ascii=False, indent=2),
@@ -47,7 +75,15 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def document_to_record(document: Document, score: float | None = None) -> dict[str, Any]:
-    """Serialize LangChain document for artifacts."""
+    """
+    Serialize LangChain document for artifacts
+
+    Args:
+        document: LangChain document
+        score: Score of the document
+    Returns:
+        Dictionary containing the document and score
+    """
     record: dict[str, Any] = {
         "page_content": document.page_content,
         "metadata": document.metadata,
@@ -68,9 +104,25 @@ def create_run_manifest(
     sample_size: int | None,
     k: int | None,
     ragas_metric_names: list[str],
+    enable_text_matcher_metrics: bool = False,
 ) -> dict[str, Any]:
-    """Build manifest payload for a validation run."""
+    """
+    Build manifest payload for a validation run
 
+    Args:
+        mode: Mode of the run (retriever or full)
+        run_id: Run id
+        timestamp_iso: Timestamp in ISO 8601 format
+        output_dir: Path to the output directory
+        run_dir: Path to the run directory
+        dataset_file: Path to the dataset file
+        sample_size: Number of test cases to evaluate
+        k: Number of retrieved documents to evaluate
+        ragas_metric_names: List of RAGAS metric names to evaluate
+        enable_text_matcher_metrics: Whether to enable text matcher metrics
+    Returns:
+        Dictionary containing the manifest payload for a validation run
+    """
     rag_cfg = settings.rag_config
     return {
         "mode": mode,
@@ -84,6 +136,7 @@ def create_run_manifest(
         "run_parameters": {
             "sample_size": sample_size,
             "k": k,
+            "enable_text_matcher_metrics": enable_text_matcher_metrics,
         },
         "rag_config": {
             "llm_model": rag_cfg.llm.model_name,
@@ -108,7 +161,14 @@ def create_run_manifest(
 
 
 def _normalize_json_value(value: Any) -> Any:
-    """Convert non-JSON-native values to serializable ones."""
+    """
+    Convert non-JSON-native values to serializable ones
+
+    Args:
+        value: Value to normalize
+    Returns:
+        Normalized value
+    """
     normalized: Any
     if isinstance(value, dict):
         normalized = {str(k): _normalize_json_value(v) for k, v in value.items()}
