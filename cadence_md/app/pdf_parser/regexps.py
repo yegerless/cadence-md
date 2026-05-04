@@ -2,16 +2,20 @@ import re
 
 from cadence_md.app.enums import SectionType
 
-ICD_RE = re.compile(r"[A-Z]\d{2}(?:\.\d{1,2})?")  # international classification of deseases
+# international classification of deseases
+ICD_RE = re.compile(r"[A-Z]\d{2}(?:\.\d{1,2})?")
 
+# regex for sectionheader candidate
 HEADER_CANDIDATE_RE = re.compile(
     r"(?m)^\s*(?P<number>\d{1,2}(?:\.\d{1,2}){0,4}\.?)\s+(?P<title>[^\n]{3,260})\s*$",
 )
 
+# regex for table of contents entry
 TOC_ENTRY_RE = re.compile(
     r"(?m)^\s*\d{1,2}(?:\.\d{1,2}){0,4}\.?\s+[^\n]{3,200}?(?:\.{2,}\s*|\s+)\d{1,3}\s*$",
 )
 
+# regex for stop parsing patterns
 STOP_RE = re.compile(
     (
         r"(?:организац\w*\s+оказани\w*\s+медицинск\w*\s+помощ\w*)|"
@@ -23,6 +27,7 @@ STOP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# regex for section headers patterns
 SECTION_PATTERNS = {
     SectionType.DEFINITION: [
         r"кратк(?:ая|ие)\s+информац\w*\s+по\s+заболев",
@@ -74,6 +79,7 @@ SECTION_PATTERNS = {
     ],
 }
 
+# regex for excluded section headers
 EXCLUDE_PATTERNS = [
     r"приложени[еяа]",
     r"литератур",
@@ -91,6 +97,7 @@ EXCLUDE_PATTERNS = [
     r"организация\s+оказания",
 ]
 
+# regex for header keywords
 HEADER_KEYWORDS = [
     r"информация",
     r"определение",

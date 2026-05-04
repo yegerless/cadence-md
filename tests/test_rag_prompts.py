@@ -1,0 +1,64 @@
+"""Tests for :mod:`cadence_md.app.rag_prompts` prompt loading and formatting."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from cadence_md.app import rag_prompts
+
+
+def test_load_rag_system_prompt_reads_utf8_and_strips(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = tmp_path / "prompts"
+    d.mkdir()
+    (d / "rag_system.txt").write_text("  \nСистема: {prompt_version}\n  \n", encoding="utf-8")
+    monkeypatch.setattr(rag_prompts, "_PROMPTS_DIR", d)
+
+    out = rag_prompts.load_rag_system_prompt()
+    assert out == "Система: {prompt_version}"
+
+
+def test_load_rag_user_prompt_template_reads_and_strips(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = tmp_path / "prompts"
+    d.mkdir()
+    body = "Контекст:\n{context}\n\nВопрос: {question}"
+    (d / "rag_user.txt").write_text(f"  \n{body}\n  ", encoding="utf-8")
+    monkeypatch.setattr(rag_prompts, "_PROMPTS_DIR", d)
+
+    assert rag_prompts.load_rag_user_prompt_template() == body
+
+
+def test_format_rag_system_prompt_fills_prompt_version(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = tmp_path / "prompts"
+    d.mkdir()
+    (d / "rag_system.txt").write_text("Версия промпта: {prompt_version}", encoding="utf-8")
+    monkeypatch.setattr(rag_prompts, "_PROMPTS_DIR", d)
+
+    fake_settings = SimpleNamespace(
+        rag_config=SimpleNamespace(prompt_version="unit-test-2026"),
+    )
+    monkeypatch.setattr(rag_prompts, "settings", fake_settings)
+
+    assert rag_prompts.format_rag_system_prompt() == "Версия промпта: unit-test-2026"
+
+
+def test_prompt_loaders_use_expected_filenames(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ensure filenames stay ``rag_system.txt`` / ``rag_user.txt`` (contract for operators)."""
+    d = tmp_path / "prompts"
+    d.mkdir()
+    (d / "rag_system.txt").write_text("sys", encoding="utf-8")
+    (d / "rag_user.txt").write_text("usr", encoding="utf-8")
+    monkeypatch.setattr(rag_prompts, "_PROMPTS_DIR", d)
+
+    assert rag_prompts.load_rag_system_prompt() == "sys"
+    assert rag_prompts.load_rag_user_prompt_template() == "usr"

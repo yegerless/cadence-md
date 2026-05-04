@@ -1,3 +1,7 @@
+"""
+Pydantic settings and nested RAG configuration.
+"""
+
 from pathlib import Path
 
 from fastembed import SparseTextEmbedding
@@ -8,21 +12,36 @@ from qdrant_client import models as qdrant_models
 from cadence_md.app.enums import QdrantFusionMethod, VectorSearchType
 
 
-class ChunkConfig(BaseModel):
-    """Text chunking settings for RAG"""
+def _default_embedding_query_instruction_path() -> Path:
+    """Default UTF-8 file prepended to embedding queries when ``use_query_instruction`` is True."""
+    return Path(__file__).resolve().parent / "prompts" / "bge_m3_embedding_query_instruction.txt"
 
-    chunk_size: int = 512
+
+def _default_reranker_query_instruction_path() -> Path:
+    """Default UTF-8 file for the rerank query prefix when ``use_query_instruction`` is True."""
+    return Path(__file__).resolve().parent / "prompts" / "reranker_prompt.txt"
+
+
+class ChunkConfig(BaseModel):
+    """RecursiveCharacterTextSplitter parameters for clinical section documents."""
+
+    chunk_size: int = 2048
     chunk_overlap: int = 256
+    separators: list[str] = Field(default_factory=lambda: ["\n\n", "\n", ". ", "; ", ", ", " ", ""])
 
 
 class QdrantConfig(BaseModel):
-    """Qdrant connection settings"""
+    """Collection name, vector params, batch size, PDF directory, and FastEmbed sparse model.
+
+    ``sparse_model`` is a FastEmbed sparse embedding instance; ``arbitrary_types_allowed`` lets the
+    default BM25 model live in config without a separate env indirection.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     data_dir: Path = Path("test_data/")
     collection_name: str = "clinical_recs"
-    rebuild_collection: bool = False
+    rebuild_collection: bool = True
     vector_size: int = 1024
     distance: qdrant_models.Distance = qdrant_models.Distance.COSINE
     uploading_batch_size: int = 256
@@ -32,46 +51,69 @@ class QdrantConfig(BaseModel):
 
 
 class EmbeddingConfig(BaseModel):
-    """Embedder model settings"""
+    """Dense embedding model name, optional query instruction file, and HTTP retry policy."""
 
     model_name: str = "bge-m3"
+    query_instruction_path: Path = Field(default_factory=_default_embedding_query_instruction_path)
+    use_query_instruction: bool = True
     normalize_embeddings: bool = True
     return_score: bool = True
+    timeout_seconds: float = Field(default=120.0, gt=0)
+    max_retries: int = Field(default=6, ge=0)
+    backoff_base_seconds: float = Field(default=1.0, gt=0)
+    backoff_max_seconds: float = Field(default=120.0, gt=0)
 
 
 class RerankerConfig(BaseModel):
-    """Reranker: OpenAI-compatible ``POST /v1/rerank`` (e.g. llama.cpp ``--reranking``)."""
+    """Reranker client: model id, top-k, query instruction file, 429 vs transport retries."""
 
     model_name: str = "bge-reranker-v2-m3"
+    query_instruction_path: Path = Field(default_factory=_default_reranker_query_instruction_path)
+    use_query_instruction: bool = False
     return_score: bool = True
     top_k: int = Field(default=5, ge=1)
     timeout_seconds: float = Field(default=120.0, gt=0)
     max_retries_on_rate_limit: int = Field(default=8, ge=0)
+    max_retries_on_transport: int = Field(default=3, ge=0)
+    backoff_base_seconds: float = Field(default=1.0, gt=0)
+    backoff_max_seconds: float = Field(default=120.0, gt=0)
 
 
 class RetrievalConfig(BaseModel):
-    """Retrieval settings"""
+    """Qdrant search mode (dense / sparse / hybrid) and per-mode top-k + fusion method."""
 
     search_mode: VectorSearchType = VectorSearchType.HYBRID
     fusion_method: QdrantFusionMethod = QdrantFusionMethod.RRF
-    sparse_top_k: int = 20
-    dense_top_k: int = 20
+    sparse_top_k: int = 30
+    dense_top_k: int = 30
     hybrid_top_k: int = 30
 
 
 class LLMConfig(BaseModel):
-    """LLM settings"""
+    """Chat model decoding parameters and HTTP retry policy for :mod:`llm`."""
 
     model_name: str = "qwen3.5-9b"
     max_new_tokens: int = 5120
-    temperature: float = 0.5
+    temperature: float = 0.3
     top_p: float = 0.8
     streaming: bool = False
+    timeout_seconds: float = Field(default=300.0, gt=0)
+    max_retries: int = Field(default=6, ge=0)
+    backoff_base_seconds: float = Field(default=1.0, gt=0)
+    backoff_max_seconds: float = Field(default=120.0, gt=0)
 
 
 class RAGConfig(BaseModel):
-    """Configuration for a specific RAG mode"""
+    """Full RAG profile: chunking, retrieval, models, and ``prompt_version`` for prompt files."""
 
+    prompt_version: str = Field(
+        default="2026-05-03",
+        description="Version label for RAG prompt templates (system prompt and telemetry).",
+    )
+    # Character budget for the assembled LLM context. Whole ``[Doc N]`` blocks are added in rank
+    # order until the budget is exhausted; the very first block may be character-truncated to keep
+    # the model from receiving an empty context when a single chunk exceeds the budget.
+    max_context_chars: int = Field(default=12_000, gt=0)
     chunking: ChunkConfig
     retrieval: RetrievalConfig
     llm: LLMConfig
@@ -81,7 +123,7 @@ class RAGConfig(BaseModel):
 
 
 class Settings(BaseSettings):
-    """Global application settings"""
+    """Top-level app config: Qdrant, inference URLs/keys, nested ``rag_config``."""
 
     # Environment variables
     QDRANT_BASE_URL: str = "http://localhost:6333"
@@ -110,5 +152,5 @@ class Settings(BaseSettings):
     )
 
 
-# Global settings instance
+# Eager default for import-time access; override fields via environment in tests or deployment.
 settings = Settings()  # type: ignore

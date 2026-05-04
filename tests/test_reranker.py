@@ -1,6 +1,8 @@
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from langchain_core.documents import Document
 
@@ -12,6 +14,8 @@ from cadence_md.app.reranker import (
     _parse_rerank_response,
     _rerank_url,
     get_reranker,
+    get_reranker_from_settings,
+    load_reranker_query_instruction,
 )
 
 
@@ -52,12 +56,33 @@ class TestParseRerankResponse:
         with pytest.raises(RerankerAPIError, match="out of range"):
             _parse_rerank_response(data, expected_documents=2)
 
+    def test_skips_non_mapping_result_entries(self) -> None:
+        data = {
+            "results": [
+                "ignored",
+                {"index": 1, "relevance_score": 2.0},
+                {"index": 0, "relevance_score": 1.0},
+            ]
+        }
+        assert _parse_rerank_response(data, expected_documents=2) == [1.0, 2.0]
+
+    def test_raises_on_invalid_result_entry(self) -> None:
+        data = {"results": [{"index": "not_int", "relevance_score": 1.0}]}
+        with pytest.raises(RerankerAPIError, match="Invalid rerank result entry"):
+            _parse_rerank_response(data, expected_documents=1)
+
+    def test_raises_when_results_key_missing(self) -> None:
+        with pytest.raises(RerankerAPIError, match="missing 'results'"):
+            _parse_rerank_response({}, expected_documents=1)
+
 
 def _reranker_with_stub_post(
     stub: MagicMock,
     *,
     top_k: int = 10,
     return_score: bool = True,
+    use_query_instruction: bool = False,
+    query_instruction_path: Path | None = None,
 ) -> RerankerWrapper:
     r = RerankerWrapper(
         model="rerank-model",
@@ -67,6 +92,8 @@ def _reranker_with_stub_post(
         api_key="k",
         timeout_s=30.0,
         max_retries_on_rate_limit=2,
+        use_query_instruction=use_query_instruction,
+        query_instruction_path=query_instruction_path,
     )
     r._post_rerank = stub  # type: ignore[method-assign]
     return r
@@ -100,6 +127,86 @@ class TestScorePairs:
         reranker = _reranker_with_stub_post(stub)
         assert reranker.score_pairs("q", []) == []
         stub.assert_not_called()
+
+    def test_score_pairs_uses_document_texts_when_provided(self) -> None:
+        stub = MagicMock(
+            return_value={
+                "results": [
+                    {"index": 0, "relevance_score": 1.0},
+                ]
+            }
+        )
+        reranker = _reranker_with_stub_post(stub)
+        docs = [Document(page_content="short")]
+        reranker.score_pairs("q", docs, document_texts=["long rerank text"])
+        payload = stub.call_args[0][0]
+        assert payload["documents"] == ["long rerank text"]
+
+    def test_score_pairs_prepends_instruction_when_enabled(self, tmp_path: Path) -> None:
+        instr_file = tmp_path / "instr.txt"
+        instr_file.write_text("CUSTOM_RERANK_TASK\n", encoding="utf-8")
+        stub = MagicMock(
+            return_value={
+                "results": [
+                    {"index": 0, "relevance_score": 1.0},
+                ]
+            }
+        )
+        reranker = _reranker_with_stub_post(
+            stub,
+            use_query_instruction=True,
+            query_instruction_path=instr_file,
+        )
+        reranker.score_pairs("пользовательский запрос", [Document(page_content="x")])
+        payload = stub.call_args[0][0]
+        assert payload["query"].startswith("CUSTOM_RERANK_TASK ")
+        assert payload["query"].endswith("пользовательский запрос")
+
+    def test_score_pairs_raw_query_when_instruction_disabled(self) -> None:
+        stub = MagicMock(
+            return_value={
+                "results": [
+                    {"index": 0, "relevance_score": 1.0},
+                ]
+            }
+        )
+        reranker = _reranker_with_stub_post(stub, use_query_instruction=False)
+        reranker.score_pairs("only this", [Document(page_content="x")])
+        payload = stub.call_args[0][0]
+        assert payload["query"] == "only this"
+
+    def test_score_pairs_no_instruction_file_does_not_prepend(self) -> None:
+        """``use_query_instruction`` alone does not change query without a loaded file."""
+        stub = MagicMock(
+            return_value={
+                "results": [
+                    {"index": 0, "relevance_score": 1.0},
+                ]
+            }
+        )
+        reranker = _reranker_with_stub_post(stub, use_query_instruction=True)
+        reranker.score_pairs("plain", [Document(page_content="x")])
+        assert stub.call_args[0][0]["query"] == "plain"
+
+    def test_score_pairs_document_texts_length_mismatch(self) -> None:
+        stub = MagicMock()
+        reranker = _reranker_with_stub_post(stub)
+        with pytest.raises(ValueError, match="document_texts length must match"):
+            reranker.score_pairs(
+                "q",
+                [Document(page_content="a"), Document(page_content="b")],
+                document_texts=["only_one"],
+            )
+        stub.assert_not_called()
+
+
+class TestLoadRerankerQueryInstruction:
+    """``load_reranker_query_instruction`` strips file edges; keeps inner newlines."""
+
+    def test_strips_edges_preserves_internal_newlines(self, tmp_path: Path) -> None:
+        p = tmp_path / "i.txt"
+        p.write_text("line one\nline two", encoding="utf-8")
+        assert load_reranker_query_instruction(p) == "line one\nline two"
 
 
 class TestRerank:
@@ -169,21 +276,13 @@ class TestRerank:
 class TestPostRerankHTTP:
     """HTTP layer: success path and error handling."""
 
-    def _client_context(self, post_return: MagicMock) -> tuple[MagicMock, MagicMock]:
-        """Return (context_manager, inner_client) for ``with httpx.Client(...)``."""
-        inner = MagicMock()
-        inner.post.return_value = post_return
-        cm = MagicMock()
-        cm.__enter__.return_value = inner
-        cm.__exit__.return_value = None
-        return cm, inner
-
     def test_post_rerank_success(self) -> None:
         resp = MagicMock()
         resp.status_code = 200
         resp.text = ""
         resp.json.return_value = {"results": [{"index": 0, "relevance_score": 3.14}]}
-        cm, inner = self._client_context(resp)
+        inner = MagicMock()
+        inner.post.return_value = resp
 
         reranker = RerankerWrapper(
             model="m",
@@ -193,7 +292,7 @@ class TestPostRerankHTTP:
             api_key="secret",
             max_retries_on_rate_limit=0,
         )
-        with patch("cadence_md.app.reranker.httpx.Client", return_value=cm):
+        with patch("cadence_md.app.reranker.httpx.Client", return_value=inner):
             out = reranker._post_rerank({"model": "m", "query": "q", "documents": ["x"]})
 
         assert out == {"results": [{"index": 0, "relevance_score": 3.14}]}
@@ -204,9 +303,10 @@ class TestPostRerankHTTP:
 
     def test_post_rerank_http_error(self) -> None:
         resp = MagicMock()
-        resp.status_code = 500
+        resp.status_code = 400
         resp.text = "boom"
-        cm, _inner = self._client_context(resp)
+        inner = MagicMock()
+        inner.post.return_value = resp
         reranker = RerankerWrapper(
             model="m",
             top_k=5,
@@ -216,8 +316,8 @@ class TestPostRerankHTTP:
             max_retries_on_rate_limit=0,
         )
         with (
-            patch("cadence_md.app.reranker.httpx.Client", return_value=cm),
-            pytest.raises(RerankerAPIError, match="Rerank HTTP 500"),
+            patch("cadence_md.app.reranker.httpx.Client", return_value=inner),
+            pytest.raises(RerankerAPIError, match="Rerank HTTP 400"),
         ):
             reranker._post_rerank({"model": "m", "query": "q", "documents": ["a"]})
 
@@ -227,9 +327,6 @@ class TestPostRerankHTTP:
         ok.json.return_value = {"results": [{"index": 0, "relevance_score": 1.0}]}
         mock_client = MagicMock()
         mock_client.post.side_effect = [fail, ok]
-        mock_cm = MagicMock()
-        mock_cm.__enter__.return_value = mock_client
-        mock_cm.__exit__.return_value = None
 
         reranker = RerankerWrapper(
             model="m",
@@ -240,13 +337,198 @@ class TestPostRerankHTTP:
             max_retries_on_rate_limit=2,
         )
         with (
-            patch("cadence_md.app.reranker.httpx.Client", return_value=mock_cm),
-            patch("cadence_md.app.reranker.time.sleep", MagicMock()),
+            patch("cadence_md.app.reranker.httpx.Client", return_value=mock_client),
+            patch("cadence_md.app.retry_utils.time.sleep", MagicMock()),
         ):
             out = reranker._post_rerank({"model": "m", "query": "q", "documents": ["a"]})
 
         assert out["results"][0]["relevance_score"] == 1.0
         assert mock_client.post.call_count == 2
+
+    def test_post_rerank_500_then_success(self) -> None:
+        fail = MagicMock(status_code=500, text="busy")
+        ok = MagicMock(status_code=200, text="")
+        ok.json.return_value = {"results": [{"index": 0, "relevance_score": 2.0}]}
+        mock_client = MagicMock()
+        mock_client.post.side_effect = [fail, ok]
+
+        reranker = RerankerWrapper(
+            model="m",
+            top_k=5,
+            return_score=True,
+            base_url="http://h/v1",
+            api_key="k",
+            max_retries_on_transport=2,
+        )
+        with (
+            patch("cadence_md.app.reranker.httpx.Client", return_value=mock_client),
+            patch("cadence_md.app.retry_utils.time.sleep", MagicMock()),
+        ):
+            out = reranker._post_rerank({"model": "m", "query": "q", "documents": ["a"]})
+
+        assert out["results"][0]["relevance_score"] == 2.0
+        assert mock_client.post.call_count == 2
+
+    def test_post_rerank_invalid_json_raises(self) -> None:
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.text = "not json {{{"
+        resp.json.side_effect = ValueError("bad json")
+        inner = MagicMock()
+        inner.post.return_value = resp
+        reranker = RerankerWrapper(
+            model="m",
+            top_k=5,
+            return_score=True,
+            base_url="http://h/v1",
+            api_key="k",
+            max_retries_on_rate_limit=0,
+        )
+        with (
+            patch("cadence_md.app.reranker.httpx.Client", return_value=inner),
+            pytest.raises(RerankerAPIError, match="not valid JSON"),
+        ):
+            reranker._post_rerank({"model": "m", "query": "q", "documents": ["a"]})
+
+    def test_post_rerank_transport_error_then_success(self) -> None:
+        ok = MagicMock(status_code=200, text="")
+        ok.json.return_value = {"results": [{"index": 0, "relevance_score": 7.0}]}
+        mock_client = MagicMock()
+        mock_client.post.side_effect = [httpx.ConnectError("refused"), ok]
+
+        reranker = RerankerWrapper(
+            model="m",
+            top_k=5,
+            return_score=True,
+            base_url="http://h/v1",
+            api_key="k",
+            max_retries_on_transport=2,
+            max_retries_on_rate_limit=0,
+        )
+        with (
+            patch("cadence_md.app.reranker.httpx.Client", return_value=mock_client),
+            patch("cadence_md.app.retry_utils.time.sleep", MagicMock()),
+        ):
+            out = reranker._post_rerank({"model": "m", "query": "q", "documents": ["a"]})
+
+        assert out["results"][0]["relevance_score"] == 7.0
+        assert mock_client.post.call_count == 2
+
+    def test_post_rerank_429_no_retries_raises(self) -> None:
+        fail = MagicMock(status_code=429, text="limit")
+        mock_client = MagicMock()
+        mock_client.post.return_value = fail
+
+        reranker = RerankerWrapper(
+            model="m",
+            top_k=5,
+            return_score=True,
+            base_url="http://h/v1",
+            api_key="k",
+            max_retries_on_rate_limit=0,
+        )
+        with (
+            patch("cadence_md.app.reranker.httpx.Client", return_value=mock_client),
+            pytest.raises(RerankerAPIError, match="429 too many times"),
+        ):
+            reranker._post_rerank({"model": "m", "query": "q", "documents": ["a"]})
+
+        mock_client.post.assert_called_once()
+
+    def test_post_rerank_429_exhausts_budget(self) -> None:
+        fail = MagicMock(status_code=429, text="")
+        mock_client = MagicMock()
+        mock_client.post.return_value = fail
+
+        reranker = RerankerWrapper(
+            model="m",
+            top_k=5,
+            return_score=True,
+            base_url="http://h/v1",
+            api_key="k",
+            max_retries_on_rate_limit=1,
+        )
+        with (
+            patch("cadence_md.app.reranker.httpx.Client", return_value=mock_client),
+            patch("cadence_md.app.retry_utils.time.sleep", MagicMock()),
+            pytest.raises(RerankerAPIError, match="429 too many times"),
+        ):
+            reranker._post_rerank({"model": "m", "query": "q", "documents": ["a"]})
+
+        assert mock_client.post.call_count == 2
+
+    def test_post_rerank_retryable_status_exhausts_transport_budget(self) -> None:
+        fail = MagicMock(status_code=503, text="unavailable")
+        mock_client = MagicMock()
+        mock_client.post.return_value = fail
+
+        reranker = RerankerWrapper(
+            model="m",
+            top_k=5,
+            return_score=True,
+            base_url="http://h/v1",
+            api_key="k",
+            max_retries_on_rate_limit=0,
+            max_retries_on_transport=1,
+        )
+        with (
+            patch("cadence_md.app.reranker.httpx.Client", return_value=mock_client),
+            patch("cadence_md.app.retry_utils.time.sleep", MagicMock()),
+            pytest.raises(RerankerAPIError, match="HTTP 503 too many times"),
+        ):
+            reranker._post_rerank({"model": "m", "query": "q", "documents": ["a"]})
+
+        assert mock_client.post.call_count == 2
+
+
+class TestRerankerClientLifecycle:
+    """Lazy HTTP client, ``close``, and context manager."""
+
+    def test_get_client_reuses_single_instance(self) -> None:
+        mock_client = MagicMock()
+        reranker = RerankerWrapper(
+            model="m",
+            top_k=5,
+            return_score=True,
+            base_url="http://h/v1",
+            api_key="k",
+            max_retries_on_rate_limit=0,
+        )
+        with patch("cadence_md.app.reranker.httpx.Client", return_value=mock_client) as client_cls:
+            assert reranker._get_client() is mock_client
+            assert reranker._get_client() is mock_client
+        client_cls.assert_called_once()
+
+    def test_close_closes_underlying_client(self) -> None:
+        mock_client = MagicMock()
+        reranker = RerankerWrapper(
+            model="m",
+            top_k=5,
+            return_score=True,
+            base_url="http://h/v1",
+            api_key="k",
+            max_retries_on_rate_limit=0,
+        )
+        with patch("cadence_md.app.reranker.httpx.Client", return_value=mock_client):
+            reranker._get_client()
+            reranker.close()
+        mock_client.close.assert_called_once()
+
+    def test_context_manager_closes_client(self) -> None:
+        mock_client = MagicMock()
+        with (
+            patch("cadence_md.app.reranker.httpx.Client", return_value=mock_client),
+            RerankerWrapper(
+                model="m",
+                top_k=5,
+                return_score=True,
+                base_url="http://h/v1",
+                api_key="k",
+                max_retries_on_rate_limit=0,
+            ) as reranker,
+        ):
+            reranker._get_client()
+        mock_client.close.assert_called_once()
 
 
 class TestGetReranker:
@@ -269,3 +551,11 @@ class TestGetReranker:
         assert wrapper._timeout_s == 60.0
         assert wrapper._max_retries_on_rate_limit == 5
         assert wrapper._api_url == "http://api/v1/rerank"
+
+    def test_get_reranker_from_settings(self, settings) -> None:
+        wrapper = get_reranker_from_settings(settings)
+
+        assert isinstance(wrapper, RerankerWrapper)
+        assert wrapper.model == settings.rag_config.reranker.model_name
+        assert wrapper.top_k == settings.rag_config.reranker.top_k
+        assert wrapper.return_score == settings.rag_config.reranker.return_score

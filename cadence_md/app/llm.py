@@ -1,50 +1,160 @@
+"""
+Chat completion wrapper around LangChain ``ChatOpenAI`` with uniform retries.
+"""
+
+from __future__ import annotations
+
+import logging
 from collections.abc import Iterable
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_openai import ChatOpenAI
+
+from cadence_md.app.retry_utils import retry_sync
+from cadence_md.app.settings import Settings, settings
+
+logger = logging.getLogger(__name__)
 
 
 class LLMWrapper:
     """
-    Wrapper for the ChatOpenAI model
+    Thin adapter over :class:`langchain_openai.ChatOpenAI` with synchronous retries.
+
+    ``invoke`` accepts a raw string for simple call sites; ``invoke_messages`` is preferred for RAG
+    (system + user messages). ``stream`` mirrors ``invoke`` for raw strings, while
+    ``stream_messages`` streams an explicit message list.
 
     Args:
         chat_model: The ChatOpenAI model to wrap.
-    Returns:
-        LLMWrapper: A wrapper for the ChatOpenAI model.
+        max_retries: Total attempts (including the first) on transient errors.
+        backoff_base_seconds: Base delay for exponential backoff between retries.
+        backoff_max_seconds: Maximum delay between retries.
     """
 
-    def __init__(self, chat_model: ChatOpenAI):
+    def __init__(
+        self,
+        chat_model: ChatOpenAI,
+        *,
+        max_retries: int = 6,
+        backoff_base_seconds: float = 1.0,
+        backoff_max_seconds: float = 120.0,
+    ) -> None:
         self.chat_model = chat_model
+        self._max_retries = max_retries
+        self._backoff_base_seconds = backoff_base_seconds
+        self._backoff_max_seconds = backoff_max_seconds
 
     def invoke(self, prompt: str) -> str:
         """
-        Invoke the ChatOpenAI model.
+        Run a single string prompt through the chat model (user-role content implied by the SDK).
 
         Args:
-            prompt: The prompt to invoke the model with.
+            prompt: Full user text for one-turn completion.
+
         Returns:
-            str: The response from the model.
+            Model response content as a string.
         """
-        resp = self.chat_model.invoke(prompt)
-        # ChatOpenAI returns an AIMessage, we take the text content
-        return resp.content
+
+        messages = [HumanMessage(content=prompt)]
+
+        def call() -> str:
+            resp = self.chat_model.invoke(messages)
+            return str(resp.content)
+
+        return retry_sync(
+            call,
+            logger_=logger,
+            max_attempts=self._max_retries,
+            operation_name="llm.invoke",
+            base_seconds=self._backoff_base_seconds,
+            max_seconds=self._backoff_max_seconds,
+        )
+
+    def invoke_messages(self, messages: list[BaseMessage]) -> str:
+        """
+        Invoke the chat model with an explicit message list (system + user, etc.).
+
+        Args:
+            messages: LangChain messages to send to the model.
+
+        Returns:
+            Model text content.
+        """
+
+        def call() -> str:
+            resp = self.chat_model.invoke(messages)
+            return str(resp.content)
+
+        return retry_sync(
+            call,
+            logger_=logger,
+            max_attempts=self._max_retries,
+            operation_name="llm.invoke_messages",
+            base_seconds=self._backoff_base_seconds,
+            max_seconds=self._backoff_max_seconds,
+        )
 
     def stream(self, prompt: str) -> Iterable[str]:
         """
-        Stream the response from the ChatOpenAI model.
+        Stream a single string prompt (user-role content implied by ``HumanMessage``).
 
         Args:
-            prompt: The prompt to stream the response from.
-        Returns:
-            Iterable[str]: A generator of the response from the model.
+            prompt: User message text.
+
+        Yields:
+            Successive string fragments from the model (implementation-defined chunking).
         """
-        # ChatOpenAI expects a list of messages
         messages = [HumanMessage(content=prompt)]
-        for chunk in self.chat_model.stream(messages):
-            # chunk – AIMessageChunk, content may be None
-            if chunk.content:
-                yield chunk.content
+
+        def call() -> list[str]:
+            chunks: list[str] = []
+            for chunk in self.chat_model.stream(messages):
+                # Buffer a successful attempt so retries cannot duplicate partial output.
+                if chunk.content:
+                    chunks.append(str(chunk.content))
+            return chunks
+
+        yield from retry_sync(
+            call,
+            logger_=logger,
+            max_attempts=self._max_retries,
+            operation_name="llm.stream",
+            base_seconds=self._backoff_base_seconds,
+            max_seconds=self._backoff_max_seconds,
+        )
+
+    def stream_messages(self, messages: list[BaseMessage]) -> Iterable[str]:
+        """
+        Stream token/text chunks from an explicit message list with retry-safe buffering.
+
+        The inner callable drains ``chat_model.stream`` into a list first; only after a full
+        successful pass does the outer ``retry_sync`` return, and then this generator yields those
+        chunks. That avoids emitting duplicate segments when the HTTP stream fails mid-way and the
+        retry layer reruns the operation.
+
+        Args:
+            messages: LangChain messages to stream from the model.
+
+        Yields:
+            Successive string fragments from the model (implementation-defined chunking).
+        """
+
+        def call() -> list[str]:
+            chunks: list[str] = []
+            for chunk in self.chat_model.stream(messages):
+                # Buffer a successful attempt so retries cannot duplicate partial output.
+                if chunk.content:
+                    chunks.append(str(chunk.content))
+            return chunks
+
+        yield from retry_sync(
+            call,
+            logger_=logger,
+            max_attempts=self._max_retries,
+            operation_name="llm.stream_messages",
+            base_seconds=self._backoff_base_seconds,
+            max_seconds=self._backoff_max_seconds,
+        )
 
 
 def get_llm(
@@ -55,9 +165,14 @@ def get_llm(
     max_completion_tokens: int,
     top_p: float,
     streaming: bool,
+    *,
+    timeout_seconds: float = 300.0,
+    max_retries: int = 6,
+    backoff_base_seconds: float = 1.0,
+    backoff_max_seconds: float = 120.0,
 ) -> LLMWrapper:
     """
-    Get a LLMWrapper instance.
+    Construct :class:`LLMWrapper` with explicit chat parameters.
 
     Args:
         model: The model name to use.
@@ -67,6 +182,11 @@ def get_llm(
         max_completion_tokens: The maximum completion tokens to use.
         top_p: The top p to use.
         streaming: Whether to stream the output.
+        timeout_seconds: Per-request timeout passed to the HTTP client.
+        max_retries: Application-level retries on transient failures.
+        backoff_base_seconds: Backoff base delay.
+        backoff_max_seconds: Backoff cap.
+
     Returns:
         LLMWrapper: An instance of the LLMWrapper class.
     """
@@ -78,6 +198,31 @@ def get_llm(
         max_completion_tokens=max_completion_tokens,
         top_p=top_p,
         streaming=streaming,
+        timeout=timeout_seconds,
+        max_retries=0,
     )
 
-    return LLMWrapper(llm)
+    return LLMWrapper(
+        llm,
+        max_retries=max_retries,
+        backoff_base_seconds=backoff_base_seconds,
+        backoff_max_seconds=backoff_max_seconds,
+    )
+
+
+def get_llm_from_settings(app_settings: Settings = settings) -> LLMWrapper:
+    """Build an LLM from ``Settings.rag_config.llm`` and ``MODEL_INFERENCE_*`` env configuration."""
+    cfg = app_settings.rag_config.llm
+    return get_llm(
+        model=cfg.model_name,
+        base_url=app_settings.MODEL_INFERENCE_BASE_URL,
+        api_key=app_settings.MODEL_INFERENCE_API_KEY,
+        temperature=cfg.temperature,
+        max_completion_tokens=cfg.max_new_tokens,
+        top_p=cfg.top_p,
+        streaming=cfg.streaming,
+        timeout_seconds=cfg.timeout_seconds,
+        max_retries=cfg.max_retries,
+        backoff_base_seconds=cfg.backoff_base_seconds,
+        backoff_max_seconds=cfg.backoff_max_seconds,
+    )

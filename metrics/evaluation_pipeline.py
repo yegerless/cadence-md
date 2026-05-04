@@ -47,6 +47,29 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
+def _state_to_test_result_inputs(
+    state: dict[str, Any],
+) -> tuple[list[Document], list[float]]:
+    """
+    Extract aligned ``(documents, final_scores)`` from a final or retriever-only RAG state.
+
+    Both lists are derived from ``state['ranked_docs']`` so document order matches scores
+    index-by-index (rerank score after a successful rerank, retrieval score on rerank fallback).
+
+    Args:
+        state: Final RAG state (or retriever-only state) dictionary.
+
+    Returns:
+        Tuple of (documents, scores) aligned by index for downstream :class:`RAGTestResult`.
+    """
+    ranked_docs = state.get("ranked_docs") or []
+    docs = [rd["doc"] for rd in ranked_docs]
+    scores = [
+        float(rd["final_score"]) if rd.get("final_score") is not None else 0.0 for rd in ranked_docs
+    ]
+    return docs, scores
+
+
 class RAGEvaluationPipeline:
     """
     Evaluation pipeline for RAG
@@ -176,8 +199,7 @@ class RAGEvaluationPipeline:
             try:
                 rag_result = self.rag_pipeline.run(test_case.question)
 
-                retrieved_contexts = rag_result["retrieved_docs"]
-                retrieved_scores = rag_result["retrieved_scores"]
+                retrieved_contexts, retrieved_scores = _state_to_test_result_inputs(rag_result)
                 generated_answer = rag_result["answer"]
 
                 result = RAGTestResult(
@@ -230,23 +252,25 @@ class RAGEvaluationPipeline:
             try:
                 initial_state: RAGState = {
                     "query": test_case.question,
-                    "retrieved_docs": [],
-                    "retrieved_scores": [],
-                    "reranked_scores": [],
+                    "query_hash": "",
+                    "ranked_docs": [],
+                    "rerank_fallback": False,
+                    "retrieval_failed": False,
+                    "generate_fallback": False,
+                    "context_truncated": False,
+                    "error_type": None,
+                    "error_message": None,
+                    "sources": [],
                     "context": "",
                     "context_chars": 0,
                     "answer": "",
                     "answer_word_count": 0,
+                    "latency_ms": {},
                 }
                 state = self.rag_pipeline.retrieve_node(initial_state)
                 state = self.rag_pipeline.reranker_node(state)
 
-                retrieved_contexts = state["retrieved_docs"]
-                retrieval_scores = (
-                    state["reranked_scores"]
-                    if state.get("reranked_scores")
-                    else state["retrieved_scores"]
-                )
+                retrieved_contexts, retrieval_scores = _state_to_test_result_inputs(state)
 
                 result = RAGTestResult(
                     question=test_case.question,
@@ -762,12 +786,13 @@ class RAGEvaluationPipeline:
                 )
                 continue
 
+            retrieved_contexts, retrieval_scores = _state_to_test_result_inputs(rag_result)
             result = RAGTestResult(
                 question=test_case.question,
                 ground_truth_answer=test_case.answer,
                 ground_truth_context=test_case.context,
-                retrieved_contexts=rag_result["retrieved_docs"],
-                retrieval_scores=rag_result["retrieved_scores"],
+                retrieved_contexts=retrieved_contexts,
+                retrieval_scores=retrieval_scores,
                 generated_answer=rag_result["answer"],
                 question_type=test_case.question_type,
                 section_type=test_case.section_type,

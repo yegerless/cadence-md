@@ -1,18 +1,12 @@
+"""
+Shared string enums for clinical section labels, Qdrant wiring, and retrieval modes.
+"""
+
 from enum import StrEnum
 
 
-class QuestionType(StrEnum):
-    """Types of questions according to the RAGAS methodology"""
-
-    SIMPLE = "simple"
-    REASONING = "reasoning"
-    MULTI_CONTEXT = "multi_context"
-    CONDITIONAL = "conditional"
-    COMPARISON = "comparison"
-
-
 class SectionType(StrEnum):
-    """Types of clinical recommendation sections"""
+    """High-level clinical guideline section labels used when sampling generation contexts."""
 
     DEFINITION = "definition"
     SYMPTOMS = "symptoms"
@@ -23,21 +17,21 @@ class SectionType(StrEnum):
 
 
 class QdrantVectorType(StrEnum):
-    """Types of Qdrant vector types"""
+    """Named vector slots in the hybrid Qdrant collection (dense + sparse BM25)."""
 
     DENSE = "dense"
     SPARSE = "sparse"
 
 
 class QdrantFusionMethod(StrEnum):
-    """Types of Qdrant fusion methods"""
+    """Prefetch fusion strategy when combining dense and sparse hits (hybrid search)."""
 
     RRF = "rrf"
     DBSF = "dbsf"
 
 
 class VectorSearchType(StrEnum):
-    """Types of vector search types"""
+    """Which retrieval path ``QdrantManager.retrieve`` uses for a query."""
 
     DENSE = "dense"
     SPARSE = "sparse"

@@ -83,6 +83,8 @@ def test_render_validation_report_retriever_skips_ragas_sections() -> None:
             "reranker_model": "r",
             "chunk_size": 100,
             "chunk_overlap": 10,
+            "embedding_query_instruction": True,
+            "reranker_query_instruction": True,
             "retrieval": {
                 "search_mode": "dense",
                 "fusion_method": "none",
@@ -133,6 +135,8 @@ def test_render_validation_report_full_includes_ragas_and_breakdown() -> None:
             "reranker_model": "r",
             "chunk_size": 100,
             "chunk_overlap": 10,
+            "embedding_query_instruction": True,
+            "reranker_query_instruction": False,
             "retrieval": {
                 "search_mode": "dense",
                 "fusion_method": "none",

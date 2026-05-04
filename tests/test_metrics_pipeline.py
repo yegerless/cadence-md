@@ -16,6 +16,26 @@ def _pipeline_without_init() -> RAGEvaluationPipeline:
     return pipeline
 
 
+def _ranked(
+    doc: Document,
+    *,
+    rank: int = 1,
+    retrieval_score: float | None = None,
+    rerank_score: float | None = None,
+    final_score: float | None = None,
+) -> dict:
+    """Build a ``RankedDocument`` dict for tests."""
+    return {
+        "rank": rank,
+        "doc": doc,
+        "retrieval_score": retrieval_score,
+        "rerank_score": rerank_score,
+        "final_score": final_score,
+        "chunk_id": None,
+        "section_id": None,
+    }
+
+
 def test_load_test_cases_skips_malformed_rows(tmp_path: Path) -> None:
     dataset_file = tmp_path / "qa_dataset.jsonl"
     valid_row = {
@@ -230,8 +250,14 @@ def test_run_full_evaluation_writes_run_artifacts(
         {
             "run": staticmethod(
                 lambda question: {
-                    "retrieved_docs": [Document(page_content=f"ctx-{question}", metadata={})],
-                    "retrieved_scores": [0.9],
+                    "ranked_docs": [
+                        _ranked(
+                            Document(page_content=f"ctx-{question}", metadata={}),
+                            retrieval_score=0.9,
+                            rerank_score=0.9,
+                            final_score=0.9,
+                        )
+                    ],
                     "answer": f"ans-{question}",
                 }
             )
@@ -298,8 +324,14 @@ def test_run_full_evaluation_ignores_non_numeric_ragas_columns(
         {
             "run": staticmethod(
                 lambda question: {
-                    "retrieved_docs": [Document(page_content=f"ctx-{question}", metadata={})],
-                    "retrieved_scores": [0.85],
+                    "ranked_docs": [
+                        _ranked(
+                            Document(page_content=f"ctx-{question}", metadata={}),
+                            retrieval_score=0.85,
+                            rerank_score=0.85,
+                            final_score=0.85,
+                        )
+                    ],
                     "answer": f"ans-{question}",
                 }
             )
@@ -358,13 +390,17 @@ def test_run_full_evaluation_writes_optional_text_match_summary(
         {
             "run": staticmethod(
                 lambda _question: {
-                    "retrieved_docs": [
-                        Document(
-                            page_content="ацетилсалициловая кислота в дозе 75 мг ежедневно",
-                            metadata={"section_id": "wrong"},
+                    "ranked_docs": [
+                        _ranked(
+                            Document(
+                                page_content="ацетилсалициловая кислота в дозе 75 мг ежедневно",
+                                metadata={"section_id": "wrong"},
+                            ),
+                            retrieval_score=0.85,
+                            rerank_score=0.85,
+                            final_score=0.85,
                         )
                     ],
-                    "retrieved_scores": [0.85],
                     "answer": "answer",
                 }
             )
@@ -424,8 +460,14 @@ def test_run_full_evaluation_tracks_rag_and_ragas_failures(
         if calls["n"] == 1:
             raise RuntimeError("rag boom")
         return {
-            "retrieved_docs": [Document(page_content=f"ctx-{question}", metadata={})],
-            "retrieved_scores": [0.8],
+            "ranked_docs": [
+                _ranked(
+                    Document(page_content=f"ctx-{question}", metadata={}),
+                    retrieval_score=0.8,
+                    rerank_score=0.8,
+                    final_score=0.8,
+                )
+            ],
             "answer": f"ans-{question}",
         }
 
@@ -780,8 +822,14 @@ def test_run_rag_pipeline_sample_and_error_skips(
         if question == "q1":
             raise RuntimeError("fail case")
         return {
-            "retrieved_docs": [Document(page_content=question, metadata={})],
-            "retrieved_scores": [0.5],
+            "ranked_docs": [
+                _ranked(
+                    Document(page_content=question, metadata={}),
+                    retrieval_score=0.5,
+                    rerank_score=0.5,
+                    final_score=0.5,
+                )
+            ],
             "answer": f"a-{question}",
         }
 
@@ -808,16 +856,29 @@ def test_run_retriever_pipeline_scores_and_errors() -> None:
             raise RuntimeError("retrieve fail")
         return {
             **state,
-            "retrieved_docs": [Document("d", metadata={})],
-            "retrieved_scores": [0.1],
-            "reranked_scores": [],
+            "ranked_docs": [
+                _ranked(
+                    Document("d", metadata={}),
+                    retrieval_score=0.1,
+                    final_score=0.1,
+                )
+            ],
         }
 
     def reranker_node(state):
+        ranked = state["ranked_docs"]
         return {
             **state,
-            "reranked_scores": [0.99],
-            "retrieved_docs": state["retrieved_docs"],
+            "ranked_docs": [
+                _ranked(
+                    rd["doc"],
+                    rank=rd["rank"],
+                    retrieval_score=rd["retrieval_score"],
+                    rerank_score=0.99,
+                    final_score=0.99,
+                )
+                for rd in ranked
+            ],
         }
 
     pipeline.rag_pipeline = type(
@@ -840,19 +901,25 @@ def test_run_retriever_pipeline_scores_and_errors() -> None:
     assert results[1].question == "q2"
 
 
-def test_run_retriever_pipeline_fallback_to_retrieved_scores() -> None:
+def test_run_retriever_pipeline_uses_ranked_docs_final_score() -> None:
+    """``run_retriever_pipeline`` must read ``final_score`` from ``ranked_docs`` after rerank."""
     pipeline = _pipeline_without_init()
 
     def retrieve_node(state):
         return {
             **state,
-            "retrieved_docs": [Document("d", metadata={})],
-            "retrieved_scores": [0.42],
-            "reranked_scores": [],
+            "ranked_docs": [
+                _ranked(
+                    Document("d", metadata={}),
+                    retrieval_score=0.42,
+                    final_score=0.42,
+                )
+            ],
         }
 
     def reranker_node(state):
-        return {**state, "retrieved_docs": state["retrieved_docs"]}
+        # Rerank fallback path: keep ranked_docs untouched (final_score == retrieval_score).
+        return state
 
     pipeline.rag_pipeline = type(
         "R",
@@ -865,3 +932,61 @@ def test_run_retriever_pipeline_fallback_to_retrieved_scores() -> None:
     cases = [QATestCase("q", "a", "c", "f", "s", "", [], {})]
     results = pipeline.run_retriever_pipeline(cases)
     assert results[0].retrieval_scores == [0.42]
+
+
+def test_run_full_evaluation_uses_ranked_docs_aligned_scores(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Full RAG path must record final scores aligned with the post-rerank doc order."""
+    pipeline = _pipeline_without_init()
+    captured: dict[str, list[float]] = {}
+
+    def rag_run(question: str) -> dict:
+        d1 = Document(page_content=f"ctx1-{question}", metadata={})
+        d2 = Document(page_content=f"ctx2-{question}", metadata={})
+        return {
+            "ranked_docs": [
+                _ranked(d1, rank=1, retrieval_score=0.2, rerank_score=0.9, final_score=0.9),
+                _ranked(d2, rank=2, retrieval_score=0.1, rerank_score=0.5, final_score=0.5),
+            ],
+            "answer": f"ans-{question}",
+        }
+
+    pipeline.rag_pipeline = type("R", (), {"run": staticmethod(rag_run)})()
+    pipeline.load_test_cases = lambda _: [
+        QATestCase("q1", "a1", "ctx1-q1", "factoid", "therapy", "", [], {})
+    ]
+
+    def fake_evaluate(results: list[RAGTestResult]) -> pd.DataFrame:
+        captured["scores"] = list(results[0].retrieval_scores)
+        return pd.DataFrame(
+            [
+                {
+                    "faithfulness": 1.0,
+                    "question_type": results[0].question_type,
+                    "section_type": results[0].section_type,
+                    "test_case_id": results[0].test_case_id,
+                }
+            ]
+        )
+
+    pipeline.evaluate_with_ragas = fake_evaluate
+    pipeline.calculate_retrieval_metrics = lambda *_args, **_kwargs: {
+        "hit_rate": 1.0,
+        "mrr": 1.0,
+        "avg_score": 0.9,
+        "recall_at_k": 1.0,
+        "precision_at_k": 1.0,
+        "k": 5,
+    }
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", lambda self, path, index=False: path.touch())
+
+    pipeline.run_full_evaluation(
+        dataset_file=Path("ignored.jsonl"),
+        output_dir=tmp_path,
+        sample_size=None,
+        k=5,
+    )
+
+    assert captured["scores"] == [0.9, 0.5]

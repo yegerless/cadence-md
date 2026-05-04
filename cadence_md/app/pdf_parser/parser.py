@@ -6,6 +6,18 @@ from pathlib import Path
 
 from tqdm import tqdm
 
+from cadence_md.app.pdf_parser.config import (
+    CYRILLIC_RATIO_FLOOR,
+    HEADER_OCR_NORMALIZATION,
+    MAX_SECTION_LENGTH,
+    MIN_LETTERS_FOR_ENCODING_CHECK,
+    MIN_SECTION_LENGTH,
+    MIN_TRIM_START,
+    TOC_ENTRY_MAX_GAP,
+    TOC_MIN_CLUSTER_SIZE,
+    TOC_SANITY_WINDOW,
+    TOC_WINDOW_CHARS,
+)
 from cadence_md.app.pdf_parser.regexps import (
     EXCLUDE_PATTERNS,
     HEADER_CANDIDATE_RE,
@@ -21,27 +33,16 @@ logging.getLogger("pypdf").setLevel(logging.ERROR)
 logging.getLogger("pypdf._reader").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
-MAX_SECTION_LENGTH = 10_000
-MIN_SECTION_LENGTH = 100
-TOC_WINDOW_CHARS = 60_000
-TOC_ENTRY_MAX_GAP = 2_500
-TOC_MIN_CLUSTER_SIZE = 8
-TOC_SANITY_WINDOW = 30_000
-MIN_TRIM_START = 6_000
-CYRILLIC_RATIO_FLOOR = 0.15
-MIN_LETTERS_FOR_ENCODING_CHECK = 300
 
-HEADER_OCR_NORMALIZATION = {
-    "реабилитау": "реабилитац",
-    "орагнизац": "организац",
-    "лечени ": "лечение ",
-    "диагности ": "диагностика ",
-}
-
-
-# TODO: refactor to pydantic
 @dataclass
 class ClinicalSection:
+    """One retrievable unit from a Minzdrav clinical guideline PDF.
+
+    Aligns with downstream RAG metadata: document title, section type (taxonomy),
+    human-readable section title, body text, and ICD-10 codes from the document header.
+    ``section_id`` is stable across re-parses so QA datasets and Qdrant payloads stay joinable.
+    """
+
     filename: str
     document_title: str
     section_type: str
@@ -51,7 +52,7 @@ class ClinicalSection:
     section_id: str = ""
 
     def __post_init__(self) -> None:
-        """Populate stable section id for old serialized sections."""
+        """Ensure ``section_id`` is set (backward compatibility with older serialized rows)."""
         if not self.section_id:
             self.section_id = self.build_section_id(
                 filename=self.filename,
@@ -59,16 +60,21 @@ class ClinicalSection:
                 section_title=self.section_title,
             )
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
+        """Serialize to a plain dict (e.g. JSON lines export)."""
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict):
+    def from_dict(cls, data: dict) -> "ClinicalSection":
+        """Deserialize from a dict produced by ``to_dict``."""
         return cls(**data)
 
     @staticmethod
     def build_section_id(*, filename: str, document_title: str, section_title: str) -> str:
-        """Build a deterministic section id shared by QA generation and RAG indexing."""
+        """Return a deterministic id (SHA-256 prefix) for QA ↔ retrieval correlation.
+
+        Parts are case-folded and whitespace-normalized so superficial edits do not churn ids.
+        """
         key_parts = [
             ClinicalSection._normalize_id_part(filename),
             ClinicalSection._normalize_id_part(document_title),
@@ -79,11 +85,19 @@ class ClinicalSection:
 
     @staticmethod
     def _normalize_id_part(value: str) -> str:
+        """Collapse whitespace for hashing-only (not for display)."""
         return re.sub(r"\s+", " ", value.casefold().strip())
 
 
 @dataclass(frozen=True)
 class HeaderMatch:
+    """A detected section header in the raw PDF text (offset-based).
+
+    ``start``/``end`` bound the header line in the full document string; the following
+    body runs until the next header or a trim point. ``level`` is derived from the
+    dotted numbering depth (e.g. ``1.2.1`` → 3).
+    """
+
     number: str
     title: str
     start: int
@@ -92,22 +106,25 @@ class HeaderMatch:
 
 
 class ClinicalGuidelinesParser:
-    """
-    Custom PDF parser for clinical recommendation texts.
+    """Parse Minzdrav-style clinical guidelines from PDF into ``ClinicalSection`` records.
+
+    Pipeline: hybrid text extraction (layout + fallbacks) → normalize → detect document
+    title and ICD codes → find numbered headers and slice bodies → classify by keyword
+    taxonomy → clean and optionally split oversized sections. Heuristics are tuned for
+    Russian MoH PDFs (TOC, glued lines, OCR noise).
     """
 
     def __init__(
         self,
         extractor: HybridTextExtractor | None = None,
-    ):
+    ) -> None:
+        """Create a parser; uses ``HybridTextExtractor`` when ``extractor`` is omitted."""
         self.section_patterns = SECTION_PATTERNS
         self.exclude_patterns = EXCLUDE_PATTERNS
         self.extractor = extractor or HybridTextExtractor()
 
     def parse_directory(self, path: Path) -> list[ClinicalSection]:
-        """
-        Method for parsing all pdf files in directory
-        """
+        """Parse every ``*.pdf`` under ``path`` and concatenate all sections."""
         pdf_files = list(Path(path).glob("*.pdf"))
 
         result = []
@@ -120,22 +137,29 @@ class ClinicalGuidelinesParser:
         return result
 
     def parse_pdf(self, pdf_path: Path) -> list[ClinicalSection] | None:
-        """
-        Method for parsing pdf files.
+        """Parse a single PDF into classified sections, or ``None`` on structural failure.
+
+        Inherits section type from the parent chapter when a subsection title alone does
+        not match the taxonomy (common for ``1.1``, ``1.2`` under a typed ``1`` block).
+
+        Returns:
+            Sections ordered as in the document, each with computed ``section_id``,
+            or ``None`` if extraction raised ``KeyError`` (logged).
         """
         try:
             text, _, layout_headers = self._extract_text_with_page_markers(pdf_path)
             text = self._normalize_extracted_text(text)
 
             title = self._extract_document_title(text, pdf_path)
-            mkb_codes = self._extract_mkb_codes(text)
+            mkb_codes = self._extract_icd_codes(text)
 
             raw_sections = self._extract_sections(text, layout_headers=layout_headers)
         except KeyError:
-            logger.exception("KeyError while parsing file %s", pdf_path)
+            logger.exception(f"KeyError while parsing file {pdf_path}")
             return None
 
         result = []
+        # Map top-level index (e.g. "3") → section_type seen on that chapter's main heading.
         root_section_types: dict[str, str] = {}
         for number, title_part, sec_body in raw_sections:
             sec_title = f"{number} {title_part}"
@@ -170,7 +194,12 @@ class ClinicalGuidelinesParser:
         return result
 
     def _should_skip_section_title(self, section_title: str) -> bool:
-        """Return True for section titles that must be excluded from output."""
+        """Return whether this heading should never become a chunk (service / noisy blocks).
+
+        Drops epidemiology and surgical-risk strata sections (often huge tables, weak for
+        therapy QA). The compact substring catches ICD ``coding`` boilerplate when spaces
+        are lost between words in the text layer.
+        """
         normalized = self._normalize_header_text(section_title.lower())
         compact = re.sub(r"[\s\W_]+", "", normalized)
 
@@ -185,6 +214,16 @@ class ClinicalGuidelinesParser:
         return coding_compact_anchor in compact
 
     def _extract_text_with_page_markers(self, pdf_path: Path) -> tuple[str, int, list[str]]:
+        """Run hybrid extraction and optionally replace a bad layout layer with native text.
+
+        Layout mode yields better structure for headers but some PDFs ship a broken Cyrillic
+        mapping; we then re-extract with pypdf-style native strings and pick the variant
+        that passes corruption heuristics and scores higher.
+
+        Returns:
+            Full document text, page count, and layout-derived header lines (empty if we
+            fell back to native, since native mode does not populate them).
+        """
         extraction = self.extractor.extract(pdf_path)
         text = extraction.text
         total_pages = extraction.total_pages
@@ -208,23 +247,26 @@ class ClinicalGuidelinesParser:
                     quality_score = native_score
                     layout_headers = []
                     logger.warning(
-                        "Detected corrupted layout text layer for %s; fallback to native extraction",  # noqa: E501
-                        pdf_path.name,
+                        f"Detected corrupted layout text layer for {pdf_path.name}; "
+                        "fallback to native extraction"
                     )
 
         if self._is_text_corrupted(text):
-            logger.warning("Detected corrupted text layer for %s", pdf_path.name)
+            logger.warning(f"Detected corrupted text layer for {pdf_path.name}")
 
         logger.info(
-            "Extracted %s with mode=%s pages=%s quality=%.2f",
-            pdf_path.name,
-            mode_used,
-            total_pages,
-            quality_score,
+            f"Extracted {pdf_path.name} with mode={mode_used} pages={total_pages} "
+            f"quality={quality_score:.2f}"
         )
         return text, total_pages, layout_headers
 
     def _try_extract_native_variant(self, pdf_path: Path) -> tuple[str, int, float] | None:
+        """Second-pass native extraction for comparison or fallback (extractor internals).
+
+        Returns:
+            ``(text, page_count, quality_score)`` or ``None`` if the extractor does not
+            support native mode or extraction raised.
+        """
         if not hasattr(self.extractor, "_extract_native"):
             return None
         try:
@@ -246,6 +288,11 @@ class ClinicalGuidelinesParser:
         candidate_text: str,
         candidate_score: float,
     ) -> bool:
+        """Prefer the variant that is not ``_is_text_corrupted``, then Cyrillic ratio, then score.
+
+        The +1 score buffer avoids swapping on tiny embedding-quality noise; length is a
+        last resort when scores tie (more extracted bytes usually mean fewer dropped runs).
+        """
         current_corrupted = self._is_text_corrupted(current_text)
         candidate_corrupted = self._is_text_corrupted(candidate_text)
         if current_corrupted != candidate_corrupted:
@@ -262,8 +309,13 @@ class ClinicalGuidelinesParser:
         return len(candidate_text) > len(current_text)
 
     def _extract_document_title(self, text: str, pdf_path: Path) -> str:
+        """Parse the human-readable recommendation title from the first page header.
+
+        Russian guidelines almost always place the disease/topic name after the phrase
+        *клинические рекомендации*; if that pattern is missing (scanned cover, odd layout),
+        we fall back to a cleaned file name for metadata and UI.
+        """
         header = text[:1500]
-        # try get title after phrase "клинические рекомендации"
         m = re.search(
             r"клинические\s+рекомендации[:\s]*\n*([А-ЯЁа-яё][А-ЯЁа-яё\s\-,()]+?)(?:\n|МКБ)",
             header,
@@ -272,14 +324,17 @@ class ClinicalGuidelinesParser:
         if m:
             title = re.sub(r"\s+", " ", m.group(1)).strip()
             return title[:500]
-        # fallback: file name
         file_name = Path(pdf_path).name
         return " ".join(file_name.split("_"))
 
-    def _extract_mkb_codes(self, text: str) -> list[str]:
+    def _extract_icd_codes(self, text: str) -> list[str]:
+        """Collect ICD-10 codes from the document header (metadata filter for retrieval).
+
+        Only the early slice is scanned—codes are repeated in the body and would duplicate.
+        Order of first occurrence is preserved; duplicates are skipped.
+        """
         header = text[:3000]
         codes = ICD_RE.findall(header)
-        # delete duplicates
         seen = set()
         out = []
         for c in codes:
@@ -291,11 +346,21 @@ class ClinicalGuidelinesParser:
     def _extract_sections(
         self, text: str, layout_headers: list[str] | None = None
     ) -> list[tuple[str, str, str]]:
+        """Split full text into ``(section_number, title_without_number, body)`` tuples.
+
+        Steps: estimate where the TOC ends so those lines are not treated as section starts;
+        regex-scan plus optional layout-assisted headers; cut off bibliographies/appendices
+        via ``_find_trim_end`` so trailing junk does not become chunks.
+
+        Returns:
+            Ordered sections; body text is raw between headers before ``_clean_section_text``.
+        """
         sections: list[tuple[str, str, str]] = []
         toc_end = self._detect_toc_end(text)
         matches = self._extract_header_matches(text)
         if layout_headers:
             matches = self._merge_layout_headers(matches, text, layout_headers)
+        # Ignore TOC line numbers that look like "3.1 Title … 12" — they are not body headers.
         matches = [m for m in matches if m.start >= toc_end]
 
         if not matches:
@@ -315,21 +380,30 @@ class ClinicalGuidelinesParser:
     def _merge_layout_headers(
         self, regex_headers: list[HeaderMatch], text: str, layout_headers: list[str]
     ) -> list[HeaderMatch]:
+        """Add PDF-layout header lines that regex missed (multi-column or hyphenation gaps).
+
+        Each candidate must ``find`` in ``text`` and not overlap an existing match span;
+        we sort by offset so downstream slicing stays monotonic.
+        """
         merged = list(regex_headers)
         occupied_ranges = [(header.start, header.end) for header in regex_headers]
         for header_line in layout_headers:
             normalized_line = self._normalize_header_text(header_line)
+            # try to match the normalized line to the regex pattern for the header
             match = re.match(
                 r"^\s*(?P<number>\d{1,2}(?:\.\d{1,2}){0,4}\.?)\s+(?P<title>.+)$",
                 normalized_line,
             )
             if not match:
                 continue
+            # get the number and title from the matched pattern
             number = match.group("number").rstrip(".")
             title = self._normalize_header_text(match.group("title"))
+            # check if the number and title are likely a header
             if not self._is_likely_header(number, title):
                 continue
             candidates = [normalized_line, f"{number} {title}"]
+            # find the start of the matched candidate
             start = -1
             matched_candidate = ""
             for candidate in candidates:
@@ -340,7 +414,9 @@ class ClinicalGuidelinesParser:
                     break
             if start == -1:
                 continue
+            # find the end of the matched candidate
             end = start + len(matched_candidate)
+            # check if the matched candidate overlaps with any other headers
             if self._range_overlaps(start, end, occupied_ranges):
                 continue
             occupied_ranges.append((start, end))
@@ -357,11 +433,16 @@ class ClinicalGuidelinesParser:
         return merged
 
     def _range_overlaps(self, start: int, end: int, ranges: list[tuple[int, int]]) -> bool:
+        """Return True if ``[start, end)`` intersects any stored ``[left, right)`` span."""
         return any(start <= right and end >= left for left, right in ranges)
 
     def _classify_section(self, section_title: str) -> str | None:
+        """Map heading text to a taxonomy label (``SECTION_PATTERNS``) or ``None``.
+
+        Exclude rules win first (bibliography, abbreviations, etc.); first matching include
+        pattern determines the stored ``section_type`` for RAG filtering.
+        """
         title_lower = self._normalize_header_text(section_title.lower())
-        # exclude
         for p in self.exclude_patterns:
             if re.search(p, title_lower):
                 return None
@@ -373,9 +454,12 @@ class ClinicalGuidelinesParser:
         return None
 
     def _clean_section_text(self, text: str) -> str:
-        # delete long sequence of points
+        """Strip TOC debris, figure/table references, and citation markers from a body.
+
+        Keeps narrative sentences for embedding; removes dots leaders and bracket refs that
+        add noise without clinical content.
+        """
         text = re.sub(r"\.{3,}", " ", text)
-        # delete TOC-like strings with trailing page numbers
         text = re.sub(
             r"(?m)^\s*\d{1,2}(?:\.\d{1,2}){0,4}\.?\s+[^\n]{3,180}\s(?:\.{2,}\s*|\s+)\d{1,3}\s*$",
             "",
@@ -394,6 +478,12 @@ class ClinicalGuidelinesParser:
         return text.strip()
 
     def _normalize_extracted_text(self, text: str) -> str:
+        """Repair common PDF text-layer issues before header detection.
+
+        Joins hyphenated line breaks, fixes ``1, Title`` → ``1. Title``, glues split
+        numbered headings, and inserts newlines before inline sibling headings so
+        ``HEADER_CANDIDATE_RE`` can anchor each section start reliably.
+        """
         text = text.replace("\r", "\n").replace("\xa0", " ")
         text = re.sub(r"([А-Яа-яA-Za-z])-\n([А-Яа-яA-Za-z])", r"\1\2", text)
         text = re.sub(r"(?m)^(\d{1,2})\s*[,;]\s*([А-ЯЁA-Zа-яёa-z])", r"\1. \2", text)
@@ -411,6 +501,11 @@ class ClinicalGuidelinesParser:
         return re.sub(r"\n{3,}", "\n\n", text)
 
     def _normalize_header_text(self, text: str) -> str:
+        """Collapse whitespace, strip TOC page tails, apply OCR character substitutions.
+
+        ``HEADER_OCR_NORMALIZATION`` maps frequent misread Cyrillic/Latin confusions so
+        keyword and regex checks stay stable across extractors.
+        """
         normalized = re.sub(r"\s+", " ", text).strip()
         normalized = re.sub(r"\s(?:\.{2,}\s*|\s+)\d{1,3}\s*$", "", normalized)
         for source, target in HEADER_OCR_NORMALIZATION.items():
@@ -418,19 +513,27 @@ class ClinicalGuidelinesParser:
         return normalized
 
     def _header_level(self, number: str) -> int:
+        """Outline depth: ``1`` → 1, ``1.2`` → 2, ``1.2.3`` → 3."""
         return number.count(".") + 1
 
     def _top_level_number(self, number: str) -> int | None:
+        """Integer part before the first dot (chapter index), or ``None`` if not digits."""
         head = number.split(".")[0]
         if not head.isdigit():
             return None
         return int(head)
 
     def _extract_header_matches(self, text: str) -> list[HeaderMatch]:
+        """Collect all plausible numbered headings: line-based regex, inline glue, extras.
+
+        Deduplication buckets by ``(number, start // 100)`` so near-duplicate spans from
+        overlapping strategies do not explode the section list.
+        """
         headers: list[HeaderMatch] = []
         seen_keys: set[tuple[str, int]] = set()
 
         def add_header(candidate: HeaderMatch) -> None:
+            """Insert ``candidate`` unless the bucket key was already seen (fuzzy dedup)."""
             dedup_key = (candidate.number, candidate.start // 100)
             if dedup_key in seen_keys:
                 return
@@ -440,6 +543,7 @@ class ClinicalGuidelinesParser:
         for match in HEADER_CANDIDATE_RE.finditer(text):
             number = match.group("number").rstrip(".")
             title = self._normalize_header_text(match.group("title"))
+            # Second header sometimes glued into the title capture — peel inner numbering.
             nested = re.match(r"^(?P<number>\d{1,2}(?:\.\d{1,2}){0,4}\.?)\s+(?P<title>.+)$", title)
             if nested:
                 number = nested.group("number").rstrip(".")
@@ -462,13 +566,17 @@ class ClinicalGuidelinesParser:
         return headers
 
     def _extract_inline_header_matches(self, text: str) -> list[HeaderMatch]:
+        """Recover sections jammed on one line: ``... 2.1 Foo 2.2 Bar ...``.
+
+        We only scan lines with **two** numbering anchors so normal prose with a single
+        reference is not chopped; lookahead splits titles at the next sibling header.
+        """
         headers: list[HeaderMatch] = []
         split_re = re.compile(r"\d{1,2}(?:\.\d{1,2}){0,4}\.?\s+[А-ЯЁA-Z]")
         inline_re = re.compile(
             r"(?P<number>\d{1,2}(?:\.\d{1,2}){0,4}\.?)\s+"
             r"(?P<title>[^\n]{4,260}?)(?=(?:\s+\d{1,2}(?:\.\d{1,2}){0,4}\.?\s+[А-ЯЁA-Z])|$)"
         )
-
         for line_match in re.finditer(r"[^\n]+", text):
             line = line_match.group(0)
             if len(split_re.findall(line)) < 2:
@@ -493,6 +601,11 @@ class ClinicalGuidelinesParser:
     def _extract_unnumbered_major_headers(
         self, text: str, existing_headers: list[HeaderMatch]
     ) -> list[HeaderMatch]:
+        """Synthesize fake numbered headers for rare MoH blocks without digits (rehab, dispensary).
+
+        Hard-coded ``number`` values (``4``, ``5``) align with typical guideline outlines when
+        the PDF omits the numeral; ``_has_nearby_same_top_header`` avoids double-counting.
+        """
         extra_headers: list[HeaderMatch] = []
         patterns = [
             (
@@ -508,7 +621,6 @@ class ClinicalGuidelinesParser:
                 ),
             ),
         ]
-
         for number, pattern in patterns:
             for match in pattern.finditer(text):
                 title = self._normalize_header_text(match.group(1))
@@ -539,6 +651,10 @@ class ClinicalGuidelinesParser:
         existing_headers: list[HeaderMatch],
         extra_headers: list[HeaderMatch],
     ) -> bool:
+        """True if another header with the same chapter prefix exists within ~400 chars.
+
+        Prevents duplicate synthetic chapters when the real numbered heading already exists.
+        """
         for header in [*existing_headers, *extra_headers]:
             if not header.number.startswith(number):
                 continue
@@ -547,6 +663,12 @@ class ClinicalGuidelinesParser:
         return False
 
     def _is_likely_header(self, number: str, title: str) -> bool:
+        """Heuristic gate: reject figure captions, list items, wrong chapter range, noise.
+
+        Subsections (with ``.`` in ``number``) may start with lowercase after quotes;
+        top-level titles are stricter (capital Cyrillic/Latin). STOP/keyword shortcuts
+        delegate to ``_is_plausible_top_level_title`` for bare headings like *Диагностика*.
+        """
         clean_title = self._normalize_header_text(title) if title else ""
         clean_title_lower = clean_title.lower()
         is_valid_length = 4 <= len(clean_title_lower) <= 260
@@ -558,10 +680,8 @@ class ClinicalGuidelinesParser:
 
         if re.search(r"\s{2,}", clean_title_lower):
             clean_title_lower = re.sub(r"\s+", " ", clean_title_lower)
-
         if re.match(r"^(рисунок|таблица|комментар\b|коммент\s*ар)", clean_title_lower):
             return False
-
         top_level_number = self._top_level_number(number)
         if top_level_number is None or top_level_number > 7:
             return False
@@ -588,6 +708,11 @@ class ClinicalGuidelinesParser:
         return False
 
     def _is_plausible_top_level_title(self, title: str) -> bool:
+        """Allow common chapter stems without digits (*лечение*, *диагностика*, …).
+
+        Returns:
+            True when the title opens with a known guideline anchor phrase or dispensary wording.
+        """
         starts_with_anchor = bool(
             re.match(
                 (
@@ -602,6 +727,13 @@ class ClinicalGuidelinesParser:
         return starts_with_anchor or contains_dispansary_phrase
 
     def _detect_toc_end(self, text: str) -> int:
+        """Return the character offset where the real body begins (after the TOC).
+
+        Primary signal: dense clusters of TOC_ENTRY lines with page-number tails; validated
+        by ``_has_body_anchors_after_toc``. Fallback: second top-level ``1 …`` header far
+        after the first (TOC repeat vs body chapter). Returns ``0`` if unsure—then TOC
+        lines may be mistaken for sections but later filters mitigate.
+        """
         toc_window = text[:TOC_WINDOW_CHARS]
         toc_entries = list(TOC_ENTRY_RE.finditer(toc_window))
         if len(toc_entries) >= 8:
@@ -628,6 +760,10 @@ class ClinicalGuidelinesParser:
         return 0
 
     def _toc_end_from_entries(self, toc_entries: list[re.Match[str]]) -> int:
+        """Pick the end of the largest dense TOC cluster (small gaps between adjacent lines).
+
+        Sparse matches in the body are ignored because they fail the cluster threshold.
+        """
         cluster_count = 1
         cluster_end = toc_entries[0].end()
         best_cluster_count = 1
@@ -654,6 +790,10 @@ class ClinicalGuidelinesParser:
         return 0
 
     def _has_body_anchors_after_toc(self, text: str, toc_end: int) -> bool:
+        """Require several top-level headers soon after ``toc_end`` so we did not cut mid-TOC.
+
+        Without this, a false TOC end would drop real sections or merge TOC with chapter 1.
+        """
         window_end = min(len(text), toc_end + TOC_SANITY_WINDOW)
         anchors_window = text[toc_end:window_end]
         anchors = self._extract_header_matches(anchors_window)
@@ -665,9 +805,11 @@ class ClinicalGuidelinesParser:
         return core_headers >= 5
 
     def _is_prevention_header(self, title: str) -> bool:
+        """True for chapters we treat as trailing care-path content (not bibliography)."""
         return bool(re.search(r"профилактик|диспансер|наблюдени", title, flags=re.IGNORECASE))
 
     def _is_stop_header(self, title: str) -> bool:
+        """Bibliography / legal / referral blocks that should end the useful guideline slice."""
         if STOP_RE.search(title):
             return True
         return bool(
@@ -679,6 +821,12 @@ class ClinicalGuidelinesParser:
         )
 
     def _find_trim_end(self, text: str, matches: list[HeaderMatch]) -> int:
+        """Return the start offset of the first header that begins reference-only appendix text.
+
+        We wait until diagnostic/therapy chapters (1–3) have appeared after ``min_trim_start``
+        so early TOC-like ``6`` headings do not truncate the body. If prevention chapters
+        were seen, we still require core progress before cutting at high-level stop headers.
+        """
         has_prevention = False
         seen_core_header = False
         seen_core_progress = False
@@ -713,6 +861,7 @@ class ClinicalGuidelinesParser:
         return len(text)
 
     def _cyrillic_ratio(self, text: str) -> float:
+        """Share of Cyrillic letters among all Latin+Cyrillic letters (encoding sanity check)."""
         letters = re.findall(r"[A-Za-zА-Яа-яЁё]", text)
         if not letters:
             return 0.0
@@ -720,12 +869,17 @@ class ClinicalGuidelinesParser:
         return len(cyrillic) / len(letters)
 
     def _is_text_corrupted(self, text: str) -> bool:
+        """True when Cyrillic share is implausibly low for Russian guidelines (mojibake/ASCII junk).
+
+        Short texts skip the check to avoid false positives on tiny snippets.
+        """
         letters_count = len(re.findall(r"[A-Za-zА-Яа-яЁё]", text))
         if letters_count < MIN_LETTERS_FOR_ENCODING_CHECK:
             return False
         return self._cyrillic_ratio(text) < CYRILLIC_RATIO_FLOOR
 
     def _split_large_section(self, text: str, parent_number: str) -> list[str]:
+        """Bound chunk size for embedding: prefer child headings, else paragraphs, else hard cut."""
         if len(text) <= MAX_SECTION_LENGTH:
             return [text]
         sub_parts = self._split_by_subheaders(text, parent_number)
@@ -741,6 +895,7 @@ class ClinicalGuidelinesParser:
         return [chunk for chunk in chunks if chunk.strip()]
 
     def _split_by_subheaders(self, text: str, parent_number: str) -> list[str]:
+        """Slice on ``parent.N`` outline lines (standalone); needs ≥2 matches or returns []."""
         parent = parent_number.rstrip(".")
         subheader_re = re.compile(
             rf"(?m)^\s*{re.escape(parent)}\.\d+(?:\.\d+)*\.?\s+[^\n]{{3,260}}\s*$"
@@ -759,6 +914,7 @@ class ClinicalGuidelinesParser:
         return segments
 
     def _split_by_paragraphs(self, text: str) -> list[str]:
+        """Greedy merge of blank-line-separated paragraphs up to ``MAX_SECTION_LENGTH``."""
         paragraphs = [chunk.strip() for chunk in re.split(r"\n\s*\n+", text) if chunk.strip()]
         if not paragraphs:
             return self._hard_split(text, MAX_SECTION_LENGTH)
@@ -783,6 +939,7 @@ class ClinicalGuidelinesParser:
         return chunks
 
     def _split_large_paragraph(self, paragraph: str) -> list[str]:
+        """Split an oversized paragraph on sentence boundaries before ``_hard_split``."""
         sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", paragraph) if s.strip()]
         if not sentences:
             return self._hard_split(paragraph, MAX_SECTION_LENGTH)
@@ -807,6 +964,7 @@ class ClinicalGuidelinesParser:
         return chunks
 
     def _hard_split(self, text: str, max_length: int) -> list[str]:
+        """Last-resort fixed windows (single huge token or pathological line)."""
         return [
             text[i : i + max_length].strip()
             for i in range(0, len(text), max_length)

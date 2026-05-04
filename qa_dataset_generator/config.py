@@ -5,7 +5,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from cadence_md.app.enums import QuestionType, SectionType
+from cadence_md.app.enums import SectionType
+from qa_dataset_generator.enums import QuestionType
 
 load_dotenv(dotenv_path=Path(".env.dev"), override=True)
 

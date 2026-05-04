@@ -1,20 +1,40 @@
-"""Document reranking via OpenAI-compatible ``POST /v1/rerank`` (llama.cpp reranker mode)."""
+"""
+Cross-encoder style reranking over candidate chunks via ``POST /v1/rerank``.
+"""
 
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import httpx
 from langchain_core.documents import Document
 
+from cadence_md.app.retry_utils import (
+    RETRYABLE_HTTP_STATUS_CODES,
+    RetryableHTTPStatusError,
+    retry_sync,
+)
+from cadence_md.app.settings import Settings, settings
+
 logger = logging.getLogger(__name__)
 
 
+def load_reranker_query_instruction(instruction_path: Path) -> str:
+    """Return UTF-8 task instruction from ``instruction_path`` for the rerank ``query`` field.
+
+    Leading and trailing whitespace are stripped; line breaks and spacing inside the file are left
+    as in the source. :meth:`RerankerWrapper.score_pairs` inserts one space between this text and
+    the user query when ``use_query_instruction`` is True.
+    """
+    raw = instruction_path.read_text(encoding="utf-8")
+    return raw.strip()
+
+
 class RerankerAPIError(RuntimeError):
-    """Raised when the rerank endpoint returns an unexpected or invalid payload."""
+    """Rerank payload invalid or non-retryable HTTP; RAG may fall back to retrieval order."""
 
 
 def _rerank_url(base_url: str) -> str:
@@ -94,6 +114,12 @@ class RerankerWrapper:
         api_key: Bearer token for the server.
         timeout_s: HTTP timeout for a single rerank request.
         max_retries_on_rate_limit: Extra attempts on HTTP 429 with exponential backoff.
+        max_retries_on_transport: Extra attempts on transport errors (timeouts, disconnects).
+        backoff_base_seconds: Base delay for backoff (429 and transport).
+        backoff_max_seconds: Maximum delay between retries.
+        use_query_instruction: If True, prepend task text from ``query_instruction_path`` to the
+            query string sent to ``/v1/rerank`` (only the ``query`` field; documents unchanged).
+        query_instruction_path: UTF-8 file with the instruction; defaults from settings.
     """
 
     def __init__(
@@ -106,18 +132,49 @@ class RerankerWrapper:
         *,
         timeout_s: float = 120.0,
         max_retries_on_rate_limit: int = 8,
+        max_retries_on_transport: int = 3,
+        backoff_base_seconds: float = 1.0,
+        backoff_max_seconds: float = 120.0,
+        use_query_instruction: bool = True,
+        query_instruction_path: Path | None = None,
     ) -> None:
         self.model = model
         self.top_k = top_k
         self.return_score = return_score
+        self.use_query_instruction = use_query_instruction
+        if query_instruction_path:
+            self._query_instruction = load_reranker_query_instruction(query_instruction_path)
+        else:
+            self._query_instruction = None
         self._api_url = _rerank_url(base_url)
         self._api_key = api_key
         self._timeout_s = timeout_s
         self._max_retries_on_rate_limit = max_retries_on_rate_limit
+        self._max_retries_on_transport = max_retries_on_transport
+        self._backoff_base_seconds = backoff_base_seconds
+        self._backoff_max_seconds = backoff_max_seconds
+        self._http_client: httpx.Client | None = None
 
-    def _post_rerank(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _get_client(self) -> httpx.Client:
+        if self._http_client is None:
+            self._http_client = httpx.Client(timeout=self._timeout_s)
+        return self._http_client
+
+    def close(self) -> None:
+        """Close the underlying HTTP client."""
+        if self._http_client is not None:
+            self._http_client.close()
+            self._http_client = None
+
+    def __enter__(self) -> RerankerWrapper:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def _post_rerank_once(self, payload: dict[str, Any]) -> dict[str, Any]:
         """
-        POST JSON to the rerank endpoint with retries on rate limits.
+        POST JSON to the rerank endpoint once.
 
         Args:
             payload: Request body (``model``, ``query``, ``documents``, optional ``top_n``).
@@ -126,56 +183,92 @@ class RerankerWrapper:
             Parsed JSON object.
 
         Raises:
-            RerankerAPIError: On repeated 429 exhaustion or non-success HTTP status.
-            httpx.HTTPError: On transport errors after retries.
+            RetryableHTTPStatusError: On transient HTTP statuses.
+            RerankerAPIError: On non-success HTTP status or invalid JSON.
+            httpx.RequestError: On transport errors.
         """
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self._api_key}",
         }
-        for attempt in range(self._max_retries_on_rate_limit + 1):
-            try:
-                with httpx.Client(timeout=self._timeout_s) as client:
-                    response = client.post(self._api_url, json=payload, headers=headers)
-            except httpx.RequestError as exc:
-                logger.warning("Rerank HTTP transport error: %s", exc)
-                raise
+        response = self._get_client().post(self._api_url, json=payload, headers=headers)
+        body_preview = (response.text or "")[:500]
 
-            if response.status_code == 429:
-                wait_s = min(120.0, 2.0**attempt)
-                logger.warning(
-                    "Rerank rate limited (429), retrying in %.1fs (attempt %s/%s)",
-                    wait_s,
-                    attempt + 1,
-                    self._max_retries_on_rate_limit + 1,
+        if response.status_code in RETRYABLE_HTTP_STATUS_CODES:
+            raise RetryableHTTPStatusError(response.status_code, body_preview=body_preview)
+
+        if response.status_code >= 400:
+            msg = f"Rerank HTTP {response.status_code} for {self._api_url}: {body_preview!r}"
+            raise RerankerAPIError(msg)
+
+        try:
+            return response.json()
+        except ValueError as exc:
+            msg = f"Rerank response is not valid JSON: {(response.text or '')[:200]!r}"
+            raise RerankerAPIError(msg) from exc
+
+    def _post_rerank(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST JSON to the rerank endpoint with shared retry/backoff handling."""
+        retry_counts = {"rate_limit": 0, "transport_or_http": 0}
+
+        def consume_retry_budget(name: str, max_retries: int) -> bool:
+            if retry_counts[name] >= max_retries:
+                return False
+            retry_counts[name] += 1
+            return True
+
+        def is_rerank_retryable(exc: BaseException) -> bool:
+            if isinstance(exc, RetryableHTTPStatusError):
+                if exc.status_code == 429:
+                    return consume_retry_budget(
+                        "rate_limit",
+                        self._max_retries_on_rate_limit,
+                    )
+
+                return consume_retry_budget(
+                    "transport_or_http",
+                    self._max_retries_on_transport,
                 )
-                if attempt >= self._max_retries_on_rate_limit:
-                    msg = "Rerank endpoint returned 429 too many times"
-                    raise RerankerAPIError(msg) from None
-                time.sleep(wait_s)
-                continue
 
-            if response.status_code >= 400:
-                body_preview = (response.text or "")[:500]
-                msg = f"Rerank HTTP {response.status_code} for {self._api_url}: {body_preview!r}"
-                raise RerankerAPIError(msg)
+            if isinstance(exc, httpx.RequestError):
+                return consume_retry_budget(
+                    "transport_or_http",
+                    self._max_retries_on_transport,
+                )
 
-            try:
-                return response.json()
-            except ValueError as exc:
-                msg = f"Rerank response is not valid JSON: {(response.text or '')[:200]!r}"
-                raise RerankerAPIError(msg) from exc
+            return False
 
-        msg = "Rerank loop exited unexpectedly"
-        raise RerankerAPIError(msg)
+        try:
+            return retry_sync(
+                lambda: self._post_rerank_once(payload),
+                logger_=logger,
+                max_attempts=(1 + self._max_retries_on_rate_limit + self._max_retries_on_transport),
+                operation_name="reranker.post",
+                base_seconds=self._backoff_base_seconds,
+                max_seconds=self._backoff_max_seconds,
+                is_retryable=is_rerank_retryable,
+            )
+        except RetryableHTTPStatusError as exc:
+            if exc.status_code == 429:
+                msg = "Rerank endpoint returned 429 too many times"
+            else:
+                msg = f"Rerank endpoint returned HTTP {exc.status_code} too many times"
+            raise RerankerAPIError(msg) from exc
 
-    def score_pairs(self, query: str, documents: list[Document]) -> list[float]:
+    def score_pairs(
+        self,
+        query: str,
+        documents: list[Document],
+        *,
+        document_texts: list[str] | None = None,
+    ) -> list[float]:
         """
         Score each document against the query using ``/v1/rerank``.
 
         Args:
             query: User query string.
             documents: LangChain documents to score.
+            document_texts: Optional per-document strings sent to the rerank API (same order).
 
         Returns:
             One scalar score per document (same order as ``documents``).
@@ -183,17 +276,31 @@ class RerankerWrapper:
         if not documents:
             return []
 
-        texts = [doc.page_content for doc in documents]
+        if document_texts is not None and len(document_texts) != len(documents):
+            msg = "document_texts length must match documents length"
+            raise ValueError(msg)
+
+        if document_texts is not None:
+            texts = document_texts
+        else:
+            texts = [d.page_content for d in documents]
+        query_for_api = query
+        if self.use_query_instruction and self._query_instruction:
+            query_for_api = f"{self._query_instruction} {query}"
         payload: dict[str, Any] = {
             "model": self.model,
-            "query": query,
+            "query": query_for_api,
             "documents": texts,
         }
         data = self._post_rerank(payload)
         return _parse_rerank_response(data, expected_documents=len(documents))
 
     def rerank(
-        self, query: str, documents: list[Document]
+        self,
+        query: str,
+        documents: list[Document],
+        *,
+        document_texts: list[str] | None = None,
     ) -> Sequence[tuple[Document, float | None]]:
         """
         Rerank documents by descending relevance score.
@@ -201,6 +308,7 @@ class RerankerWrapper:
         Args:
             query: User query string.
             documents: Candidate documents.
+            document_texts: Optional strings for reranking (e.g. titles + body); originals returned.
 
         Returns:
             Documents sorted by score (descending), optionally with scores stripped.
@@ -208,7 +316,7 @@ class RerankerWrapper:
         if not documents:
             return []
 
-        scores_list = self.score_pairs(query, documents)
+        scores_list = self.score_pairs(query, documents, document_texts=document_texts)
         pairs = list(zip(documents, scores_list, strict=True))
         pairs.sort(key=lambda x: x[1], reverse=True)
 
@@ -230,6 +338,11 @@ def get_reranker(
     *,
     timeout_s: float = 120.0,
     max_retries_on_rate_limit: int = 8,
+    max_retries_on_transport: int = 3,
+    backoff_base_seconds: float = 1.0,
+    backoff_max_seconds: float = 120.0,
+    use_query_instruction: bool = True,
+    query_instruction_path: Path | None = None,
 ) -> RerankerWrapper:
     """
     Build a :class:`RerankerWrapper` for ``/v1/rerank``-based reranking.
@@ -242,6 +355,11 @@ def get_reranker(
         api_key: API key / bearer token.
         timeout_s: Per-request HTTP timeout in seconds.
         max_retries_on_rate_limit: Number of extra attempts after HTTP 429.
+        max_retries_on_transport: Extra attempts on transport errors.
+        backoff_base_seconds: Backoff base delay.
+        backoff_max_seconds: Backoff cap.
+        use_query_instruction: Whether to prepend rerank task instruction to the query string.
+        query_instruction_path: Path to the instruction file; defaults from ``RerankerConfig``.
 
     Returns:
         Configured reranker instance.
@@ -254,4 +372,28 @@ def get_reranker(
         api_key=api_key,
         timeout_s=timeout_s,
         max_retries_on_rate_limit=max_retries_on_rate_limit,
+        max_retries_on_transport=max_retries_on_transport,
+        backoff_base_seconds=backoff_base_seconds,
+        backoff_max_seconds=backoff_max_seconds,
+        use_query_instruction=use_query_instruction,
+        query_instruction_path=query_instruction_path,
+    )
+
+
+def get_reranker_from_settings(app_settings: Settings = settings) -> RerankerWrapper:
+    """Build a reranker from ``rag_config.reranker`` and ``MODEL_INFERENCE_*`` env values."""
+    cfg = app_settings.rag_config.reranker
+    return get_reranker(
+        model=cfg.model_name,
+        top_k=cfg.top_k,
+        return_score=cfg.return_score,
+        base_url=app_settings.MODEL_INFERENCE_BASE_URL,
+        api_key=app_settings.MODEL_INFERENCE_API_KEY,
+        timeout_s=cfg.timeout_seconds,
+        max_retries_on_rate_limit=cfg.max_retries_on_rate_limit,
+        max_retries_on_transport=cfg.max_retries_on_transport,
+        backoff_base_seconds=cfg.backoff_base_seconds,
+        backoff_max_seconds=cfg.backoff_max_seconds,
+        use_query_instruction=cfg.use_query_instruction,
+        query_instruction_path=cfg.query_instruction_path,
     )

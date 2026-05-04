@@ -80,6 +80,8 @@ def _render_rag_config_section(*, manifest: dict[str, Any]) -> list[str]:
         f"sparse_top_k={retrieval_cfg['sparse_top_k']}, "
         f"dense_top_k={retrieval_cfg['dense_top_k']}, "
         f"hybrid_top_k={retrieval_cfg['hybrid_top_k']}\n",
+        f"- Embedding query instruction: `{rag_cfg['embedding_query_instruction']}`\n",
+        f"- Reranker query instruction: `{rag_cfg['reranker_query_instruction']}`\n",
         f"- Qdrant collection: `{rag_cfg['qdrant_collection']}`\n\n",
     ]
 

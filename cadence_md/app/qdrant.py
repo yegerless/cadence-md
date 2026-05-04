@@ -1,4 +1,10 @@
+"""
+Qdrant lifecycle, hybrid indexing, and retrieval for clinical guideline chunks.
+"""
+
+import hashlib
 import logging
+from collections import defaultdict
 from pathlib import Path
 
 from fastembed import SparseTextEmbedding
@@ -13,6 +19,7 @@ from tqdm import tqdm
 from cadence_md.app.embedder import EmbedderWrapper
 from cadence_md.app.enums import QdrantFusionMethod, QdrantVectorType, VectorSearchType
 from cadence_md.app.pdf_parser import ClinicalGuidelinesParser, ClinicalSection
+from cadence_md.app.settings import Settings, settings
 
 # Configure logging for this module
 logger = logging.getLogger(__name__)
@@ -20,27 +27,17 @@ logger = logging.getLogger(__name__)
 
 class QdrantManager:
     """
-    Manages Qdrant vector database operations for RAG (Retrieval-Augmented Generation) system.
+    Connect to Qdrant, (re)build a hybrid collection, index PDFs, and run retrieval.
 
-    This class provides functionality to:
-    - Create and manage Qdrant collections with dense and sparse vector support
-    - Index PDF documents into the vector database
-    - Retrieve documents using dense, sparse, or hybrid search modes
-
-    Attributes:
-        chunking_cfg: Configuration for text chunking strategy
-        retrieval_cfg: Configuration for document retrieval settings
-        qdrant_cfg: Qdrant database configuration
-        qdrant_client: Qdrant client instance for database operations
-        embedder: Embedding wrapper for generating vector embeddings
-        sparse_model: FastEmbed BM25 sparse embedding model
+    Top-level flow: :meth:`setup_qdrant` creates or validates the collection, optionally re-parses
+    ``data_dir`` and uploads points. :meth:`retrieve` dispatches to dense, sparse, or hybrid search
+    based on ``search_mode`` and ``fusion_method`` from settings.
     """
 
     def __init__(
         self,
         data_dir: Path,
         chunking_cfg: BaseModel,
-        retrieval_cfg: BaseModel,
         qdrant_cfg: BaseModel,
         url: str,
         api_key: str,
@@ -56,19 +53,32 @@ class QdrantManager:
         hybrid_top_k: int,
     ) -> None:
         """
-        Initialize the QdrantManager with configuration and embedder.
+        Store configuration, open a :class:`qdrant_client.QdrantClient`, and log readiness.
 
         Args:
-            embedder: EmbedderWrapper instance for generating embeddings. If None, creates default
+            data_dir: Path to the directory containing the PDF files.
+            chunking_cfg: Configuration for the chunking process.
+            qdrant_cfg: Configuration for the Qdrant client.
+            url: URL of the Qdrant server.
+            api_key: API key for the Qdrant server.
+            https: Whether to use HTTPS for the Qdrant server.
+            embedder: Embedder wrapper.
+            collection_name: Name of the collection to use.
+            uploading_batch_size: Batch size for uploading points to Qdrant.
+            sparse_model: Sparse model to use for the Qdrant client.
+            search_mode: Search mode to use for the Qdrant client.
+            fusion_method: Fusion method to use for the Qdrant client.
+            sparse_top_k: Top k for sparse search.
+            dense_top_k: Top k for dense search.
+            hybrid_top_k: Top k for hybrid search.
 
         Raises:
-            RuntimeError: If connection to Qdrant database cannot be established
+            RuntimeError: If the Qdrant client cannot be constructed (bad URL, TLS, etc.).
         """
         # Use config if provided, otherwise use global settings
         self.data_dir = data_dir
 
         self.chunking_cfg = chunking_cfg
-        self.retrieval_cfg = retrieval_cfg
         self.qdrant_cfg = qdrant_cfg
 
         try:
@@ -98,19 +108,163 @@ class QdrantManager:
 
         logger.info("QdrantManager initialized successfully")
 
-    def _create_collection(self) -> None:
+    def _collection_exists(self) -> bool:
+        """Return True if the configured collection name exists on the server."""
+        try:
+            cols = self.qdrant_client.get_collections().collections
+        except Exception as e:
+            raise RuntimeError(f"Cannot list Qdrant collections: {e}") from e
+        return any(c.name == self._collection_name for c in cols)
+
+    def _sparse_model_descriptor(self) -> str:
+        """Human-readable sparse model id for collection metadata."""
+        name = getattr(self.sparse_model, "model_name", None)
+        if isinstance(name, str) and name:
+            return name
+        return type(self.sparse_model).__name__
+
+    def _expected_collection_metadata(self) -> dict[str, str]:
+        """Metadata describing embedding model and hybrid vector schema."""
+        return {
+            "embedding_model": str(self.embedder.model),
+            "dense_vector_size": str(self.qdrant_cfg.vector_size),
+            "distance": str(self.qdrant_cfg.distance),
+            "sparse_modifier": str(qdrant_models.Modifier.IDF),
+            "sparse_model": self._sparse_model_descriptor(),
+        }
+
+    def _write_collection_schema_metadata(self) -> None:
+        """Persist schema descriptor on the collection (OpenAPI ``update_collection``)."""
+        meta = self._expected_collection_metadata()
+        try:
+            self.qdrant_client.update_collection(
+                collection_name=self._collection_name,
+                metadata=meta,
+            )
+            logger.info("Updated Qdrant collection metadata for schema tracking")
+        except Exception as e:
+            msg = f"Failed to write collection metadata for '{self._collection_name}': {e}"
+            logger.error(msg)
+            raise RuntimeError(msg) from e
+
+    def _read_collection_metadata(self) -> dict[str, str] | None:
         """
-        Create a new Qdrant collection with dense and sparse vector support.
+        Read collection metadata.
 
-        Checks if the target collection already exists. If it exists and
-        rebuild_collection is enabled, deletes the existing collection first.
+        Prefer ``config.metadata``; fallback ``info.metadata``.
+        """
+        info = self.qdrant_client.get_collection(collection_name=self._collection_name)
+        config = getattr(info, "config", None)
+        raw = getattr(config, "metadata", None) if config is not None else None
+        if not raw:
+            raw = getattr(info, "metadata", None)
+        if not raw:
+            return None
+        return {str(k): str(v) for k, v in dict(raw).items()}
 
-        Creates a hybrid collection with:
-        - Dense vectors using configured size and distance metric
-        - Sparse vectors using BM25 with IDF modifier
+    def _collection_points_count(self) -> int:
+        """Approximate/ exact point count for the collection."""
+        try:
+            cnt = self.qdrant_client.count(
+                collection_name=self._collection_name,
+                exact=True,
+            )
+            return int(cnt.count)
+        except Exception as e:
+            logger.warning(f"Could not count Qdrant points: {e}")
+            return -1
+
+    def ensure_collection_exists_and_schema_matches(self) -> None:
+        """
+        Validate collection exists, vector params, sparse config, and metadata.
 
         Raises:
-            RuntimeError: If Qdrant database is not reachable or collection creation fails
+            RuntimeError: On missing collection, schema mismatch, or incompatible metadata.
+        """
+        if not self._collection_exists():
+            msg = (
+                f"Qdrant collection '{self._collection_name}' does not exist. "
+                "Set rebuild_collection=True for first-time indexing or create the collection."
+            )
+            raise RuntimeError(msg)
+
+        info = self.qdrant_client.get_collection(collection_name=self._collection_name)
+        params = info.config.params
+
+        vectors = getattr(params, "vectors", None) or {}
+        if QdrantVectorType.DENSE not in vectors:
+            msg = (
+                f"Collection '{self._collection_name}' missing dense vector "
+                f"'{QdrantVectorType.DENSE}'"
+            )
+            raise RuntimeError(msg)
+        dense = vectors[QdrantVectorType.DENSE]
+        if int(dense.size) != int(self.qdrant_cfg.vector_size):
+            msg = (
+                f"Dense vector size mismatch: expected {self.qdrant_cfg.vector_size}, "
+                f"got {dense.size}. Re-index with rebuild_collection=True."
+            )
+            raise RuntimeError(msg)
+        if str(dense.distance) != str(self.qdrant_cfg.distance):
+            msg = (
+                f"Dense vector distance mismatch: expected {self.qdrant_cfg.distance}, "
+                f"got {dense.distance}. Re-index with rebuild_collection=True."
+            )
+            raise RuntimeError(msg)
+
+        sparse_vectors = getattr(params, "sparse_vectors", None) or {}
+        if QdrantVectorType.SPARSE not in sparse_vectors:
+            msg = (
+                f"Collection '{self._collection_name}' missing sparse vector "
+                f"'{QdrantVectorType.SPARSE}'"
+            )
+            raise RuntimeError(msg)
+        sparse = sparse_vectors[QdrantVectorType.SPARSE]
+        if str(sparse.modifier) != str(qdrant_models.Modifier.IDF):
+            msg = (
+                f"Sparse vector modifier mismatch: expected {qdrant_models.Modifier.IDF}, "
+                f"got {sparse.modifier}. Re-index with rebuild_collection=True."
+            )
+            raise RuntimeError(msg)
+
+        expected_meta = self._expected_collection_metadata()
+        meta = self._read_collection_metadata()
+        if not meta:
+            n_pts = self._collection_points_count()
+            if n_pts == 0:
+                logger.warning(
+                    "Collection metadata missing on an empty collection; writing expected metadata"
+                )
+                self._write_collection_schema_metadata()
+                meta = self._read_collection_metadata()
+            else:
+                msg = (
+                    f"Collection '{self._collection_name}' has points but no cadence metadata. "
+                    "Re-index with rebuild_collection=True to attach schema metadata."
+                )
+                raise RuntimeError(msg)
+
+        if not meta:
+            msg = (
+                f"Collection '{self._collection_name}' metadata is still missing "
+                "after repair attempt"
+            )
+            raise RuntimeError(msg)
+
+        for key, expected_val in expected_meta.items():
+            if meta.get(key) != expected_val:
+                msg = (
+                    f"Collection metadata mismatch on {key!r}: expected {expected_val!r}, "
+                    f"got {meta.get(key)!r}. Re-index with rebuild_collection=True after aligning "
+                    "embedding model / vector_size / sparse settings."
+                )
+                raise RuntimeError(msg)
+
+    def _create_collection(self) -> None:
+        """Create the hybrid collection or delete/recreate it when ``rebuild_collection`` is set.
+
+        On success for a new collection, writes schema metadata for later validation in
+        :meth:`ensure_collection_exists_and_schema_matches`.
         """
         # try connect to Qdrant
         try:
@@ -158,6 +312,7 @@ class QdrantManager:
                     f"Created hybrid collection '{self._collection_name}' "
                     "(dense + sparse: Modifier.IDF)"
                 )
+                self._write_collection_schema_metadata()
             except Exception as e:
                 logger.error(f"Failed to create collection '{self._collection_name}': {e}")
                 raise
@@ -165,18 +320,7 @@ class QdrantManager:
             logger.info(f"Collection '{self._collection_name}' already exists")
 
     def __parse_pdf_dir(self, pdf_dir: Path) -> list[ClinicalSection]:
-        """
-        Parse all PDF files in the specified directory.
-
-        Args:
-            pdf_dir: Path to directory containing PDF files
-
-        Returns:
-            List of ClinicalSection objects extracted from PDFs
-
-        Raises:
-            RuntimeError: If parsing fails or no files are found
-        """
+        """Parse all parseable PDFs under ``pdf_dir`` into :class:`ClinicalSection` records."""
         logger.info(f"Init ClinicalGuidelinesParser for directory: {pdf_dir}")
 
         parser = ClinicalGuidelinesParser()
@@ -193,18 +337,60 @@ class QdrantManager:
         logger.info(f"Obtained {len(sections)} clinical sections from files in {pdf_dir}")
         return sections
 
-    def __create_chunks(self, sections: list[ClinicalSection]) -> list[Document]:
+    @staticmethod
+    def _metadata_group_key(metadata: dict[str, object]) -> str:
+        """Stable key to group chunks from the same clinical section.
+
+        Prefer ``section_id``; otherwise hash ``filename`` + ``section_title``.
         """
-        Convert ClinicalSection objects into Document chunks for indexing.
+        sid = metadata.get("section_id")
+        if isinstance(sid, str) and sid.strip():
+            return sid.strip()
+        fn = str(metadata.get("filename", "unknown"))
+        st = str(metadata.get("section_title", ""))
+        raw = f"{fn}|{st}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
-        Args:
-            sections: List of ClinicalSection objects to chunk
+    def _chunk_id_prefix(self, metadata: dict[str, object], group_key: str) -> str:
+        """Prefix for ``chunk_id``: ``section_id`` when present, else ``fallback_<group_hash>``."""
+        sid = metadata.get("section_id")
+        if isinstance(sid, str) and sid.strip():
+            return sid.strip()
+        return f"fallback_{group_key}"
 
-        Returns:
-            List of Document objects with text chunks
+    def _attach_chunk_metadata(self, chunks: list[Document]) -> list[Document]:
+        """Set chunk_index, chunk_total, chunk_id, chunk_size, chunk_overlap on each chunk."""
+        if not chunks:
+            return chunks
 
-        Raises:
-            ValueError: If sections list is empty or document creation fails
+        totals: dict[str, int] = defaultdict(int)
+        for doc in chunks:
+            totals[self._metadata_group_key(doc.metadata or {})] += 1
+
+        seen: dict[str, int] = defaultdict(int)
+        chunk_size = int(getattr(self.chunking_cfg, "chunk_size", 0))
+        chunk_overlap = int(getattr(self.chunking_cfg, "chunk_overlap", 0))
+
+        for doc in chunks:
+            meta = dict(doc.metadata or {})
+            gk = self._metadata_group_key(meta)
+            idx = seen[gk]
+            seen[gk] += 1
+            prefix = self._chunk_id_prefix(meta, gk)
+            meta["chunk_index"] = idx
+            meta["chunk_total"] = totals[gk]
+            meta["chunk_id"] = f"{prefix}_chunk_{idx:04d}"
+            meta["chunk_size"] = chunk_size
+            meta["chunk_overlap"] = chunk_overlap
+            doc.metadata = meta
+
+        return chunks
+
+    def __create_chunks(self, sections: list[ClinicalSection]) -> list[Document]:
+        """Turn sections into LangChain documents, split them, then enrich chunk metadata.
+
+        After splitting, :meth:`_attach_chunk_metadata` adds ``chunk_id``, ordinals, and splitter
+        hyperparameters for traceability.
         """
         logger.info("Creating text chunks from clinical sections")
 
@@ -226,29 +412,20 @@ class QdrantManager:
             splitter = RecursiveCharacterTextSplitter(
                 chunk_size=self.chunking_cfg.chunk_size,
                 chunk_overlap=self.chunking_cfg.chunk_overlap,
+                separators=self.chunking_cfg.separators,
             )
             chunks = splitter.split_documents(documents)
         except Exception as e:
             logger.error(f"Error splitting documents: {e}")
             raise
 
+        chunks = self._attach_chunk_metadata(chunks)
+
         logger.info(f"Split {len(sections)} sections into {len(chunks)} chunks")
         return chunks
 
     def _index_chunks(self, pdf_dir: Path) -> None:
-        """
-        Index all text chunks from PDF files into Qdrant database.
-
-        Processes documents in batches and indexes both dense and sparse
-        vectors for hybrid search capabilities. Uses tqdm progress bar
-        to track indexing progress.
-
-        Args:
-            pdf_dir: Path to directory containing PDF files to index
-
-        Raises:
-            RuntimeError: If indexing fails for any batch
-        """
+        """End-to-end path from PDFs to uploaded Qdrant points (dense + sparse in parallel)."""
         logger.info("Indexing chunks into Qdrant (dense + BM25 sparse)...")
 
         sections = self.__parse_pdf_dir(pdf_dir)
@@ -339,12 +516,11 @@ class QdrantManager:
         logger.info("Indexed all chunks into Qdrant (dense + sparse BM25)")
 
     def setup_qdrant(self) -> None:
-        """
-        Set up Qdrant collection for RAG operations.
+        """Entry point: rebuild or create collection, then validate schema/metadata.
 
-        If rebuild_collection is enabled, deletes existing collection
-        and re-indexes all documents. Otherwise, uses the existing
-        collection without modifications.
+        - ``rebuild_collection=True``: delete/recreate (if needed), full re-index from ``data_dir``.
+        - Missing collection without rebuild: create empty hybrid collection for later indexing.
+        - Otherwise: validate existing collection matches embedder and sparse configuration.
         """
         logger.info("Setting up Qdrant database for RAG operations")
 
@@ -352,26 +528,27 @@ class QdrantManager:
             logger.info(f"Rebuilding collection '{self._collection_name}'")
             self._create_collection()
             self._index_chunks(self.data_dir)
+        elif not self._collection_exists():
+            logger.info(
+                "Collection '%s' is missing; creating an empty hybrid collection",
+                self._collection_name,
+            )
+            self._create_collection()
         else:
             logger.info(
-                f"Using existing collection '{self._collection_name}'; FastEmbed BM25 is stateless"
+                "Using existing collection '%s'; validating schema/metadata",
+                self._collection_name,
             )
+
+        self.ensure_collection_exists_and_schema_matches()
 
         logger.info("Qdrant database is ready for working with RAG")
 
     def retrieve(self, query: str) -> list[tuple[Document, float]]:
-        """
-        Retrieve relevant documents using the configured search mode.
-
-        Args:
-            query: Search query text
+        """Retrieve top passages as LangChain documents with Qdrant scores (mode from settings).
 
         Returns:
-            List of (Document, score) pairs sorted by descending relevance.
-            Score is the retriever score from Qdrant (cosine distance, fusion score, etc.).
-
-        Raises:
-            ValueError: If search_mode is not one of 'dense', 'sparse', or 'hybrid'
+            List of ``(Document, score)`` pairs ordered by the backend (fusion for hybrid).
         """
         if self.search_mode == VectorSearchType.DENSE:
             return self._retrieve_dense(query)
@@ -382,21 +559,7 @@ class QdrantManager:
         raise ValueError(f"Unknown search_mode: {self.search_mode}")
 
     def _retrieve_dense(self, query: str) -> list[tuple[Document, float]]:
-        """
-        Retrieve documents using dense vector similarity search.
-
-        Converts the query to a dense embedding and searches the
-        Qdrant collection for similar documents.
-
-        Args:
-            query: Text query to search for
-
-        Returns:
-            List of (Document, retriever score) pairs
-
-        Raises:
-            RuntimeError: If query embedding or search fails
-        """
+        """Dense-only retrieval: ``encode_query`` → named vector ``dense``."""
         logger.debug(f"Performing dense retrieval for query: {query[:50]}...")
 
         try:
@@ -420,21 +583,7 @@ class QdrantManager:
         return self._scored_points_to_document_score_pairs(res.points)
 
     def _retrieve_sparse(self, query: str) -> list[tuple[Document, float]]:
-        """
-        Retrieve documents using sparse BM25 vector search.
-
-        Converts the query to a sparse embedding using FastEmbed's
-        BM25 model and searches the Qdrant collection.
-
-        Args:
-            query: Text query to search for
-
-        Returns:
-            List of (Document, retriever score) pairs
-
-        Raises:
-            RuntimeError: If query embedding or search fails
-        """
+        """Sparse-only retrieval: FastEmbed query embedding → named vector ``sparse``."""
         logger.debug(f"Performing sparse retrieval for query: {query[:50]}...")
 
         try:
@@ -468,24 +617,7 @@ class QdrantManager:
         return self._scored_points_to_document_score_pairs(res.points)
 
     def _retrieve_hybrid(self, query: str) -> list[tuple[Document, float]]:
-        """
-        Retrieve documents using hybrid dense + sparse search with fusion.
-
-        Combines results from both dense and sparse vector searches
-        using the configured fusion method (RRF or DBSF). This provides
-        a balanced retrieval strategy leveraging both semantic and
-        lexical matching capabilities.
-
-        Args:
-            query: Text query to search for
-
-        Returns:
-            List of (Document, retriever score) pairs
-
-        Raises:
-            ValueError: If fusion_method is not 'rrf' or 'dbsf'
-            RuntimeError: If embedding or search fails
-        """
+        """Prefetch sparse and dense top-k lists, then fuse (RRF or DBSF) to a final ranking."""
         logger.debug(f"Performing hybrid retrieval for query: {query[:50]}...")
 
         # dense query
@@ -550,19 +682,7 @@ class QdrantManager:
     def _scored_points_to_document_score_pairs(
         points: list[qdrant_models.ScoredPoint],
     ) -> list[tuple[Document, float]]:
-        """
-        Convert Qdrant scored points to (Document, score) pairs.
-
-        Args:
-            points: List of ScoredPoint objects from Qdrant
-
-        Returns:
-            List of (Document, retriever score). The ``text`` field is taken from payload
-            as ``page_content``; score is returned separately, not duplicated in metadata.
-
-        Note:
-            If Qdrant returns no score for a point, ``nan`` is used.
-        """
+        """Map Qdrant scored points to ``Document``; payload ``text`` becomes ``page_content``."""
         pairs: list[tuple[Document, float]] = []
         for pt in points:
             payload = dict(pt.payload or {})
@@ -571,3 +691,33 @@ class QdrantManager:
             doc = Document(page_content=page_content, metadata=payload)
             pairs.append((doc, score))
         return pairs
+
+
+def get_qdrant_manager_from_settings(
+    embedder: EmbedderWrapper,
+    app_settings: Settings = settings,
+) -> QdrantManager:
+    """Construct :class:`QdrantManager` from ``Settings`` (chunking, Qdrant, retrieval sub-configs).
+
+    The embedder is injected so indexing and query encoding always share the same dense model
+    instance and instruction settings as the rest of the app.
+    """
+    qc = app_settings.rag_config.qdrant_config
+    retr = app_settings.rag_config.retrieval
+    return QdrantManager(
+        data_dir=qc.data_dir,
+        chunking_cfg=app_settings.rag_config.chunking,
+        qdrant_cfg=qc,
+        url=app_settings.QDRANT_BASE_URL,
+        api_key=app_settings.QDRANT_API_KEY,
+        https=app_settings.QDRANT_HTTPS,
+        embedder=embedder,
+        collection_name=qc.collection_name,
+        uploading_batch_size=qc.uploading_batch_size,
+        sparse_model=qc.sparse_model,
+        search_mode=retr.search_mode,
+        fusion_method=retr.fusion_method,
+        sparse_top_k=retr.sparse_top_k,
+        dense_top_k=retr.dense_top_k,
+        hybrid_top_k=retr.hybrid_top_k,
+    )

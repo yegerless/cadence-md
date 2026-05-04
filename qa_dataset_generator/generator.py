@@ -15,7 +15,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from tqdm import tqdm
 
-from cadence_md.app.enums import QuestionType, SectionType
+from cadence_md.app.enums import SectionType
 from cadence_md.app.pdf_parser import ClinicalSection
 from qa_dataset_generator.config import (
     CONTEXT_FALLBACK_MAX_LEN,
@@ -39,6 +39,7 @@ from qa_dataset_generator.config import (
     SECTION_QUESTION_TYPES,
     UNKNOWN_SOURCE_KEY,
 )
+from qa_dataset_generator.enums import QuestionType
 from qa_dataset_generator.prompts import GENERATION_PROMPTS
 from qa_dataset_generator.schemas import (
     GenerationPipelineStats,

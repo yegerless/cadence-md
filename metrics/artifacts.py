@@ -144,6 +144,8 @@ def create_run_manifest(
             "reranker_model": rag_cfg.reranker.model_name,
             "chunk_size": rag_cfg.chunking.chunk_size,
             "chunk_overlap": rag_cfg.chunking.chunk_overlap,
+            "embedding_query_instruction": rag_cfg.embedding.use_query_instruction,
+            "reranker_query_instruction": rag_cfg.reranker.use_query_instruction,
             "retrieval": {
                 "search_mode": str(rag_cfg.retrieval.search_mode),
                 "fusion_method": str(rag_cfg.retrieval.fusion_method),
