@@ -67,8 +67,8 @@ def _httpx_response(status_code: int) -> httpx.Response:
             lambda: httpx.ConnectError("down", request=httpx.Request("GET", "https://x")),
             True,
         ),
-        (lambda: TimeoutError(), True),
-        (lambda: ConnectionError(), True),
+        (TimeoutError, True),
+        (ConnectionError, True),
         (lambda: OSError(5, "io"), True),
         (lambda: ValueError("not transient"), False),
     ],
@@ -107,7 +107,7 @@ def test_sleep_with_backoff_exponential_and_cap(monkeypatch: pytest.MonkeyPatch)
 def test_sleep_with_backoff_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
     sleeps: list[float] = []
 
-    monkeypatch.setattr("cadence_md.app.retry_utils.time.sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr("cadence_md.app.retry_utils.time.sleep", sleeps.append)
     monkeypatch.setattr("cadence_md.app.retry_utils.random.random", lambda: 1.0)
 
     sleep_with_backoff(1, base_seconds=10.0, max_seconds=100.0, jitter_ratio=0.2)

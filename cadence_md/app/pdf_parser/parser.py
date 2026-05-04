@@ -518,7 +518,7 @@ class ClinicalGuidelinesParser:
 
     def _top_level_number(self, number: str) -> int | None:
         """Integer part before the first dot (chapter index), or ``None`` if not digits."""
-        head = number.split(".")[0]
+        head = number.split(".", maxsplit=1)[0]
         if not head.isdigit():
             return None
         return int(head)
