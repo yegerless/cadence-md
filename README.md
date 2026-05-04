@@ -42,19 +42,45 @@ poetry run python commands.py --help
 poetry run python commands.py <subcommand> --help
 ```
 
+### `parse-pdf`
+
+Parses a directory of clinical guideline PDFs into a JSONL with extracted
+sections (`ClinicalSection` records).
+
+| Option          | Default | Description                            |
+| --------------- | ------- | -------------------------------------- |
+| `--pdf-dir`     | —       | Input directory containing `*.pdf`     |
+| `--output-file` | —       | Output JSONL file with parsed sections |
+| `--max-files`   | —       | Optional cap on number of input PDFs   |
+
+Examples:
+
+```bash
+poetry run python commands.py parse-pdf \
+  --pdf-dir data/main_specialities \
+  --output-file data/clinical_sections.jsonl
+```
+
+```bash
+poetry run python commands.py parse-pdf \
+  --pdf-dir data/main_specialities \
+  --output-file data/clinical_sections_sample.jsonl \
+  --max-files 5
+```
+
 ### `generate-qa`
 
 Builds a synthetic QA dataset from a JSONL of clinical sections (parser output).
 
-| Option            | Default                                             | Description                                                  |
-| ----------------- | --------------------------------------------------- | ------------------------------------------------------------ |
-| `--sections-file` | `data/clinical_sections.jsonl`                      | Input sections JSONL                                         |
-| `--output-file`   | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Output QA JSONL                                              |
-| `--model`         | `GigaChat-2-Max`                                    | LLM name (e.g. `GigaChat`, `GigaChat-2-Max`, `GigaChat-pro`) |
-| `--base-url`      | —                                                   | Optional base URL for a local model                          |
-| `--load-api-key`  | on                                                  | Load API key from the environment                            |
-| `--temperature`   | `0.7`                                               | Sampling temperature                                         |
-| `--max-context`   | `50000`                                             | Max context length (characters)                              |
+| Option               | Default                                             | Description                                                  |
+| -------------------- | --------------------------------------------------- | ------------------------------------------------------------ |
+| `--sections-file`    | `data/clinical_sections.jsonl`                      | Input sections JSONL                                         |
+| `--output-file`      | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Output QA JSONL                                              |
+| `--model`            | `GigaChat-2-Max`                                    | LLM name (e.g. `GigaChat`, `GigaChat-2-Max`, `GigaChat-pro`) |
+| `--temperature`      | `0.0`                                               | Sampling temperature                                         |
+| `--max-context`      | `10000`                                             | Max context length (characters)                              |
+| `--sections-per-pdf` | `3`                                                 | Randomly sample up to N sections from each source PDF        |
+| `--seed`             | —                                                   | Random seed for reproducible section sampling                |
 
 Example:
 
@@ -62,19 +88,29 @@ Example:
 poetry run python commands.py generate-qa --sections-file data/clinical_sections.jsonl
 ```
 
+On success, a Markdown generation report is written next to `--output-file`:
+`{stem}_generation_report.md`, where `{stem}` is the output basename without
+extension (for example `.../qa_dataset.jsonl` →
+`.../qa_dataset_generation_report.md`). The report lists CLI parameters, a
+pipeline summary (sections loaded, invalid JSONL lines skipped, pairs generated,
+failed sections), and counts by question type and section type.
+
 Requires LLM credentials (e.g. `GIGACHAT_API_KEY`) as configured for the QA
-generator.
+generator. The command fails if `--output-file` already exists to avoid
+accidental appends to stale datasets.
 
 ### `metrics-eval-full`
 
 Full RAG evaluation: answer generation, RAGAS metrics, retrieval metrics, and
 reports under the output directory.
 
-| Option           | Default                                             | Description                    |
-| ---------------- | --------------------------------------------------- | ------------------------------ |
-| `--dataset-file` | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Evaluation QA JSONL            |
-| `--output-dir`   | `metrics/results/`                                  | Reports and metric files       |
-| `--sample-size`  | —                                                   | Limit the number of test cases |
+| Option                          | Default                                             | Description                                    |
+| ------------------------------- | --------------------------------------------------- | ---------------------------------------------- |
+| `--dataset-file`                | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Evaluation QA JSONL                            |
+| `--output-dir`                  | `metrics/results/`                                  | Reports and metric files                       |
+| `--sample-size`                 | —                                                   | Limit the number of test cases                 |
+| `--k`                           | `5`                                                 | K for recall@K / precision@K                   |
+| `--enable-text-matcher-metrics` | off                                                 | Also compute diagnostic `text_match_*` metrics |
 
 Example:
 
@@ -88,8 +124,7 @@ described in the setup guide.
 ### `metrics-eval-retriever`
 
 Retriever-only evaluation (retrieve + rerank): no RAGAS and no full answer
-generation. Writes `retriever_evaluation_report.md` and `retriever_metrics.json`
-into the output directory.
+generation.
 
 Same options as `metrics-eval-full`, plus:
 
@@ -97,20 +132,36 @@ Same options as `metrics-eval-full`, plus:
 | ------ | ---------------- | ---------------------------- |
 | `--k`  | pipeline default | K for recall@K / precision@K |
 
+Both `full` and `retriever` modes now create a dedicated run directory under
+`--output-dir`:
+
+```text
+metrics/results/<run_id>/
+  run_manifest.json
+  summary_metrics.json
+  report.md
+  errors.jsonl
+  # full mode
+  cases.jsonl
+  ragas_scores.parquet
+  # retriever mode
+  retrieval_cases.jsonl
+```
+
+Primary retrieval metrics are section-based and require `section_id` in both the
+QA dataset and indexed Qdrant metadata. Regenerate the QA dataset and reindex
+the corpus after this change. Use `--enable-text-matcher-metrics` only for
+optional diagnostic text-overlap metrics; they are written separately as
+`text_match_*`.
+
 Example:
 
 ```bash
 poetry run python commands.py metrics-eval-retriever --k 5
 ```
 
-### Direct `metrics/main.py` entrypoint
-
-You can also run the metrics CLI directly (same subcommands and flags):
-
-```bash
-poetry run python metrics/main.py full --help
-poetry run python metrics/main.py retriever --help
-```
+See `poetry run python commands.py metrics-eval-full --help` and
+`metrics-eval-retriever --help` for all evaluation flags.
 
 ## License
 

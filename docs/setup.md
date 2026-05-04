@@ -78,3 +78,51 @@ python commands.py generate-qa
 # Use for get help with command options
 python commands.py generate-qa --help
 ```
+
+#### 5. Run llama.cpp inference server (embedder, reranker, llm)
+
+If you use Mac llama.cpp is single opportunity to run reranker models with
+OpenAI-compatible API. On linux use vLLM.
+
+The project uses one OpenAI-compatible base URL (`MODEL_INFERENCE_BASE_URL`) for
+models inference. To run project you need:
+
+- embedder;
+- reranker;
+- LLM for text generation.
+
+Model names are taken from `llama-configs/*.ini`. You may use an existing file
+or create your own.
+
+Install llama.cpp once:
+
+```bash
+brew install llama.cpp
+```
+
+You can use llama-cli for download GGUF files from Hugging Face:
+
+```bash
+llama-cli --hf-repo repo-owner/hf-repo --hf-file filename.gguf
+```
+
+By default (on Mac), downloaded files are stored in local HF cache:
+`~/.cache/huggingface/hub`
+
+Examples of `llama-server` startup commands:
+
+```bash
+llama-server \
+  --models-dir /path/to/you/models \
+  --models-preset /path/to/you/models.ini \
+  --models-max 3 \
+  --metrics \
+  --perf \
+  --log-timestamps \
+  --log-prefix
+```
+
+Important:
+
+- `cadence_md` currently uses one `MODEL_INFERENCE_BASE_URL` for all model
+  types;

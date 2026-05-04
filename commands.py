@@ -1,15 +1,30 @@
 import argparse
+import json
+import logging
 from pathlib import Path
 
+from tqdm import tqdm
 
-def _run_metrics_cli_argv(argv: list[str]) -> None:
-    """Lazy import so project CLI does not load RAG stack unless needed."""
-    from metrics.main import run_metrics_cli  # noqa: PLC0415
+from qa_dataset_generator.config import (
+    DEFAULT_MAX_CONTEXT_LENGTH,
+    DEFAULT_MODEL_NAME,
+    DEFAULT_SECTIONS_PER_PDF,
+    DEFAULT_TEMPERATURE,
+)
 
-    run_metrics_cli(argv)
+logger = logging.getLogger(__name__)
 
 
-def main():
+def _positive_int(value: str) -> int:
+    """Parse positive integer from CLI."""
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
+def build_project_cli_parser() -> argparse.ArgumentParser:
+    """Argument parser for the project CLI (tests and programmatic use)."""
     parser = argparse.ArgumentParser(
         description="Project CLI",
     )
@@ -36,38 +51,38 @@ def main():
     gen_parser.add_argument(
         "--model",
         type=str,
-        default="GigaChat-2-Max",
+        default=DEFAULT_MODEL_NAME,
         help="LLM model name (GigaChat, GigaChat-2-Max, GigaChat-pro)",
-    )
-    gen_parser.add_argument(
-        "--base-url",
-        type=str,
-        default=None,
-        help="Base URL for local model (optional)",
-    )
-    gen_parser.add_argument(
-        "--load-api-key",
-        action="store_true",
-        default=True,
-        help="Load api key from environment if True",
     )
     gen_parser.add_argument(
         "--temperature",
         type=float,
-        default=0.7,
+        default=DEFAULT_TEMPERATURE,
         help="Temperature for LLM answer generation (0.0-1.0)",
     )
     gen_parser.add_argument(
         "--max-context",
-        type=int,
-        default=10000,
+        type=_positive_int,
+        default=DEFAULT_MAX_CONTEXT_LENGTH,
         help="Maximum context length in characters",
+    )
+    gen_parser.add_argument(
+        "--sections-per-pdf",
+        type=_positive_int,
+        default=DEFAULT_SECTIONS_PER_PDF,
+        help="Randomly sample up to N sections from each source PDF",
+    )
+    gen_parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional random seed for reproducible sampling",
     )
 
     # command metrics-eval-full
     metrics_full = subparsers.add_parser(
         "metrics-eval-full",
-        help="Full RAG evaluation (RAGAS + retrieval metrics), see metrics/main.py",
+        help="Full RAG evaluation (RAGAS + retrieval metrics + report)",
     )
     metrics_full.add_argument(
         "--dataset-file",
@@ -83,15 +98,26 @@ def main():
     )
     metrics_full.add_argument(
         "--sample-size",
-        type=int,
+        type=_positive_int,
         default=None,
         help="Optional cap on number of test cases",
+    )
+    metrics_full.add_argument(
+        "--k",
+        type=_positive_int,
+        default=5,
+        help="K for recall@K / precision@K",
+    )
+    metrics_full.add_argument(
+        "--enable-text-matcher-metrics",
+        action="store_true",
+        help="Also compute prefixed retrieval metrics using text matcher",
     )
 
     # command metrics-eval-retriever
     metrics_ret = subparsers.add_parser(
         "metrics-eval-retriever",
-        help="Retriever-only evaluation (no RAGAS), see metrics/main.py",
+        help="Retriever-only evaluation (no RAGAS / no answer generation)",
     )
     metrics_ret.add_argument(
         "--dataset-file",
@@ -107,57 +133,131 @@ def main():
     )
     metrics_ret.add_argument(
         "--sample-size",
-        type=int,
+        type=_positive_int,
         default=None,
         help="Optional cap on number of test cases",
     )
     metrics_ret.add_argument(
         "--k",
-        type=int,
+        type=_positive_int,
         default=None,
-        help="K for recall@K / precision@K",
+        help="K for recall@K / precision@K (default: pipeline default)",
+    )
+    metrics_ret.add_argument(
+        "--enable-text-matcher-metrics",
+        action="store_true",
+        help="Also compute prefixed retrieval metrics using text matcher",
     )
 
+    # command parse-pdf
+    parse_pdf = subparsers.add_parser(
+        "parse-pdf",
+        help="Parse clinical guideline PDFs into sections JSONL",
+    )
+    parse_pdf.add_argument(
+        "--pdf-dir",
+        type=Path,
+        required=True,
+        help="Directory with source PDF files",
+    )
+    parse_pdf.add_argument(
+        "--output-file",
+        type=Path,
+        required=True,
+        help="Output JSONL file for parsed sections",
+    )
+    parse_pdf.add_argument(
+        "--max-files",
+        type=_positive_int,
+        default=None,
+        help="Optional cap on number of PDF files to parse",
+    )
+
+    return parser
+
+
+def _run_parse_pdf(
+    pdf_dir: Path,
+    output_file: Path,
+    max_files: int | None,
+) -> None:
+    """Parse clinical guideline PDFs and store sections JSONL."""
+    from cadence_md.app.pdf_parser import ClinicalGuidelinesParser  # noqa: PLC0415
+
+    parser = ClinicalGuidelinesParser()
+    pdf_files = sorted(pdf_dir.glob("*.pdf"))
+    if max_files is not None:
+        pdf_files = pdf_files[:max_files]
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    sections = []
+    for pdf_file in tqdm(pdf_files, desc="Parsing PDFs", unit="file"):
+        parsed = parser.parse_pdf(pdf_file)
+        if parsed:
+            sections.extend(parsed)
+
+    with output_file.open("w", encoding="utf-8") as f:
+        for section in sections:
+            f.write(json.dumps(section.to_dict(), ensure_ascii=False) + "\n")
+
+    logger.info(
+        "Parsed %s files, saved %s sections to %s", len(pdf_files), len(sections), output_file
+    )
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    parser = build_project_cli_parser()
     args = parser.parse_args()
 
     if args.command == "generate-qa":
-        from qa_dataset_generator.generate_qa_dataset import (  # noqa: PLC0415
+        from qa_dataset_generator.main import (  # noqa: PLC0415
             generate_qa_dataset,
         )
 
-        generate_qa_dataset(
-            sections_file=args.sections_file,
+        try:
+            generate_qa_dataset(
+                sections_file=args.sections_file,
+                output_file=args.output_file,
+                model=args.model,
+                temperature=args.temperature,
+                max_context=args.max_context,
+                sections_per_pdf=args.sections_per_pdf,
+                seed=args.seed,
+            )
+        except FileExistsError as error:
+            logger.error(
+                "Output file already exists: %s. Choose a different --output-file path.",
+                error,
+            )
+            raise SystemExit(2) from error
+    elif args.command in ("metrics-eval-full", "metrics-eval-retriever"):
+        from metrics.main import build_evaluation_pipeline  # noqa: PLC0415
+
+        evaluation_pipeline = build_evaluation_pipeline()
+        if args.command == "metrics-eval-full":
+            evaluation_pipeline.run_full_evaluation(
+                dataset_file=args.dataset_file,
+                output_dir=args.output_dir,
+                sample_size=args.sample_size,
+                k=args.k,
+                enable_text_matcher_metrics=args.enable_text_matcher_metrics,
+            )
+        else:
+            evaluation_pipeline.run_retriever_evaluation(
+                dataset_file=args.dataset_file,
+                output_dir=args.output_dir,
+                sample_size=args.sample_size,
+                k=args.k,
+                enable_text_matcher_metrics=args.enable_text_matcher_metrics,
+            )
+    elif args.command == "parse-pdf":
+        _run_parse_pdf(
+            pdf_dir=args.pdf_dir,
             output_file=args.output_file,
-            model=args.model,
-            base_url=args.base_url,
-            load_api_key=args.load_api_key,
-            temperature=args.temperature,
-            max_context=args.max_context,
+            max_files=args.max_files,
         )
-    elif args.command == "metrics-eval-full":
-        argv: list[str] = [
-            "full",
-            "--dataset-file",
-            str(args.dataset_file),
-            "--output-dir",
-            str(args.output_dir),
-        ]
-        if args.sample_size is not None:
-            argv += ["--sample-size", str(args.sample_size)]
-        _run_metrics_cli_argv(argv)
-    elif args.command == "metrics-eval-retriever":
-        argv_ret: list[str] = [
-            "retriever",
-            "--dataset-file",
-            str(args.dataset_file),
-            "--output-dir",
-            str(args.output_dir),
-        ]
-        if args.sample_size is not None:
-            argv_ret += ["--sample-size", str(args.sample_size)]
-        if args.k is not None:
-            argv_ret += ["--k", str(args.k)]
-        _run_metrics_cli_argv(argv_ret)
     else:
         parser.print_help()
 

@@ -2,21 +2,38 @@ import re
 
 from cadence_md.app.enums import SectionType
 
-ICD_RE = re.compile(r"[A-Z]\d{2}(?:\.\d{1,2})?")  # international classification of deseases
+# international classification of deseases
+ICD_RE = re.compile(r"[A-Z]\d{2}(?:\.\d{1,2})?")
 
-SECTION_HEADER_RE = re.compile(
-    r"(?:^|\n)(\d\.(?:\d+\.?)?[ \t]+)([А-ЯЁ][^\n]{5,255}?)(?:\n)",
-    re.MULTILINE,
+# regex for sectionheader candidate
+HEADER_CANDIDATE_RE = re.compile(
+    r"(?m)^\s*(?P<number>\d{1,2}(?:\.\d{1,2}){0,4}\.?)\s+(?P<title>[^\n]{3,260})\s*$",
 )
 
-STOP_RE = re.compile(r"\организация\s+оказания\s+медицинской\s+помощи", re.IGNORECASE)
+# regex for table of contents entry
+TOC_ENTRY_RE = re.compile(
+    r"(?m)^\s*\d{1,2}(?:\.\d{1,2}){0,4}\.?\s+[^\n]{3,200}?(?:\.{2,}\s*|\s+)\d{1,3}\s*$",
+)
 
+# regex for stop parsing patterns
+STOP_RE = re.compile(
+    (
+        r"(?:организац\w*\s+оказани\w*\s+медицинск\w*\s+помощ\w*)|"
+        r"(?:дополнительн\w*\s+информац\w*)|"
+        r"(?:приложени\w*)|"
+        r"(?:список\s+литератур\w*)|"
+        r"(?:критер\w*\s+оценк\w*\s+качеств\w*)"
+    ),
+    re.IGNORECASE,
+)
+
+# regex for section headers patterns
 SECTION_PATTERNS = {
     SectionType.DEFINITION: [
-        r"краткая\s+информация\s+по\s+забол"
+        r"кратк(?:ая|ие)\s+информац\w*\s+по\s+заболев",
         r"определение\s+заболевания\s+или\s+состояния",
-        r"понят[иеая]",
-        r"общ[ая|ие]\s+информац",
+        r"поняти[ея]",
+        r"общ(?:ая|ие)\s+информац",
         r"этиолог",
         r"патогенез",
         r"классификац",
@@ -25,7 +42,7 @@ SECTION_PATTERNS = {
         r"клиническая\s+картина\s+заболевания",
     ],
     SectionType.SYMPTOMS: [
-        r"клиническ[ая|ие]\s+картин",
+        r"клиническ(?:ая|ие)\s+картин",
     ],
     SectionType.DIAGNOSIS: [
         r"диагностик",
@@ -33,12 +50,13 @@ SECTION_PATTERNS = {
         r"метод[ыа]\s+исследован",
         r"лабораторн",
         r"инструментальн",
-        r"дифференциальн[ая|ыйое]\s+диагноз",
+        r"дифференциальн(?:ая|ый|ое)\s+диагноз",
         r"постановк[ау]\s+диагноз",
         r"иные\s+диагностические\s+исслед",
     ],
     SectionType.PREVENTION: [
         r"профилактик",
+        r"диспансерн\w*\s+наблюден\w*",
         r"предупрежден",
         r"превентивн",
         r"первичн[ая]\s+профилактик",
@@ -61,6 +79,7 @@ SECTION_PATTERNS = {
     ],
 }
 
+# regex for excluded section headers
 EXCLUDE_PATTERNS = [
     r"приложени[еяа]",
     r"литератур",
@@ -76,4 +95,25 @@ EXCLUDE_PATTERNS = [
     r"дополнительная\s+информация",
     r"^приложение\s+",
     r"организация\s+оказания",
+]
+
+# regex for header keywords
+HEADER_KEYWORDS = [
+    r"информация",
+    r"определение",
+    r"этиолог",
+    r"патогенез",
+    r"классификац",
+    r"клиническ",
+    r"диагностик",
+    r"обследован",
+    r"лечение",
+    r"терапи",
+    r"реабилитац",
+    r"профилактик",
+    r"диспансер",
+    r"наблюдени",
+    r"осложнен",
+    r"тактик",
+    r"ведение",
 ]

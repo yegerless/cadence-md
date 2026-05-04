@@ -15,9 +15,24 @@ class QATestCase:
     document_title: str
     mkb_codes: list[str]
     metadata: dict
+    section_id: str = ""
 
     @classmethod
     def from_dict(cls, data: dict):
+        """
+        Create a QATestCase from a dictionary
+
+        Args:
+            data: Dictionary containing the test case data
+        Returns:
+            QATestCase object
+        """
+        metadata = {
+            "section_title": data.get("section_title", ""),
+        }
+        section_id = data.get("section_id", "")
+        if section_id:
+            metadata["section_id"] = section_id
         return cls(
             question=data["question"],
             answer=data["answer"],
@@ -26,9 +41,8 @@ class QATestCase:
             section_type=data["section_type"],
             document_title=data.get("document_title", ""),
             mkb_codes=data.get("mkb_codes", []),
-            metadata={
-                "section_title": data.get("section_title", ""),
-            },
+            metadata=metadata,
+            section_id=section_id,
         )
 
 
@@ -51,3 +65,4 @@ class RAGTestResult:
     question_type: str
     section_type: str
     test_case_id: int
+    ground_truth_section_id: str = ""

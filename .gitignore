@@ -7,6 +7,7 @@ __pycache__/
 .env.dev
 .env.prod
 .env
+todo.md
 
 # C extensions
 *.so
@@ -16,6 +17,7 @@ data/
 *.json
 *.jsonl
 test_data/
+metrics/results/
 
 # Distribution / packaging
 .Python
