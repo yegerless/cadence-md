@@ -80,7 +80,43 @@ python commands.py generate-qa
 python commands.py generate-qa --help
 ```
 
-#### 5. Запуск inference-сервера llama.cpp (embedder, reranker, llm)
+#### 5. Запуск локальной dev-инфраструктуры
+
+Создайте локальный env-файл из шаблона в репозитории и замените placeholder
+значения при необходимости. Не коммитьте `.env.dev`.
+
+```bash
+cp .env.example .env.dev
+```
+
+Проверьте compose-файл с явным env-файлом:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml config
+```
+
+Запустите минимальные инфраструктурные сервисы:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml up postgres redis qdrant
+```
+
+В dev compose также есть backend skeleton service, потому что FastAPI app
+factory уже существует. Его можно запускать отдельно при необходимости:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml up backend
+```
+
+RAG worker service намеренно пока не добавлен, потому что Celery worker
+entrypoint ещё отсутствует. Migration service появится после добавления Alembic
+в Postgres-подзадаче; до этого запускайте миграции вручную перед backend
+startup, когда такая команда появится.
+
+Inference server остаётся внешним для `docker-compose-dev.yml` и должен быть
+доступен по `MODEL_INFERENCE_BASE_URL`.
+
+#### 6. Запуск inference-сервера llama.cpp (embedder, reranker, llm)
 
 Если вы используете Mac, llama.cpp — это единственная возможность запускать
 reranker-модели с OpenAI-совместимым API. На Linux используйте vLLM.

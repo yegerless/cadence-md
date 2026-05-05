@@ -1,8 +1,44 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cadence_md}
+      POSTGRES_USER: ${POSTGRES_USER:-cadence_md}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cadence_md_dev}
+    ports:
+      - 127.0.0.1:${POSTGRES_PORT:-5432}:5432
+    networks:
+      - backend-network
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - 127.0.0.1:${REDIS_PORT:-6379}:6379
+    networks:
+      - backend-network
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
   qdrant:
     image: qdrant/qdrant:v1.16.3
-    env_file:
-      - .env.dev
     ports:
       - 127.0.0.1:6333:6333
     networks:
@@ -21,7 +57,43 @@ services:
       start_period: 40s
     restart: unless-stopped # TODO: set autoheal container
 
+  backend:
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    command:
+      - uvicorn
+      - cadence_md.backend.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://cadence_md:cadence_md_dev@postgres:5432/cadence_md}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      QDRANT_BASE_URL: ${QDRANT_BASE_URL:-http://qdrant:6333}
+      QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:-dev-qdrant-api-key}
+      QDRANT_HTTPS: ${QDRANT_HTTPS:-false}
+      MODEL_INFERENCE_BASE_URL: ${MODEL_INFERENCE_BASE_URL:-http://host.docker.internal:8080/v1}
+      MODEL_INFERENCE_API_KEY: ${MODEL_INFERENCE_API_KEY:-lm-studio}
+    ports:
+      - 127.0.0.1:${BACKEND_PORT:-8000}:8000
+    networks:
+      - backend-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
+  postgres-data:
+  redis-data:
   qdrant:
 
 configs:

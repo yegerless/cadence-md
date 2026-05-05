@@ -79,7 +79,43 @@ python commands.py generate-qa
 python commands.py generate-qa --help
 ```
 
-#### 5. Run llama.cpp inference server (embedder, reranker, llm)
+#### 5. Run local dev infrastructure
+
+Create a local env file from the committed template and replace placeholder
+values as needed. Do not commit `.env.dev`.
+
+```bash
+cp .env.example .env.dev
+```
+
+Validate the compose file with the explicit env file:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml config
+```
+
+Start the minimal infrastructure services:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml up postgres redis qdrant
+```
+
+The dev compose file also contains a backend skeleton service because the
+FastAPI app factory already exists. You can start it explicitly when needed:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml up backend
+```
+
+The RAG worker service is intentionally not present yet because the Celery
+worker entrypoint has not been added. A migration service will be added after
+Alembic appears in the Postgres task; until then, run database migrations
+manually before backend startup when that migration command exists.
+
+The inference server is external to `docker-compose-dev.yml` and must be
+available at `MODEL_INFERENCE_BASE_URL`.
+
+#### 6. Run llama.cpp inference server (embedder, reranker, llm)
 
 If you use Mac llama.cpp is single opportunity to run reranker models with
 OpenAI-compatible API. On linux use vLLM.
