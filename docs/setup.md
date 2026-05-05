@@ -100,17 +100,22 @@ Start the minimal infrastructure services:
 docker compose --env-file .env.dev -f docker-compose-dev.yml up postgres redis qdrant
 ```
 
+Run database migrations before backend startup:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml run --rm migrations
+```
+
 The dev compose file also contains a backend skeleton service because the
-FastAPI app factory already exists. You can start it explicitly when needed:
+FastAPI app factory already exists. Starting `backend` through compose waits for
+successful migrations:
 
 ```bash
 docker compose --env-file .env.dev -f docker-compose-dev.yml up backend
 ```
 
 The RAG worker service is intentionally not present yet because the Celery
-worker entrypoint has not been added. A migration service will be added after
-Alembic appears in the Postgres task; until then, run database migrations
-manually before backend startup when that migration command exists.
+worker entrypoint has not been added.
 
 The inference server is external to `docker-compose-dev.yml` and must be
 available at `MODEL_INFERENCE_BASE_URL`.

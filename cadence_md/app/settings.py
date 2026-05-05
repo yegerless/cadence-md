@@ -32,8 +32,8 @@ def _default_reranker_query_instruction_path() -> Path:
 class ChunkConfig(BaseModel):
     """RecursiveCharacterTextSplitter parameters for clinical section documents."""
 
-    chunk_size: int = 1024
-    chunk_overlap: int = 128
+    chunk_size: int = 2048
+    chunk_overlap: int = 256
     separators: list[str] = Field(default_factory=lambda: ["\n\n", "\n", ". ", "; ", ", ", " ", ""])
 
 
@@ -52,7 +52,7 @@ class QdrantConfig(BaseModel):
     # vector_size: int = 1024  # For BGE-m3 and Qwen3-Embedding-0.6b
     vector_size: int = 2560  # For Qwen3-Embedding-4b
     distance: qdrant_models.Distance = qdrant_models.Distance.COSINE
-    uploading_batch_size: int = 256
+    uploading_batch_size: int = 128  # 256
     sparse_model: SparseTextEmbedding = Field(
         default_factory=lambda: SparseTextEmbedding(model_name="Qdrant/bm25")
     )

@@ -83,13 +83,33 @@ services:
     networks:
       - backend-network
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       qdrant:
         condition: service_healthy
     restart: unless-stopped
+
+  migrations:
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    command:
+      - alembic
+      - upgrade
+      - head
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://cadence_md:cadence_md_dev@postgres:5432/cadence_md}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+    networks:
+      - backend-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
 volumes:
   postgres-data:

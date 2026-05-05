@@ -101,17 +101,22 @@ docker compose --env-file .env.dev -f docker-compose-dev.yml config
 docker compose --env-file .env.dev -f docker-compose-dev.yml up postgres redis qdrant
 ```
 
+Запустите миграции БД перед стартом backend:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml run --rm migrations
+```
+
 В dev compose также есть backend skeleton service, потому что FastAPI app
-factory уже существует. Его можно запускать отдельно при необходимости:
+factory уже существует. При запуске через compose `backend` ждёт успешного
+выполнения миграций:
 
 ```bash
 docker compose --env-file .env.dev -f docker-compose-dev.yml up backend
 ```
 
 RAG worker service намеренно пока не добавлен, потому что Celery worker
-entrypoint ещё отсутствует. Migration service появится после добавления Alembic
-в Postgres-подзадаче; до этого запускайте миграции вручную перед backend
-startup, когда такая команда появится.
+entrypoint ещё отсутствует.
 
 Inference server остаётся внешним для `docker-compose-dev.yml` и должен быть
 доступен по `MODEL_INFERENCE_BASE_URL`.
