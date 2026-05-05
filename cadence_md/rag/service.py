@@ -46,6 +46,7 @@ class RAGService:
                     section_title=meta.get("section_title"),
                     section_id=meta.get("section_id"),
                     chunk_id=meta.get("chunk_id"),
+                    content=doc.page_content,
                     score=ranked.get("final_score"),
                     retrieval_score=ranked.get("retrieval_score"),
                     rerank_score=ranked.get("rerank_score"),

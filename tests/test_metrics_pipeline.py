@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 from langchain_core.documents import Document
 
+from cadence_md.rag import RAGRequest, RAGResponse, RAGRetrieveResponse, RAGSource
 from commands import build_project_cli_parser
 from metrics.evaluation_pipeline import RAGEvaluationPipeline
 from metrics.schemas import QATestCase, RAGTestResult
@@ -16,24 +17,33 @@ def _pipeline_without_init() -> RAGEvaluationPipeline:
     return pipeline
 
 
-def _ranked(
-    doc: Document,
+def _source(
+    content: str,
     *,
     rank: int = 1,
+    section_id: str | None = None,
     retrieval_score: float | None = None,
     rerank_score: float | None = None,
     final_score: float | None = None,
-) -> dict:
-    """Build a ``RankedDocument`` dict for tests."""
-    return {
-        "rank": rank,
-        "doc": doc,
-        "retrieval_score": retrieval_score,
-        "rerank_score": rerank_score,
-        "final_score": final_score,
-        "chunk_id": None,
-        "section_id": None,
-    }
+) -> RAGSource:
+    """Build a ``RAGSource`` fixture for service-contract tests."""
+    return RAGSource(
+        rank=rank,
+        doc_ref=f"[Doc {rank}]",
+        section_id=section_id,
+        content=content,
+        score=final_score,
+        retrieval_score=retrieval_score,
+        rerank_score=rerank_score,
+    )
+
+
+def _response(question: str, answer: str, sources: list[RAGSource]) -> RAGResponse:
+    return RAGResponse(query=question, answer=answer, query_hash="hash", sources=sources)
+
+
+def _retrieve_response(question: str, sources: list[RAGSource]) -> RAGRetrieveResponse:
+    return RAGRetrieveResponse(query=question, query_hash="hash", sources=sources)
 
 
 def test_load_test_cases_skips_malformed_rows(tmp_path: Path) -> None:
@@ -244,22 +254,23 @@ def test_run_full_evaluation_writes_run_artifacts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pipeline = _pipeline_without_init()
-    pipeline.rag_pipeline = type(
-        "FakeRagPipeline",
+    pipeline.rag_service = type(
+        "FakeRagService",
         (),
         {
             "run": staticmethod(
-                lambda question: {
-                    "ranked_docs": [
-                        _ranked(
-                            Document(page_content=f"ctx-{question}", metadata={}),
+                lambda request: _response(
+                    request.query,
+                    f"ans-{request.query}",
+                    [
+                        _source(
+                            f"ctx-{request.query}",
                             retrieval_score=0.9,
                             rerank_score=0.9,
                             final_score=0.9,
                         )
                     ],
-                    "answer": f"ans-{question}",
-                }
+                )
             )
         },
     )()
@@ -318,22 +329,23 @@ def test_run_full_evaluation_ignores_non_numeric_ragas_columns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pipeline = _pipeline_without_init()
-    pipeline.rag_pipeline = type(
-        "FakeRagPipeline",
+    pipeline.rag_service = type(
+        "FakeRagService",
         (),
         {
             "run": staticmethod(
-                lambda question: {
-                    "ranked_docs": [
-                        _ranked(
-                            Document(page_content=f"ctx-{question}", metadata={}),
+                lambda request: _response(
+                    request.query,
+                    f"ans-{request.query}",
+                    [
+                        _source(
+                            f"ctx-{request.query}",
                             retrieval_score=0.85,
                             rerank_score=0.85,
                             final_score=0.85,
                         )
                     ],
-                    "answer": f"ans-{question}",
-                }
+                )
             )
         },
     )()
@@ -384,25 +396,24 @@ def test_run_full_evaluation_writes_optional_text_match_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pipeline = _pipeline_without_init()
-    pipeline.rag_pipeline = type(
-        "FakeRagPipeline",
+    pipeline.rag_service = type(
+        "FakeRagService",
         (),
         {
             "run": staticmethod(
-                lambda _question: {
-                    "ranked_docs": [
-                        _ranked(
-                            Document(
-                                page_content="ацетилсалициловая кислота в дозе 75 мг ежедневно",
-                                metadata={"section_id": "wrong"},
-                            ),
+                lambda request: _response(
+                    request.query,
+                    "answer",
+                    [
+                        _source(
+                            "ацетилсалициловая кислота в дозе 75 мг ежедневно",
+                            section_id="wrong",
                             retrieval_score=0.85,
                             rerank_score=0.85,
                             final_score=0.85,
                         )
                     ],
-                    "answer": "answer",
-                }
+                )
             )
         },
     )()
@@ -455,23 +466,24 @@ def test_run_full_evaluation_tracks_rag_and_ragas_failures(
     pipeline = _pipeline_without_init()
     calls = {"n": 0}
 
-    def rag_run(question: str) -> dict:
+    def rag_run(request: RAGRequest) -> RAGResponse:
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("rag boom")
-        return {
-            "ranked_docs": [
-                _ranked(
-                    Document(page_content=f"ctx-{question}", metadata={}),
+        return _response(
+            request.query,
+            f"ans-{request.query}",
+            [
+                _source(
+                    f"ctx-{request.query}",
                     retrieval_score=0.8,
                     rerank_score=0.8,
                     final_score=0.8,
                 )
             ],
-            "answer": f"ans-{question}",
-        }
+        )
 
-    pipeline.rag_pipeline = type("FakeRagPipeline", (), {"run": staticmethod(rag_run)})()
+    pipeline.rag_service = type("FakeRagService", (), {"run": staticmethod(rag_run)})()
     test_cases = [
         QATestCase("q1", "a1", "ctx-q1", "factoid", "therapy", "", [], {}),
         QATestCase("q2", "a2", "ctx-q2", "procedural", "diagnostics", "", [], {}),
@@ -818,22 +830,16 @@ def test_run_rag_pipeline_sample_and_error_skips(
 ) -> None:
     pipeline = _pipeline_without_init()
 
-    def rag_run(question: str) -> dict:
-        if question == "q1":
+    def rag_run(request: RAGRequest) -> RAGResponse:
+        if request.query == "q1":
             raise RuntimeError("fail case")
-        return {
-            "ranked_docs": [
-                _ranked(
-                    Document(page_content=question, metadata={}),
-                    retrieval_score=0.5,
-                    rerank_score=0.5,
-                    final_score=0.5,
-                )
-            ],
-            "answer": f"a-{question}",
-        }
+        return _response(
+            request.query,
+            f"a-{request.query}",
+            [_source(request.query, retrieval_score=0.5, rerank_score=0.5, final_score=0.5)],
+        )
 
-    pipeline.rag_pipeline = type("R", (), {"run": staticmethod(rag_run)})()
+    pipeline.rag_service = type("R", (), {"run": staticmethod(rag_run)})()
     cases = [QATestCase(f"q{i}", f"a{i}", "c", "f", "s", "", [], {}) for i in range(10)]
     monkeypatch.setattr(
         "metrics.evaluation_pipeline.random.sample",
@@ -849,69 +855,17 @@ def test_run_rag_pipeline_sample_and_error_skips(
 def test_run_retriever_pipeline_scores_and_errors() -> None:
     pipeline = _pipeline_without_init()
     calls = {"n": 0}
-    build_calls = {"n": 0}
 
-    def retrieve_node(state):
+    def retrieve(request: RAGRequest) -> RAGRetrieveResponse:
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("retrieve fail")
-        return {
-            **state,
-            "ranked_docs": [
-                _ranked(
-                    Document("d", metadata={}),
-                    retrieval_score=0.1,
-                    final_score=0.1,
-                )
-            ],
-        }
+        return _retrieve_response(
+            request.query,
+            [_source("d", retrieval_score=0.1, rerank_score=0.99, final_score=0.99)],
+        )
 
-    def reranker_node(state):
-        ranked = state["ranked_docs"]
-        return {
-            **state,
-            "ranked_docs": [
-                _ranked(
-                    rd["doc"],
-                    rank=rd["rank"],
-                    retrieval_score=rd["retrieval_score"],
-                    rerank_score=0.99,
-                    final_score=0.99,
-                )
-                for rd in ranked
-            ],
-        }
-
-    pipeline.rag_pipeline = type(
-        "R",
-        (),
-        {
-            "build_initial_state": staticmethod(
-                lambda question: (
-                    build_calls.__setitem__("n", build_calls["n"] + 1)
-                    or {
-                        "query": question,
-                        "query_hash": "",
-                        "ranked_docs": [],
-                        "rerank_fallback": False,
-                        "retrieval_failed": False,
-                        "generate_fallback": False,
-                        "context_truncated": False,
-                        "error_type": None,
-                        "error_message": None,
-                        "sources": [],
-                        "context": "",
-                        "context_chars": 0,
-                        "answer": "",
-                        "answer_word_count": 0,
-                        "latency_ms": {},
-                    }
-                )
-            ),
-            "retrieve_node": staticmethod(retrieve_node),
-            "reranker_node": staticmethod(reranker_node),
-        },
-    )()
+    pipeline.rag_service = type("R", (), {"retrieve": staticmethod(retrieve)})()
     cases = [
         QATestCase("q0", "a0", "c0", "f", "s", "", [], {}),
         QATestCase("q1", "a1", "c1", "f", "s", "", [], {}),
@@ -919,57 +873,26 @@ def test_run_retriever_pipeline_scores_and_errors() -> None:
     ]
     results = pipeline.run_retriever_pipeline(cases, sample_size=None)
     assert len(results) == 2
-    assert build_calls["n"] == len(cases)
+    assert calls["n"] == len(cases)
     assert results[0].retrieval_scores == [0.99]
     assert results[0].test_case_id == 0
     assert results[1].question == "q2"
 
 
 def test_run_retriever_pipeline_uses_ranked_docs_final_score() -> None:
-    """``run_retriever_pipeline`` must read ``final_score`` from ``ranked_docs`` after rerank."""
+    """``run_retriever_pipeline`` must read ``score`` from ``RAGSource``."""
     pipeline = _pipeline_without_init()
 
-    def retrieve_node(state):
-        return {
-            **state,
-            "ranked_docs": [
-                _ranked(
-                    Document("d", metadata={}),
-                    retrieval_score=0.42,
-                    final_score=0.42,
-                )
-            ],
-        }
-
-    def reranker_node(state):
-        # Rerank fallback path: keep ranked_docs untouched (final_score == retrieval_score).
-        return state
-
-    pipeline.rag_pipeline = type(
+    pipeline.rag_service = type(
         "R",
         (),
         {
-            "build_initial_state": staticmethod(
-                lambda question: {
-                    "query": question,
-                    "query_hash": "",
-                    "ranked_docs": [],
-                    "rerank_fallback": False,
-                    "retrieval_failed": False,
-                    "generate_fallback": False,
-                    "context_truncated": False,
-                    "error_type": None,
-                    "error_message": None,
-                    "sources": [],
-                    "context": "",
-                    "context_chars": 0,
-                    "answer": "",
-                    "answer_word_count": 0,
-                    "latency_ms": {},
-                }
-            ),
-            "retrieve_node": staticmethod(retrieve_node),
-            "reranker_node": staticmethod(reranker_node),
+            "retrieve": staticmethod(
+                lambda request: _retrieve_response(
+                    request.query,
+                    [_source("d", retrieval_score=0.42, final_score=0.42)],
+                )
+            )
         },
     )()
     cases = [QATestCase("q", "a", "c", "f", "s", "", [], {})]
@@ -981,22 +904,33 @@ def test_run_full_evaluation_uses_ranked_docs_aligned_scores(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Full RAG path must record final scores aligned with the post-rerank doc order."""
+    """Full RAG path must record source scores aligned with source order."""
     pipeline = _pipeline_without_init()
     captured: dict[str, list[float]] = {}
 
-    def rag_run(question: str) -> dict:
-        d1 = Document(page_content=f"ctx1-{question}", metadata={})
-        d2 = Document(page_content=f"ctx2-{question}", metadata={})
-        return {
-            "ranked_docs": [
-                _ranked(d1, rank=1, retrieval_score=0.2, rerank_score=0.9, final_score=0.9),
-                _ranked(d2, rank=2, retrieval_score=0.1, rerank_score=0.5, final_score=0.5),
+    def rag_run(request: RAGRequest) -> RAGResponse:
+        return _response(
+            request.query,
+            f"ans-{request.query}",
+            [
+                _source(
+                    f"ctx1-{request.query}",
+                    rank=1,
+                    retrieval_score=0.2,
+                    rerank_score=0.9,
+                    final_score=0.9,
+                ),
+                _source(
+                    f"ctx2-{request.query}",
+                    rank=2,
+                    retrieval_score=0.1,
+                    rerank_score=0.5,
+                    final_score=0.5,
+                ),
             ],
-            "answer": f"ans-{question}",
-        }
+        )
 
-    pipeline.rag_pipeline = type("R", (), {"run": staticmethod(rag_run)})()
+    pipeline.rag_service = type("R", (), {"run": staticmethod(rag_run)})()
     pipeline.load_test_cases = lambda _: [
         QATestCase("q1", "a1", "ctx1-q1", "factoid", "therapy", "", [], {})
     ]

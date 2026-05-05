@@ -29,8 +29,8 @@ from ragas.metrics import (
 from ragas.run_config import RunConfig
 from tqdm import tqdm
 
-from cadence_md.app.rag import RAGPipeline
 from cadence_md.app.settings import settings
+from cadence_md.rag import RAGRequest, RAGResponse, RAGRetrieveResponse, RAGService
 from metrics.artifacts import (
     append_jsonl,
     build_run_directory,
@@ -47,27 +47,47 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-def _state_to_test_result_inputs(
-    state: dict[str, Any],
-) -> tuple[list[Document], list[float]]:
+def _response_to_test_result_inputs(
+    response: RAGResponse | RAGRetrieveResponse,
+) -> tuple[list[Document], list[float], str]:
     """
-    Extract aligned ``(documents, final_scores)`` from a final or retriever-only RAG state.
+    Build aligned ``(documents, scores, answer)`` from stable RAG service DTO response.
 
-    Both lists are derived from ``state['ranked_docs']`` so document order matches scores
-    index-by-index (rerank score after a successful rerank, retrieval score on rerank fallback).
+    Both lists are derived from ``response.sources`` so document order matches scores
+    index-by-index for downstream :class:`RAGTestResult`.
 
     Args:
-        state: Final RAG state (or retriever-only state) dictionary.
+        response: Full or retriever-only response from :class:`RAGService`.
 
     Returns:
-        Tuple of (documents, scores) aligned by index for downstream :class:`RAGTestResult`.
+        Tuple of (documents, scores, answer) aligned by index.
     """
-    ranked_docs = state.get("ranked_docs") or []
-    docs = [rd["doc"] for rd in ranked_docs]
-    scores = [
-        float(rd["final_score"]) if rd.get("final_score") is not None else 0.0 for rd in ranked_docs
-    ]
-    return docs, scores
+    docs: list[Document] = []
+    scores: list[float] = []
+    for source in response.sources:
+        docs.append(
+            Document(
+                page_content=source.content or "",
+                metadata={
+                    "doc_ref": source.doc_ref,
+                    "rank": source.rank,
+                    "filename": source.filename,
+                    "document_title": source.document_title,
+                    "section_title": source.section_title,
+                    "section_id": source.section_id,
+                    "chunk_id": source.chunk_id,
+                },
+            )
+        )
+        source_score = source.score
+        if source_score is None:
+            source_score = source.rerank_score
+        if source_score is None:
+            source_score = source.retrieval_score
+        scores.append(float(source_score) if source_score is not None else 0.0)
+
+    answer = response.answer if isinstance(response, RAGResponse) else ""
+    return docs, scores, answer
 
 
 class RAGEvaluationPipeline:
@@ -75,7 +95,7 @@ class RAGEvaluationPipeline:
     Evaluation pipeline for RAG
 
     Args:
-        rag_pipeline: RAG pipeline
+        rag_service: RAG service
         gigachat_llm: GigaChat LLM
         gigachat_embeddings: GigaChat embeddings
         ragas_metrics: List of RAGAS metrics to evaluate
@@ -85,7 +105,7 @@ class RAGEvaluationPipeline:
 
     def __init__(
         self,
-        rag_pipeline: RAGPipeline,
+        rag_service: RAGService,
         gigachat_llm: GigaChat,
         gigachat_embeddings: GigaChatEmbeddings,
         ragas_metrics: list | None = None,
@@ -94,14 +114,14 @@ class RAGEvaluationPipeline:
         Initialize the evaluation pipeline for RAG
 
         Args:
-            rag_pipeline: RAG pipeline
+            rag_service: RAG service
             gigachat_llm: GigaChat LLM (used for evaluation by api calls inside RAGAS)
             gigachat_embeddings: GigaChat embeddings (used for evaluation by api calls inside RAGAS)
             ragas_metrics: List of RAGAS metrics to evaluate
         Returns:
             Evaluation pipeline for RAG with RAGAS metrics
         """
-        self.rag_pipeline = rag_pipeline
+        self.rag_service = rag_service
 
         # Initialize evaluation LLM and embeddings for ragas metrics
         self.evaluation_llm = LangchainLLMWrapper(gigachat_llm)
@@ -197,10 +217,10 @@ class RAGEvaluationPipeline:
         # Run the RAG pipeline for all test cases
         for idx, test_case in enumerate(tqdm(test_cases, desc="RAG inference")):
             try:
-                rag_result = self.rag_pipeline.run(test_case.question)
-
-                retrieved_contexts, retrieved_scores = _state_to_test_result_inputs(rag_result)
-                generated_answer = rag_result["answer"]
+                rag_result = self.rag_service.run(RAGRequest(query=test_case.question))
+                retrieved_contexts, retrieved_scores, generated_answer = (
+                    _response_to_test_result_inputs(rag_result)
+                )
 
                 result = RAGTestResult(
                     question=test_case.question,
@@ -250,11 +270,10 @@ class RAGEvaluationPipeline:
         # Run the retriever pipeline for all test cases
         for idx, test_case in enumerate(tqdm(test_cases, desc="Retriever")):
             try:
-                initial_state = self.rag_pipeline.build_initial_state(test_case.question)
-                state = self.rag_pipeline.retrieve_node(initial_state)
-                state = self.rag_pipeline.reranker_node(state)
-
-                retrieved_contexts, retrieval_scores = _state_to_test_result_inputs(state)
+                retrieve_result = self.rag_service.retrieve(RAGRequest(query=test_case.question))
+                retrieved_contexts, retrieval_scores, _ = _response_to_test_result_inputs(
+                    retrieve_result
+                )
 
                 result = RAGTestResult(
                     question=test_case.question,
@@ -738,7 +757,7 @@ class RAGEvaluationPipeline:
 
         for idx, test_case in enumerate(tqdm(test_cases, desc="RAG + RAGAS")):
             try:
-                rag_result = self.rag_pipeline.run(test_case.question)
+                rag_result = self.rag_service.run(RAGRequest(query=test_case.question))
             except Exception as e:
                 logger.error("Case processing error %s (RAG): %s", idx, e)
                 rag_error = {
@@ -770,14 +789,16 @@ class RAGEvaluationPipeline:
                 )
                 continue
 
-            retrieved_contexts, retrieval_scores = _state_to_test_result_inputs(rag_result)
+            retrieved_contexts, retrieval_scores, generated_answer = (
+                _response_to_test_result_inputs(rag_result)
+            )
             result = RAGTestResult(
                 question=test_case.question,
                 ground_truth_answer=test_case.answer,
                 ground_truth_context=test_case.context,
                 retrieved_contexts=retrieved_contexts,
                 retrieval_scores=retrieval_scores,
-                generated_answer=rag_result["answer"],
+                generated_answer=generated_answer,
                 question_type=test_case.question_type,
                 section_type=test_case.section_type,
                 test_case_id=idx,

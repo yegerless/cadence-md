@@ -4,6 +4,7 @@ from cadence_md.app.qdrant import get_qdrant_manager_from_settings
 from cadence_md.app.rag import RAGPipeline
 from cadence_md.app.reranker import get_reranker_from_settings
 from cadence_md.app.settings import settings
+from cadence_md.rag import RAGService
 from metrics.config import metrics_settings
 from metrics.evaluation_pipeline import RAGEvaluationPipeline
 from metrics.gigachat_api_wrapper import ThrottledGigaChat, ThrottledGigaChatEmbeddings
@@ -22,6 +23,7 @@ def build_evaluation_pipeline() -> RAGEvaluationPipeline:
     qdrant_manager = get_qdrant_manager_from_settings(embedder, settings)
     qdrant_manager.setup_qdrant()
     rag_pipeline = RAGPipeline(llm, qdrant_manager, reranker=reranker)
+    rag_service = RAGService(pipeline=rag_pipeline)
 
     gigachat_llm = ThrottledGigaChat(
         credentials=metrics_settings.GIGACHAT_API_KEY,
@@ -38,7 +40,7 @@ def build_evaluation_pipeline() -> RAGEvaluationPipeline:
     )
 
     return RAGEvaluationPipeline(
-        rag_pipeline=rag_pipeline,
+        rag_service=rag_service,
         gigachat_llm=gigachat_llm,
         gigachat_embeddings=gigachat_embeddings,
     )

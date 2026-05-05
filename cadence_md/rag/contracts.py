@@ -21,6 +21,7 @@ class RAGSource(BaseModel):
     section_title: str | None = None
     section_id: str | None = None
     chunk_id: str | None = None
+    content: str | None = None
     score: float | None = None
     retrieval_score: float | None = None
     rerank_score: float | None = None
