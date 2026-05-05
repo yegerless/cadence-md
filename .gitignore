@@ -212,6 +212,7 @@ cython_debug/
 .cursorindexingignore
 .cursor/
 memory-bank/
+project_structure.md
 
 # Marimo
 marimo/_static/

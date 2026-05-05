@@ -78,7 +78,6 @@ def test_render_validation_report_retriever_skips_ragas_sections() -> None:
         "paths": {"dataset_file": "d.jsonl"},
         "run_parameters": {"sample_size": None, "k": 3},
         "rag_config": {
-            "llm_model": "m",
             "embedding_model": "e",
             "reranker_model": "r",
             "chunk_size": 100,
@@ -120,6 +119,7 @@ def test_render_validation_report_retriever_skips_ragas_sections() -> None:
     assert "## RAGAS Metrics" not in text
     assert "Breakdown by Question Type" not in text
     assert "## Retriever Metrics" in text
+    assert "LLM:" not in text
     assert "0.500" in text or "0.5" in text
 
 
@@ -194,6 +194,7 @@ def test_render_validation_report_full_includes_ragas_and_breakdown() -> None:
         missed_retrieval_case_ids=[0],
     )
     assert "## RAGAS Metrics" in text
+    assert "LLM:" in text
     assert "### faithfulness" in text
     assert "0.850" in text
     assert "Breakdown by Question Type" in text

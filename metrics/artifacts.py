@@ -124,6 +124,25 @@ def create_run_manifest(
         Dictionary containing the manifest payload for a validation run
     """
     rag_cfg = settings.rag_config
+    rag_config: dict[str, Any] = {
+        "embedding_model": rag_cfg.embedding.model_name,
+        "reranker_model": rag_cfg.reranker.model_name,
+        "chunk_size": rag_cfg.chunking.chunk_size,
+        "chunk_overlap": rag_cfg.chunking.chunk_overlap,
+        "embedding_query_instruction": rag_cfg.embedding.use_query_instruction,
+        "reranker_query_instruction": rag_cfg.reranker.use_query_instruction,
+        "retrieval": {
+            "search_mode": str(rag_cfg.retrieval.search_mode),
+            "fusion_method": str(rag_cfg.retrieval.fusion_method),
+            "sparse_top_k": rag_cfg.retrieval.sparse_top_k,
+            "dense_top_k": rag_cfg.retrieval.dense_top_k,
+            "hybrid_top_k": rag_cfg.retrieval.hybrid_top_k,
+        },
+        "qdrant_collection": rag_cfg.qdrant_config.collection_name,
+    }
+    if mode == "full":
+        rag_config["llm_model"] = rag_cfg.llm.model_name
+
     return {
         "mode": mode,
         "run_id": run_id,
@@ -138,23 +157,7 @@ def create_run_manifest(
             "k": k,
             "enable_text_matcher_metrics": enable_text_matcher_metrics,
         },
-        "rag_config": {
-            "llm_model": rag_cfg.llm.model_name,
-            "embedding_model": rag_cfg.embedding.model_name,
-            "reranker_model": rag_cfg.reranker.model_name,
-            "chunk_size": rag_cfg.chunking.chunk_size,
-            "chunk_overlap": rag_cfg.chunking.chunk_overlap,
-            "embedding_query_instruction": rag_cfg.embedding.use_query_instruction,
-            "reranker_query_instruction": rag_cfg.reranker.use_query_instruction,
-            "retrieval": {
-                "search_mode": str(rag_cfg.retrieval.search_mode),
-                "fusion_method": str(rag_cfg.retrieval.fusion_method),
-                "sparse_top_k": rag_cfg.retrieval.sparse_top_k,
-                "dense_top_k": rag_cfg.retrieval.dense_top_k,
-                "hybrid_top_k": rag_cfg.retrieval.hybrid_top_k,
-            },
-            "qdrant_collection": rag_cfg.qdrant_config.collection_name,
-        },
+        "rag_config": rag_config,
         "evaluation_config": {
             "ragas_metrics": ragas_metric_names,
             "gigachat_min_interval_sec": metrics_settings.GIGACHAT_MIN_INTERVAL_SEC,

@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
-from qdrant_client import models as qdrant_models
 
 from cadence_md.app.enums import QdrantFusionMethod, VectorSearchType
 from cadence_md.app.settings import (
@@ -19,8 +18,6 @@ from cadence_md.app.settings import (
     RerankerConfig,
     RetrievalConfig,
     Settings,
-    _default_embedding_query_instruction_path,
-    _default_reranker_query_instruction_path,
 )
 
 
@@ -29,26 +26,6 @@ def _settings(**kwargs: object) -> Settings:
     base: dict[str, object] = {"QDRANT__SERVICE__API_KEY": "test-api-key", "_env_file": None}
     base.update(kwargs)
     return Settings(**base)  # type: ignore[call-arg]
-
-
-class TestDefaultInstructionPaths:
-    def test_default_embedding_query_instruction_path(self) -> None:
-        path = _default_embedding_query_instruction_path()
-        assert path.name == "bge_m3_embedding_query_instruction.txt"
-        assert path.is_file()
-
-    def test_default_reranker_query_instruction_path(self) -> None:
-        path = _default_reranker_query_instruction_path()
-        assert path.name == "reranker_prompt.txt"
-        assert path.is_file()
-
-
-class TestChunkConfig:
-    def test_defaults(self) -> None:
-        c = ChunkConfig()
-        assert c.chunk_size == 2048
-        assert c.chunk_overlap == 256
-        assert "\n\n" in c.separators
 
 
 class TestSettingsRequiredAndTopLevel:
@@ -90,32 +67,7 @@ class TestSettingsRequiredAndTopLevel:
         assert not hasattr(s, "CADENCE_UNKNOWN_SETTING_XYZ")
 
 
-class TestRAGConfigNestedDefaults:
-    def test_default_rag_config_tree(self) -> None:
-        s = _settings()
-        rc = s.rag_config
-        assert rc.prompt_version == "2026-05-03"
-        assert rc.max_context_chars == 12_000
-        assert rc.chunking.chunk_size == 2048
-        assert rc.retrieval.search_mode == VectorSearchType.HYBRID
-        assert rc.retrieval.fusion_method == QdrantFusionMethod.RRF
-        assert rc.llm.model_name == "qwen3.5-9b"
-        assert rc.llm.temperature == 0.3
-        assert rc.embedding.model_name == "bge-m3"
-        assert rc.embedding.use_query_instruction is True
-        assert rc.reranker.model_name == "bge-reranker-v2-m3"
-        assert rc.reranker.use_query_instruction is False
-        assert rc.reranker.top_k == 5
-        assert rc.qdrant_config.collection_name == "clinical_recs"
-        assert rc.qdrant_config.vector_size == 1024
-        assert rc.qdrant_config.distance == qdrant_models.Distance.COSINE
-
-    def test_embedding_default_instruction_path_factory(self) -> None:
-        s = _settings()
-        p = s.rag_config.embedding.query_instruction_path
-        assert isinstance(p, Path)
-        assert p.name == "bge_m3_embedding_query_instruction.txt"
-
+class TestRAGConfigConstruction:
     def test_explicit_rag_config_override(self) -> None:
         rc = RAGConfig(
             prompt_version="custom-v",

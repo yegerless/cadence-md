@@ -140,3 +140,23 @@ def test_create_run_manifest_shape() -> None:
     assert "gigachat_min_interval_sec" in manifest["evaluation_config"]
     assert "llm_model" in manifest["rag_config"]
     assert "retrieval" in manifest["rag_config"]
+
+
+def test_create_run_manifest_retriever_excludes_llm_model() -> None:
+    out = Path("/tmp/metrics_out")
+    run_dir = out / "retriever_20260101"
+    manifest = create_run_manifest(
+        mode="retriever",
+        run_id="retriever_20260101",
+        timestamp_iso="2026-01-01T00:00:00+00:00",
+        output_dir=out,
+        run_dir=run_dir,
+        dataset_file=Path("data/qa.jsonl"),
+        sample_size=10,
+        k=5,
+        ragas_metric_names=[],
+        enable_text_matcher_metrics=False,
+    )
+    assert manifest["mode"] == "retriever"
+    assert "llm_model" not in manifest["rag_config"]
+    assert "retrieval" in manifest["rag_config"]

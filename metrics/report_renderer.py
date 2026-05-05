@@ -25,7 +25,7 @@ def render_validation_report(
     """
     lines: list[str] = ["# RAG Validation Report\n\n"]
     lines.extend(_render_run_section(manifest=manifest, mode=mode))
-    lines.extend(_render_rag_config_section(manifest=manifest))
+    lines.extend(_render_rag_config_section(manifest=manifest, mode=mode))
     lines.extend(_render_execution_summary_section(summary_metrics=summary_metrics))
     lines.extend(_render_retriever_metrics_section(summary_metrics=summary_metrics))
     lines.extend(_render_text_match_retriever_metrics_section(summary_metrics=summary_metrics))
@@ -58,7 +58,7 @@ def _render_run_section(*, manifest: dict[str, Any], mode: str) -> list[str]:
     ]
 
 
-def _render_rag_config_section(*, manifest: dict[str, Any]) -> list[str]:
+def _render_rag_config_section(*, manifest: dict[str, Any], mode: str) -> list[str]:
     """
     Render the RAG configuration section of the report
 
@@ -69,9 +69,8 @@ def _render_rag_config_section(*, manifest: dict[str, Any]) -> list[str]:
     """
     rag_cfg = manifest["rag_config"]
     retrieval_cfg = rag_cfg["retrieval"]
-    return [
+    lines = [
         "## RAG Configuration\n",
-        f"- LLM: `{rag_cfg['llm_model']}`\n",
         f"- Embedding: `{rag_cfg['embedding_model']}`\n",
         f"- Reranker: `{rag_cfg['reranker_model']}`\n",
         f"- Chunking: size={rag_cfg['chunk_size']}, overlap={rag_cfg['chunk_overlap']}\n",
@@ -84,6 +83,9 @@ def _render_rag_config_section(*, manifest: dict[str, Any]) -> list[str]:
         f"- Reranker query instruction: `{rag_cfg['reranker_query_instruction']}`\n",
         f"- Qdrant collection: `{rag_cfg['qdrant_collection']}`\n\n",
     ]
+    if mode == "full":
+        lines.insert(1, f"- LLM: `{rag_cfg['llm_model']}`\n")
+    return lines
 
 
 def _render_execution_summary_section(*, summary_metrics: dict[str, Any]) -> list[str]:
