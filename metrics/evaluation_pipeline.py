@@ -29,7 +29,7 @@ from ragas.metrics import (
 from ragas.run_config import RunConfig
 from tqdm import tqdm
 
-from cadence_md.app.rag import RAGPipeline, RAGState
+from cadence_md.app.rag import RAGPipeline
 from cadence_md.app.settings import settings
 from metrics.artifacts import (
     append_jsonl,
@@ -250,23 +250,7 @@ class RAGEvaluationPipeline:
         # Run the retriever pipeline for all test cases
         for idx, test_case in enumerate(tqdm(test_cases, desc="Retriever")):
             try:
-                initial_state: RAGState = {
-                    "query": test_case.question,
-                    "query_hash": "",
-                    "ranked_docs": [],
-                    "rerank_fallback": False,
-                    "retrieval_failed": False,
-                    "generate_fallback": False,
-                    "context_truncated": False,
-                    "error_type": None,
-                    "error_message": None,
-                    "sources": [],
-                    "context": "",
-                    "context_chars": 0,
-                    "answer": "",
-                    "answer_word_count": 0,
-                    "latency_ms": {},
-                }
+                initial_state = self.rag_pipeline.build_initial_state(test_case.question)
                 state = self.rag_pipeline.retrieve_node(initial_state)
                 state = self.rag_pipeline.reranker_node(state)
 

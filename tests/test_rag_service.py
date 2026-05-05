@@ -141,6 +141,7 @@ def test_run_keeps_none_final_score() -> None:
 
 def test_retrieve_uses_retrieve_and_rerank_nodes() -> None:
     pipeline = MagicMock()
+    pipeline.build_initial_state.return_value = _base_state(query="query", query_hash="hash-r")
     doc = Document(page_content="a", metadata={"filename": "1.pdf", "section_id": "sec-1"})
     pipeline.retrieve_node.return_value = _base_state(
         query="query",
@@ -166,6 +167,7 @@ def test_retrieve_uses_retrieve_and_rerank_nodes() -> None:
 
     response = service.retrieve(RAGRequest(query="query"))
 
+    pipeline.build_initial_state.assert_called_once_with("query")
     pipeline.retrieve_node.assert_called_once()
     pipeline.reranker_node.assert_called_once()
     assert response.sources[0].score == 0.8

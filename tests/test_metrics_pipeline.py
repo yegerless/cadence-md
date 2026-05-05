@@ -849,6 +849,7 @@ def test_run_rag_pipeline_sample_and_error_skips(
 def test_run_retriever_pipeline_scores_and_errors() -> None:
     pipeline = _pipeline_without_init()
     calls = {"n": 0}
+    build_calls = {"n": 0}
 
     def retrieve_node(state):
         calls["n"] += 1
@@ -885,6 +886,28 @@ def test_run_retriever_pipeline_scores_and_errors() -> None:
         "R",
         (),
         {
+            "build_initial_state": staticmethod(
+                lambda question: (
+                    build_calls.__setitem__("n", build_calls["n"] + 1)
+                    or {
+                        "query": question,
+                        "query_hash": "",
+                        "ranked_docs": [],
+                        "rerank_fallback": False,
+                        "retrieval_failed": False,
+                        "generate_fallback": False,
+                        "context_truncated": False,
+                        "error_type": None,
+                        "error_message": None,
+                        "sources": [],
+                        "context": "",
+                        "context_chars": 0,
+                        "answer": "",
+                        "answer_word_count": 0,
+                        "latency_ms": {},
+                    }
+                )
+            ),
             "retrieve_node": staticmethod(retrieve_node),
             "reranker_node": staticmethod(reranker_node),
         },
@@ -896,6 +919,7 @@ def test_run_retriever_pipeline_scores_and_errors() -> None:
     ]
     results = pipeline.run_retriever_pipeline(cases, sample_size=None)
     assert len(results) == 2
+    assert build_calls["n"] == len(cases)
     assert results[0].retrieval_scores == [0.99]
     assert results[0].test_case_id == 0
     assert results[1].question == "q2"
@@ -925,6 +949,25 @@ def test_run_retriever_pipeline_uses_ranked_docs_final_score() -> None:
         "R",
         (),
         {
+            "build_initial_state": staticmethod(
+                lambda question: {
+                    "query": question,
+                    "query_hash": "",
+                    "ranked_docs": [],
+                    "rerank_fallback": False,
+                    "retrieval_failed": False,
+                    "generate_fallback": False,
+                    "context_truncated": False,
+                    "error_type": None,
+                    "error_message": None,
+                    "sources": [],
+                    "context": "",
+                    "context_chars": 0,
+                    "answer": "",
+                    "answer_word_count": 0,
+                    "latency_ms": {},
+                }
+            ),
             "retrieve_node": staticmethod(retrieve_node),
             "reranker_node": staticmethod(reranker_node),
         },

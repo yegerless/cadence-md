@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+from collections.abc import Callable
 from typing import Any, TypedDict
 
 import httpx
@@ -172,12 +173,38 @@ class RAGPipeline:
     """
 
     def __init__(
-        self, llm: LLMWrapper, qdrant_manager: QdrantManager, reranker: RerankerWrapper
+        self,
+        llm: LLMWrapper,
+        qdrant_manager: QdrantManager,
+        reranker: RerankerWrapper,
+        node_order: tuple[str, ...] | None = None,
     ) -> None:
         self.llm = llm
         self.reranker = reranker
         self.qdrant_manager = qdrant_manager
+        self._node_order = node_order or ("retrieve", "rerank", "context", "generate")
         self._graph = None  # Compiled graph; built on first run to avoid import-time graph build.
+
+    @staticmethod
+    def build_initial_state(query: str) -> RAGState:
+        """Build a fresh initial graph state for a single user query."""
+        return {
+            "query": query,
+            "query_hash": _query_hash(query),
+            "ranked_docs": [],
+            "rerank_fallback": False,
+            "retrieval_failed": False,
+            "generate_fallback": False,
+            "context_truncated": False,
+            "error_type": None,
+            "error_message": None,
+            "sources": [],
+            "context": "",
+            "context_chars": 0,
+            "answer": "",
+            "answer_word_count": 0,
+            "latency_ms": {},
+        }
 
     def _retrieval_k_for_mode(self) -> int:
         """Effective ``limit`` for the active vector search mode (dense, sparse, or hybrid cap)."""
@@ -490,16 +517,25 @@ class RAGPipeline:
         """Wire LangGraph nodes in retrieval order and return a compiled graph."""
         workflow = StateGraph(RAGState)
 
-        workflow.add_node("retrieve", self.retrieve_node)
-        workflow.add_node("rerank", self.reranker_node)
-        workflow.add_node("context", self.context_node)
-        workflow.add_node("generate", self.generate_node)
+        node_handlers: dict[str, Callable[[RAGState], RAGState]] = {
+            "retrieve": self.retrieve_node,
+            "rerank": self.reranker_node,
+            "context": self.context_node,
+            "generate": self.generate_node,
+        }
+        if not self._node_order:
+            raise ValueError("node_order must include at least one node")
+        unknown_nodes = [name for name in self._node_order if name not in node_handlers]
+        if unknown_nodes:
+            raise ValueError(f"Unknown node(s) in node_order: {unknown_nodes}")
 
-        workflow.add_edge(START, "retrieve")
-        workflow.add_edge("retrieve", "rerank")
-        workflow.add_edge("rerank", "context")
-        workflow.add_edge("context", "generate")
-        workflow.add_edge("generate", END)
+        for node_name in self._node_order:
+            workflow.add_node(node_name, node_handlers[node_name])
+
+        workflow.add_edge(START, self._node_order[0])
+        for src, dst in zip(self._node_order, self._node_order[1:], strict=False):
+            workflow.add_edge(src, dst)
+        workflow.add_edge(self._node_order[-1], END)
 
         return workflow.compile()
 
@@ -508,22 +544,4 @@ class RAGPipeline:
         if self._graph is None:
             self._graph = self._build_graph()
 
-        initial_state: RAGState = {
-            "query": query,
-            "query_hash": _query_hash(query),
-            "ranked_docs": [],
-            "rerank_fallback": False,
-            "retrieval_failed": False,
-            "generate_fallback": False,
-            "context_truncated": False,
-            "error_type": None,
-            "error_message": None,
-            "sources": [],
-            "context": "",
-            "context_chars": 0,
-            "answer": "",
-            "answer_word_count": 0,
-            "latency_ms": {},
-        }
-
-        return self._graph.invoke(initial_state)
+        return self._graph.invoke(self.build_initial_state(query))

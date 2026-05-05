@@ -428,3 +428,36 @@ def test_run_invokes_full_pipeline_with_mocks() -> None:
     qm.retrieve.assert_called_once()
     reranker.rerank.assert_called_once()
     llm.invoke_messages.assert_called_once()
+
+
+def test_build_initial_state_has_schema_defaults() -> None:
+    state = RAGPipeline.build_initial_state("Симптомы?")
+    assert state["query"] == "Симптомы?"
+    assert state["query_hash"] == _query_hash("Симптомы?")
+    assert state["ranked_docs"] == []
+    assert state["sources"] == []
+    assert state["context"] == ""
+    assert state["answer"] == ""
+    assert state["latency_ms"] == {}
+    assert state["retrieval_failed"] is False
+    assert state["generate_fallback"] is False
+
+
+def test_run_supports_configured_node_order() -> None:
+    llm = MagicMock()
+    llm.invoke_messages.return_value = "ok"
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    doc = Document(page_content="chunk", metadata={"filename": "g.pdf"})
+    qm.retrieve = MagicMock(return_value=[(doc, 0.9)])
+    reranker.rerank.return_value = [(doc, 0.9)]
+    pipe = RAGPipeline(
+        llm,
+        qm,
+        reranker=reranker,  # type: ignore[arg-type]
+        node_order=("retrieve", "context", "generate"),
+    )
+
+    out = pipe.run("Вопрос?")
+    assert out["answer"] == "ok"
+    reranker.rerank.assert_not_called()

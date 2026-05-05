@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
-from cadence_md.app.rag import RAGPipeline, RAGState
+from cadence_md.app.rag import RAGPipeline
 from cadence_md.rag.contracts import (
     RAGFlags,
     RAGLatency,
@@ -14,10 +13,6 @@ from cadence_md.rag.contracts import (
     RAGRetrieveResponse,
     RAGSource,
 )
-
-
-def _query_hash(query: str) -> str:
-    return hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
 
 
 class RAGService:
@@ -31,29 +26,10 @@ class RAGService:
         return self._state_to_response(state)
 
     def retrieve(self, request: RAGRequest) -> RAGRetrieveResponse:
-        state = self._build_initial_state(request.query)
+        state = self.pipeline.build_initial_state(request.query)
         state = self.pipeline.retrieve_node(state)
         state = self.pipeline.reranker_node(state)
         return self._state_to_retrieve_response(state)
-
-    def _build_initial_state(self, query: str) -> RAGState:
-        return {
-            "query": query,
-            "query_hash": _query_hash(query),
-            "ranked_docs": [],
-            "rerank_fallback": False,
-            "retrieval_failed": False,
-            "generate_fallback": False,
-            "context_truncated": False,
-            "error_type": None,
-            "error_message": None,
-            "sources": [],
-            "context": "",
-            "context_chars": 0,
-            "answer": "",
-            "answer_word_count": 0,
-            "latency_ms": {},
-        }
 
     def _state_to_sources(self, state: dict[str, Any]) -> list[RAGSource]:
         ranked_docs = state.get("ranked_docs") or []
