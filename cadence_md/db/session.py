@@ -27,6 +27,11 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
 async def get_async_session() -> AsyncIterator[AsyncSession]:
-    """Yield an async DB session for FastAPI dependencies or worker code."""
+    """Yield an async DB session and commit on successful request completion."""
     async with AsyncSessionLocal() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
