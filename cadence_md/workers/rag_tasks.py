@@ -47,6 +47,7 @@ def _warmup_worker_process(**_: object) -> None:
 def _shutdown_worker_process(**_: object) -> None:
     """Close RAG runtime resources when Celery shuts down the worker process."""
     shutdown_rag_runtime()
+    asyncio.run(AsyncSessionLocal.kw["bind"].dispose())
 
 
 @worker_ready.connect
@@ -69,7 +70,35 @@ def run_rag_request(self: Task, rag_request_id: str) -> str:
     """Celery entrypoint for running a persisted RAG request."""
     celery_task_id = str(self.request.id) if self.request.id else None
     with log_context(rag_request_id=rag_request_id, task_id=celery_task_id):
-        return asyncio.run(_run_rag_request_async(rag_request_id, celery_task_id=celery_task_id))
+        return _run_rag_request_in_fresh_event_loop(rag_request_id, celery_task_id=celery_task_id)
+
+
+def _run_rag_request_in_fresh_event_loop(
+    rag_request_id: str,
+    *,
+    celery_task_id: str | None,
+) -> str:
+    """Run the async RAG task body in a new loop and drop the DB pool for that loop.
+
+    Celery calls this once per task; each ``asyncio.run`` creates a new event loop.
+    Asyncpg connections must not be reused across loops, so we dispose the pool bound
+    to ``AsyncSessionLocal`` before the loop closes.
+    """
+    return asyncio.run(
+        _run_rag_request_async_with_engine_cleanup(rag_request_id, celery_task_id=celery_task_id)
+    )
+
+
+async def _run_rag_request_async_with_engine_cleanup(
+    rag_request_id: str,
+    *,
+    celery_task_id: str | None,
+) -> str:
+    """Delegate to :func:`_run_rag_request_async` and always dispose the session bind's pool."""
+    try:
+        return await _run_rag_request_async(rag_request_id, celery_task_id=celery_task_id)
+    finally:
+        await AsyncSessionLocal.kw["bind"].dispose()
 
 
 async def _run_rag_request_async(

@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cadence_md.app import main as app_main
 from cadence_md.app.settings import settings
 from cadence_md.rag.bootstrap import build_rag_stack
 from commands import build_project_cli_parser
@@ -43,11 +42,6 @@ def test_build_rag_stack_calls_setup_and_returns_pipeline(
     )
     assert pipe is mock_pipe
     assert reranker is mock_reranker.return_value
-
-
-def test_app_main_reexports_bootstrap_builder() -> None:
-    """Compatibility import keeps old symbol without user-facing REPL."""
-    assert app_main.build_rag_stack is build_rag_stack
 
 
 def test_project_cli_rejects_removed_interactive_rag_command() -> None:

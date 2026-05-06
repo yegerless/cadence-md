@@ -177,6 +177,8 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - backend-network
+    volumes:
+      - ./data/main_specialities:/app/data/main_specialities:ro
     depends_on:
       migrations:
         condition: service_completed_successfully
@@ -201,7 +203,6 @@ services:
     restart: unless-stopped
 
   frontend:
-    profiles: ["frontend"]
     build:
       context: ./frontend
       dockerfile: ../infra/docker/frontend.Dockerfile

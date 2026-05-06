@@ -41,7 +41,15 @@ class TestSettingsRequiredAndTopLevel:
         s = _settings(QDRANT__SERVICE__API_KEY="secret-from-alias")
         assert s.QDRANT_API_KEY == "secret-from-alias"
 
-    def test_top_level_defaults(self) -> None:
+    def test_top_level_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ``_env_file=None`` does not disable env vars; clear docker/local overrides.
+        for key in (
+            "QDRANT_BASE_URL",
+            "QDRANT_HTTPS",
+            "MODEL_INFERENCE_BASE_URL",
+            "MODEL_INFERENCE_API_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
         s = _settings()
         assert s.QDRANT_BASE_URL == "http://localhost:6333"
         assert s.QDRANT_HTTPS is False

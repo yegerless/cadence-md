@@ -68,9 +68,9 @@ async def integration_redis_url() -> str:
     return redis_url
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture
 async def integration_engine(integration_database_url: str):
-    """Create shared async SQLAlchemy engine for integration tests."""
+    """Async engine bound to the test loop (session-scoped engine breaks asyncpg across loops)."""
     engine = create_async_engine(integration_database_url, pool_pre_ping=True)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)

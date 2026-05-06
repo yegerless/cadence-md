@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 from threading import Thread
 
 import pytest
@@ -62,6 +63,39 @@ async def worker_session_factory(
         "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enable_foreign_keys(dbapi_connection: object, _: object) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(rag_tasks, "AsyncSessionLocal", session_factory)
+    set_rag_runtime_for_tests(None)
+
+    yield session_factory
+
+    shutdown_rag_runtime()
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def worker_session_factory_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """On-disk SQLite so ``engine.dispose()`` between Celery-style runs keeps schema/data."""
+    db_path = tmp_path / "rag_worker.sqlite"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
     )
 
     @event.listens_for(engine.sync_engine, "connect")
@@ -180,6 +214,31 @@ async def test_run_rag_request_repeat_is_noop(
 
     first = await rag_tasks._run_rag_request_async(str(request_id), celery_task_id="task-1")
     second = await rag_tasks._run_rag_request_async(str(request_id), celery_task_id="task-1")
+
+    assert first == "succeeded"
+    assert second == "already_done"
+    assert len(service.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_celery_sync_entrypoint_two_fresh_loops_reuses_db(
+    worker_session_factory_file: async_sessionmaker[AsyncSession],
+) -> None:
+    """Regression: each Celery task uses ``asyncio.run`` (new loop); pool must be reset."""
+    request_id = await _create_request(worker_session_factory_file)
+    service = DummyService(response=_response())
+    set_rag_runtime_for_tests(RAGWorkerRuntime(service=service))
+
+    def run_twice() -> tuple[str, str]:
+        first = rag_tasks._run_rag_request_in_fresh_event_loop(
+            str(request_id), celery_task_id="task-loop-1"
+        )
+        second = rag_tasks._run_rag_request_in_fresh_event_loop(
+            str(request_id), celery_task_id="task-loop-2"
+        )
+        return first, second
+
+    first, second = await asyncio.to_thread(run_twice)
 
     assert first == "succeeded"
     assert second == "already_done"
