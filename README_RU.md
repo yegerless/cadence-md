@@ -183,21 +183,23 @@ readiness возвращает `503`, чтобы Docker/оркестратор �
 
 Backend отдаёт Prometheus-метрики на `GET /metrics` вне versioned
 пользовательского API. RAG worker отдаёт отдельный metrics endpoint на
-`WORKER_METRICS_PORT` внутри Docker Compose, а dev-сервисы Prometheus/Grafana
+`WORKER_METRICS_PORT` в Docker Compose, а dev-сервисы Prometheus/Grafana
 подключены в `docker-compose-dev.yml`.
 
 Запуск локального observability stack вместе с сервисами:
 
 ```bash
-docker compose --env-file .env.dev -f docker-compose-dev.yml up backend rag-worker prometheus grafana
+docker compose --env-file .env.dev -f docker-compose-dev.yml up --build
 ```
 
 Grafana по умолчанию доступна на `http://127.0.0.1:3000`, Prometheus — на
-`http://127.0.0.1:9090`. Langfuse tracing выключен по умолчанию; включайте его
-через `LANGFUSE_ENABLED=true` и реальные `LANGFUSE_*` credentials только в
-`.env.dev`. Медицинский текст запроса по умолчанию редактируется в логах и
-Langfuse; `LANGFUSE_TRACE_QUERY_MODE=full` используйте только для явно
-разрешённой отладки.
+`http://127.0.0.1:9090`, метрики backend — на `http://127.0.0.1:8000/metrics`,
+метрики worker — на `http://127.0.0.1:9100/metrics`. Health checks, миграции и
+команды частичного запуска описаны в `docs/setup_ru.md`. Langfuse tracing
+выключен по умолчанию; включайте его через `LANGFUSE_ENABLED=true` и реальные
+`LANGFUSE_*` credentials только в `.env.dev`. Медицинский текст запроса по
+умолчанию редактируется в логах и Langfuse; `LANGFUSE_TRACE_QUERY_MODE=full`
+используйте только для явно разрешённой отладки.
 
 ## Лицензия
 

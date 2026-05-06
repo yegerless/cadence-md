@@ -50,7 +50,8 @@ services:
         target: /qdrant/config/config.yaml
     healthcheck:
       test: ["CMD-SHELL", "grep -q '18BD' /proc/net/tcp || kill 1"]
-      # test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      # Qdrant images do not consistently include curl/wget; keep a TCP probe for compose config
+      # portability and let backend readiness validate Qdrant schema through the API.
       interval: 30s
       timeout: 10s
       retries: 3
@@ -73,6 +74,20 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      CELERY_RAG_QUEUE_NAME: ${CELERY_RAG_QUEUE_NAME:-rag}
+      CELERY_RAG_TASK_NAME: ${CELERY_RAG_TASK_NAME:-cadence_md.workers.rag_tasks.run_rag_request}
+      CELERY_TASK_SOFT_TIME_LIMIT_SECONDS: ${CELERY_TASK_SOFT_TIME_LIMIT_SECONDS:-300}
+      CELERY_TASK_TIME_LIMIT_SECONDS: ${CELERY_TASK_TIME_LIMIT_SECONDS:-360}
+      CELERY_TASK_MAX_RETRIES: ${CELERY_TASK_MAX_RETRIES:-3}
+      CELERY_TASK_RETRY_BACKOFF_SECONDS: ${CELERY_TASK_RETRY_BACKOFF_SECONDS:-5}
+      JWT_SECRET: ${JWT_SECRET:-cadence-md-dev-only-secret-change-in-production}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TOKEN_EXPIRE_SECONDS: ${JWT_ACCESS_TOKEN_EXPIRE_SECONDS:-3600}
+      AUTH_REGISTER_RATE_LIMIT_IP: ${AUTH_REGISTER_RATE_LIMIT_IP:-30/minute}
+      AUTH_LOGIN_RATE_LIMIT_IP: ${AUTH_LOGIN_RATE_LIMIT_IP:-30/minute}
+      CHAT_RATE_LIMIT_USER: ${CHAT_RATE_LIMIT_USER:-30/minute}
+      GLOBAL_RAG_QUEUE_MAX: ${GLOBAL_RAG_QUEUE_MAX:-1000}
+      HEALTH_CHECK_TIMEOUT_SECONDS: ${HEALTH_CHECK_TIMEOUT_SECONDS:-3}
       QDRANT_BASE_URL: ${QDRANT_BASE_URL:-http://qdrant:6333}
       QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:-dev-qdrant-api-key}
       QDRANT_HTTPS: ${QDRANT_HTTPS:-false}
@@ -80,14 +95,18 @@ services:
       MODEL_INFERENCE_API_KEY: ${MODEL_INFERENCE_API_KEY:-lm-studio}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: ${LOG_FORMAT:-plain}
+      LOG_REDACT_MEDICAL_QUERY: ${LOG_REDACT_MEDICAL_QUERY:-true}
       PROMETHEUS_ENABLED: ${PROMETHEUS_ENABLED:-true}
       LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_HOST: ${LANGFUSE_HOST:-}
       LANGFUSE_TRACE_QUERY_MODE: ${LANGFUSE_TRACE_QUERY_MODE:-redacted}
+      LANGFUSE_PROMPT_VERSION: ${LANGFUSE_PROMPT_VERSION:-}
     ports:
       - 127.0.0.1:${BACKEND_PORT:-8000}:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - backend-network
     depends_on:
@@ -114,7 +133,7 @@ services:
   rag-worker:
     build:
       context: .
-      dockerfile: infra/docker/backend.Dockerfile
+      dockerfile: infra/docker/rag-worker.Dockerfile
     command:
       - sh
       - -c
@@ -129,6 +148,12 @@ services:
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
       CELERY_RAG_QUEUE_NAME: ${CELERY_RAG_QUEUE_NAME:-rag}
+      CELERY_RAG_TASK_NAME: ${CELERY_RAG_TASK_NAME:-cadence_md.workers.rag_tasks.run_rag_request}
+      CELERY_TASK_SOFT_TIME_LIMIT_SECONDS: ${CELERY_TASK_SOFT_TIME_LIMIT_SECONDS:-300}
+      CELERY_TASK_TIME_LIMIT_SECONDS: ${CELERY_TASK_TIME_LIMIT_SECONDS:-360}
+      CELERY_TASK_MAX_RETRIES: ${CELERY_TASK_MAX_RETRIES:-3}
+      CELERY_TASK_RETRY_BACKOFF_SECONDS: ${CELERY_TASK_RETRY_BACKOFF_SECONDS:-5}
+      HEALTH_CHECK_TIMEOUT_SECONDS: ${HEALTH_CHECK_TIMEOUT_SECONDS:-3}
       QDRANT_BASE_URL: ${QDRANT_BASE_URL:-http://qdrant:6333}
       QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:-dev-qdrant-api-key}
       QDRANT_HTTPS: ${QDRANT_HTTPS:-false}
@@ -136,6 +161,7 @@ services:
       MODEL_INFERENCE_API_KEY: ${MODEL_INFERENCE_API_KEY:-lm-studio}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: ${LOG_FORMAT:-plain}
+      LOG_REDACT_MEDICAL_QUERY: ${LOG_REDACT_MEDICAL_QUERY:-true}
       PROMETHEUS_ENABLED: ${PROMETHEUS_ENABLED:-true}
       WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9100}
       PROMETHEUS_MULTIPROC_DIR: ${PROMETHEUS_MULTIPROC_DIR:-/tmp/cadence-prometheus}
@@ -144,6 +170,11 @@ services:
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_HOST: ${LANGFUSE_HOST:-}
       LANGFUSE_TRACE_QUERY_MODE: ${LANGFUSE_TRACE_QUERY_MODE:-redacted}
+      LANGFUSE_PROMPT_VERSION: ${LANGFUSE_PROMPT_VERSION:-}
+    ports:
+      - 127.0.0.1:${WORKER_METRICS_PORT:-9100}:9100
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - backend-network
     depends_on:
@@ -168,6 +199,13 @@ services:
       retries: 3
       start_period: 120s
     restart: unless-stopped
+
+  # frontend:
+  #   profiles: ["frontend"]
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: ../infra/docker/frontend.Dockerfile
+  #   # TODO: enable after frontend/ and infra/docker/frontend.Dockerfile are added.
 
   migrations:
     build:

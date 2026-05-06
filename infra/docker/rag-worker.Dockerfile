@@ -19,4 +19,4 @@ RUN poetry install --only main --no-root --no-ansi
 COPY alembic.ini ./alembic.ini
 COPY cadence_md ./cadence_md
 
-EXPOSE 8000
+EXPOSE 9100

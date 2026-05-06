@@ -95,20 +95,28 @@ cp .env.example .env.dev
 docker compose --env-file .env.dev -f docker-compose-dev.yml config
 ```
 
-Запустите минимальные инфраструктурные сервисы:
+Запустите полный dev-стек. OpenAI-совместимый inference server не входит в этот
+compose-файл, поэтому запустите его отдельно заранее и укажите его адрес в
+`MODEL_INFERENCE_BASE_URL`.
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml up --build
+```
+
+Если нужны только инфраструктурные зависимости, запустите их явно:
 
 ```bash
 docker compose --env-file .env.dev -f docker-compose-dev.yml up postgres redis qdrant
 ```
 
-Запустите миграции БД перед стартом backend:
+Запустите миграции БД вручную при необходимости:
 
 ```bash
 docker compose --env-file .env.dev -f docker-compose-dev.yml run --rm migrations
 ```
 
 В dev compose также есть FastAPI backend и RAG Celery worker. При запуске через
-compose `backend` ждёт успешного выполнения миграций:
+compose `backend` и `rag-worker` ждут успешного выполнения миграций:
 
 ```bash
 docker compose --env-file .env.dev -f docker-compose-dev.yml up backend
@@ -126,12 +134,31 @@ docker compose --env-file .env.dev -f docker-compose-dev.yml up rag-worker
 docker compose --env-file .env.dev -f docker-compose-dev.yml up prometheus grafana
 ```
 
-Метрики backend доступны на `http://127.0.0.1:8000/metrics`. Prometheus по
-умолчанию доступен на `http://127.0.0.1:9090`, Grafana — на
-`http://127.0.0.1:3000`. Langfuse выключен по умолчанию. Если включаете
-`LANGFUSE_ENABLED=true`, храните реальные `LANGFUSE_PUBLIC_KEY` и
-`LANGFUSE_SECRET_KEY` только в `.env.dev`. Полный медицинский текст запроса
-редактируется, пока явно не задан `LANGFUSE_TRACE_QUERY_MODE=full`.
+Проверьте health endpoints и метрики:
+
+```bash
+curl -fsS http://127.0.0.1:8000/api/v1/health/live
+curl -fsS http://127.0.0.1:8000/api/v1/health/ready
+curl -fsS http://127.0.0.1:8000/api/v1/health/rag
+docker compose --env-file .env.dev -f docker-compose-dev.yml exec rag-worker \
+  python -m cadence_md.workers.rag_health --timeout 5
+curl -fsS http://127.0.0.1:8000/metrics
+curl -fsS http://127.0.0.1:9100/metrics
+```
+
+Метрики backend доступны на `http://127.0.0.1:8000/metrics`, метрики worker — на
+`http://127.0.0.1:9100/metrics`. Prometheus по умолчанию доступен на
+`http://127.0.0.1:9090`, Grafana — на `http://127.0.0.1:3000`.
+
+Frontend пока не включён, потому что приложение `frontend/` ещё не добавлено в
+репозиторий. В `docker-compose-dev.yml` оставлен закомментированный placeholder
+для будущего frontend profile.
+
+Langfuse выключен по умолчанию и считается внешним сервисом для этого dev
+compose-файла. Если включаете `LANGFUSE_ENABLED=true`, храните реальные
+`LANGFUSE_PUBLIC_KEY` и `LANGFUSE_SECRET_KEY` только в `.env.dev`. Полный
+медицинский текст запроса редактируется, пока явно не задан
+`LANGFUSE_TRACE_QUERY_MODE=full`.
 
 Inference server остаётся внешним для `docker-compose-dev.yml` и должен быть
 доступен по `MODEL_INFERENCE_BASE_URL`.

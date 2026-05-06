@@ -94,20 +94,29 @@ Validate the compose file with the explicit env file:
 docker compose --env-file .env.dev -f docker-compose-dev.yml config
 ```
 
-Start the minimal infrastructure services:
+Start the full dev service stack. The OpenAI-compatible inference server is not
+part of this compose file, so start it separately first and point
+`MODEL_INFERENCE_BASE_URL` at it.
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml up --build
+```
+
+If you only want infrastructure dependencies, start them explicitly:
 
 ```bash
 docker compose --env-file .env.dev -f docker-compose-dev.yml up postgres redis qdrant
 ```
 
-Run database migrations before backend startup:
+Run database migrations manually when needed:
 
 ```bash
 docker compose --env-file .env.dev -f docker-compose-dev.yml run --rm migrations
 ```
 
 The dev compose file also contains the FastAPI backend and the RAG Celery
-worker. Starting `backend` through compose waits for successful migrations:
+worker. Starting `backend` or `rag-worker` through compose waits for successful
+migrations:
 
 ```bash
 docker compose --env-file .env.dev -f docker-compose-dev.yml up backend
@@ -125,12 +134,31 @@ Prometheus and Grafana are available for local observability:
 docker compose --env-file .env.dev -f docker-compose-dev.yml up prometheus grafana
 ```
 
-Backend metrics are exposed at `http://127.0.0.1:8000/metrics`. Prometheus is
-available at `http://127.0.0.1:9090`; Grafana is available at
-`http://127.0.0.1:3000`. Langfuse is disabled by default. If you enable
-`LANGFUSE_ENABLED=true`, keep real `LANGFUSE_PUBLIC_KEY` and
-`LANGFUSE_SECRET_KEY` only in `.env.dev`. Full medical query text is redacted
-unless `LANGFUSE_TRACE_QUERY_MODE=full` is explicitly configured.
+Check service health and metrics:
+
+```bash
+curl -fsS http://127.0.0.1:8000/api/v1/health/live
+curl -fsS http://127.0.0.1:8000/api/v1/health/ready
+curl -fsS http://127.0.0.1:8000/api/v1/health/rag
+docker compose --env-file .env.dev -f docker-compose-dev.yml exec rag-worker \
+  python -m cadence_md.workers.rag_health --timeout 5
+curl -fsS http://127.0.0.1:8000/metrics
+curl -fsS http://127.0.0.1:9100/metrics
+```
+
+Backend metrics are exposed at `http://127.0.0.1:8000/metrics`; worker metrics
+are exposed at `http://127.0.0.1:9100/metrics`. Prometheus is available at
+`http://127.0.0.1:9090`; Grafana is available at `http://127.0.0.1:3000`.
+
+Frontend is not included yet because the `frontend/` app has not been added to
+the repository. `docker-compose-dev.yml` contains a commented placeholder for a
+future frontend profile.
+
+Langfuse is disabled by default and is treated as an external service for this
+dev compose file. If you enable `LANGFUSE_ENABLED=true`, keep real
+`LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` only in `.env.dev`. Full medical
+query text is redacted unless `LANGFUSE_TRACE_QUERY_MODE=full` is explicitly
+configured.
 
 The inference server is external to `docker-compose-dev.yml` and must be
 available at `MODEL_INFERENCE_BASE_URL`.

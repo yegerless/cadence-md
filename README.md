@@ -188,20 +188,23 @@ failure if RAG execution later cannot reach Qdrant or inference.
 
 The backend exposes Prometheus metrics at `GET /metrics` outside the versioned
 user API. The RAG worker exposes its own metrics endpoint on
-`WORKER_METRICS_PORT` inside Docker Compose, and Prometheus/Grafana dev services
-are configured in `docker-compose-dev.yml`.
+`WORKER_METRICS_PORT` in Docker Compose, and Prometheus/Grafana dev services are
+configured in `docker-compose-dev.yml`.
 
 Start the local observability stack with the service stack:
 
 ```bash
-docker compose --env-file .env.dev -f docker-compose-dev.yml up backend rag-worker prometheus grafana
+docker compose --env-file .env.dev -f docker-compose-dev.yml up --build
 ```
 
 Grafana is available on `http://127.0.0.1:3000` by default, Prometheus on
-`http://127.0.0.1:9090`. Langfuse tracing is disabled by default; enable it with
-`LANGFUSE_ENABLED=true` and real `LANGFUSE_*` credentials in `.env.dev`. Medical
-queries are redacted from logs and Langfuse by default; use
-`LANGFUSE_TRACE_QUERY_MODE=full` only for explicitly approved debugging.
+`http://127.0.0.1:9090`, backend metrics on `http://127.0.0.1:8000/metrics`, and
+worker metrics on `http://127.0.0.1:9100/metrics`. See `docs/setup.md` for
+health checks, migrations, and partial service startup commands. Langfuse
+tracing is disabled by default; enable it with `LANGFUSE_ENABLED=true` and real
+`LANGFUSE_*` credentials in `.env.dev`. Medical queries are redacted from logs
+and Langfuse by default; use `LANGFUSE_TRACE_QUERY_MODE=full` only for
+explicitly approved debugging.
 
 ## License
 
