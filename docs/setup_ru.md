@@ -103,6 +103,10 @@ compose-файл, поэтому запустите его отдельно за
 docker compose --env-file .env.dev -f docker-compose-dev.yml up --build
 ```
 
+Этот compose-поток — основной способ запуска RAG в dev: backend принимает
+chat-запросы, а `rag-worker` обрабатывает их асинхронно. Интерактивного
+пользовательского REPL entrypoint для RAG больше нет.
+
 Если нужны только инфраструктурные зависимости, запустите их явно:
 
 ```bash

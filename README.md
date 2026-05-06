@@ -42,6 +42,10 @@ poetry run python commands.py --help
 poetry run python commands.py <subcommand> --help
 ```
 
+The user-facing interactive RAG CLI has been removed. Run user requests through
+the FastAPI backend (`/api/v1/chat/...`) with the `rag-worker` service, or use
+the metrics pipeline commands below for offline evaluation.
+
 ### `parse-pdf`
 
 Parses a directory of clinical guideline PDFs into a JSONL with extracted

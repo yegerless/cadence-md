@@ -102,6 +102,10 @@ part of this compose file, so start it separately first and point
 docker compose --env-file .env.dev -f docker-compose-dev.yml up --build
 ```
 
+This compose flow is the primary way to run RAG in development: backend accepts
+chat requests and `rag-worker` processes them asynchronously. There is no
+interactive user REPL entrypoint for RAG.
+
 If you only want infrastructure dependencies, start them explicitly:
 
 ```bash

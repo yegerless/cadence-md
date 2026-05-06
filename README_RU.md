@@ -37,6 +37,10 @@ poetry run python commands.py --help
 poetry run python commands.py <подкоманда> --help
 ```
 
+Пользовательский интерактивный RAG CLI удалён. Пользовательские запросы
+запускаются через FastAPI backend (`/api/v1/chat/...`) и `rag-worker`, а
+служебный CLI ниже используется только для data/metrics пайплайнов.
+
 ### `parse-pdf`
 
 Парсит директорию с клиническими рекомендациями в PDF и сохраняет результат в

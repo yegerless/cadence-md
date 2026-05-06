@@ -51,7 +51,7 @@ _runtime_lock = threading.Lock()
 
 def build_rag_worker_runtime() -> RAGWorkerRuntime:
     """Build the heavy RAG stack for a worker process."""
-    from cadence_md.app.main import build_rag_stack  # noqa: PLC0415
+    from cadence_md.rag.bootstrap import build_rag_stack  # noqa: PLC0415
     from cadence_md.rag.service import RAGService  # noqa: PLC0415
 
     pipeline, reranker = build_rag_stack()
