@@ -200,12 +200,22 @@ services:
       start_period: 120s
     restart: unless-stopped
 
-  # frontend:
-  #   profiles: ["frontend"]
-  #   build:
-  #     context: ./frontend
-  #     dockerfile: ../infra/docker/frontend.Dockerfile
-  #   # TODO: enable after frontend/ and infra/docker/frontend.Dockerfile are added.
+  frontend:
+    profiles: ["frontend"]
+    build:
+      context: ./frontend
+      dockerfile: ../infra/docker/frontend.Dockerfile
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+      VITE_API_PROXY_TARGET: ${VITE_API_PROXY_TARGET:-http://backend:8000}
+    ports:
+      - 127.0.0.1:${FRONTEND_PORT:-5173}:5173
+    networks:
+      - backend-network
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
 
   migrations:
     build:

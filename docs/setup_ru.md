@@ -150,9 +150,30 @@ curl -fsS http://127.0.0.1:9100/metrics
 `http://127.0.0.1:9100/metrics`. Prometheus по умолчанию доступен на
 `http://127.0.0.1:9090`, Grafana — на `http://127.0.0.1:3000`.
 
-Frontend пока не включён, потому что приложение `frontend/` ещё не добавлено в
-репозиторий. В `docker-compose-dev.yml` оставлен закомментированный placeholder
-для будущего frontend profile.
+React SPA находится в `frontend/` и запускается через frontend profile:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml --profile frontend up --build frontend
+```
+
+По умолчанию `VITE_API_BASE_URL` пустой, а Vite dev server проксирует
+`/api/v1/...` в `VITE_API_PROXY_TARGET` (`http://backend:8000` в compose). Так
+локальный браузер работает с same-origin `/api` и не требует CORS middleware в
+backend. Для запуска frontend с backend на хосте:
+
+```bash
+cd frontend
+npm install
+VITE_API_BASE_URL= VITE_API_PROXY_TARGET=http://127.0.0.1:8000 npm run dev
+npm run build
+npm test
+```
+
+Frontend auth хранит только короткоживущий access token в `sessionStorage`;
+refresh token в MVP не используется. Logout и любой API `401` очищают клиентское
+auth state и переводят пользователя на `/login`. После изменений backend
+проверяйте logout, автоматический redirect на `401`, chat submit/polling,
+cancel, retry и отображение источников.
 
 Langfuse выключен по умолчанию и считается внешним сервисом для этого dev
 compose-файла. Если включаете `LANGFUSE_ENABLED=true`, храните реальные

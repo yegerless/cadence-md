@@ -184,6 +184,29 @@ stop routing traffic. The chat API remains asynchronous:
 Postgres, Redis, and Celery are available; the worker records a controlled
 failure if RAG execution later cannot reach Qdrant or inference.
 
+## Frontend SPA
+
+The React frontend is in `frontend/` and talks to the versioned backend API
+under `/api/v1`. Start it locally with:
+
+```bash
+cd frontend
+npm install
+VITE_API_BASE_URL= VITE_API_PROXY_TARGET=http://127.0.0.1:8000 npm run dev
+npm run build
+npm test
+```
+
+Or run it through Docker Compose:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml --profile frontend up --build frontend
+```
+
+`VITE_API_BASE_URL` may be left empty for the Vite same-origin proxy. Auth
+stores only the short-lived access token in `sessionStorage`; logout and API
+`401` responses clear client state and require re-login.
+
 ## Observability
 
 The backend exposes Prometheus metrics at `GET /metrics` outside the versioned

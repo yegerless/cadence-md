@@ -150,9 +150,30 @@ Backend metrics are exposed at `http://127.0.0.1:8000/metrics`; worker metrics
 are exposed at `http://127.0.0.1:9100/metrics`. Prometheus is available at
 `http://127.0.0.1:9090`; Grafana is available at `http://127.0.0.1:3000`.
 
-Frontend is not included yet because the `frontend/` app has not been added to
-the repository. `docker-compose-dev.yml` contains a commented placeholder for a
-future frontend profile.
+The React SPA lives in `frontend/` and can be started with the compose frontend
+profile:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml --profile frontend up --build frontend
+```
+
+By default `VITE_API_BASE_URL` is empty and the Vite dev server proxies
+`/api/v1/...` to `VITE_API_PROXY_TARGET` (`http://backend:8000` in compose).
+This keeps local browser traffic same-origin and avoids requiring CORS
+middleware in the backend. For a host-only run use:
+
+```bash
+cd frontend
+npm install
+VITE_API_BASE_URL= VITE_API_PROXY_TARGET=http://127.0.0.1:8000 npm run dev
+npm run build
+npm test
+```
+
+Frontend auth stores only the short-lived access token in `sessionStorage`; no
+refresh token is used in the MVP. Logout and any API `401` clear client auth
+state and redirect to `/login`. Smoke-check logout, automatic `401` redirect,
+chat submit/polling, cancel, retry, and source rendering after backend changes.
 
 Langfuse is disabled by default and is treated as an external service for this
 dev compose file. If you enable `LANGFUSE_ENABLED=true`, keep real

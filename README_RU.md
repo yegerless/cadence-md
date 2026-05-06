@@ -179,6 +179,29 @@ readiness возвращает `503`, чтобы Docker/оркестратор �
 этапе выполнения worker не сможет достучаться до Qdrant или inference, запрос
 завершится контролируемой ошибкой.
 
+## Frontend SPA
+
+React frontend находится в `frontend/` и работает с versioned backend API под
+`/api/v1`. Локальный запуск:
+
+```bash
+cd frontend
+npm install
+VITE_API_BASE_URL= VITE_API_PROXY_TARGET=http://127.0.0.1:8000 npm run dev
+npm run build
+npm test
+```
+
+Запуск через Docker Compose:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml --profile frontend up --build frontend
+```
+
+`VITE_API_BASE_URL` можно оставить пустым для same-origin proxy через Vite. Auth
+хранит только короткоживущий access token в `sessionStorage`; logout и API `401`
+очищают client state и требуют повторного входа.
+
 ## Наблюдаемость
 
 Backend отдаёт Prometheus-метрики на `GET /metrics` вне versioned
