@@ -28,6 +28,17 @@ class BackendSettings(BaseSettings):
         default="30/minute",
         description="SlowAPI / limits string for POST /auth/login per client IP.",
     )
+    CHAT_RATE_LIMIT_USER: str = Field(
+        default="30/minute",
+        description=(
+            "SlowAPI limits string for POST /chat/messages and retry per authenticated user."
+        ),
+    )
+    GLOBAL_RAG_QUEUE_MAX: int = Field(
+        default=1000,
+        ge=1,
+        description="Max concurrent queued + running RAG requests across all users.",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env.dev",

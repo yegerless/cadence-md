@@ -152,6 +152,51 @@ async def test_rag_log_repository_marks_success_and_persists_response(
 
 
 @pytest.mark.asyncio
+async def test_rag_log_repository_counts_active_requests(db_session: AsyncSession) -> None:
+    user = await UserRepository(db_session).create_user(
+        email="count@example.org",
+        password_hash="hashed-password",
+    )
+    repo = RAGLogRepository(db_session)
+    r1 = await repo.create_request(
+        user_id=user.id,
+        query="Q1",
+        query_hash="h1",
+    )
+    r2 = await repo.create_request(
+        user_id=user.id,
+        query="Q2",
+        query_hash="h2",
+    )
+    assert await repo.count_active_requests() == 2
+    await repo.mark_running(r1.id)
+    assert await repo.count_active_requests() == 2
+    await repo.mark_succeeded(r2.id)
+    assert await repo.count_active_requests() == 1
+
+
+@pytest.mark.asyncio
+async def test_rag_log_repository_find_by_idempotency_key(db_session: AsyncSession) -> None:
+    user = await UserRepository(db_session).create_user(
+        email="idem-repo@example.org",
+        password_hash="hashed-password",
+    )
+    repo = RAGLogRepository(db_session)
+    created = await repo.create_request(
+        user_id=user.id,
+        query="Same",
+        query_hash="hx",
+        idempotency_key="shared-key",
+    )
+    found = await repo.get_request_by_idempotency_key(
+        user_id=user.id,
+        idempotency_key="shared-key",
+    )
+    assert found is not None
+    assert found.id == created.id
+
+
+@pytest.mark.asyncio
 async def test_rag_log_repository_guards_against_duplicate_response(
     db_session: AsyncSession,
 ) -> None:

@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cadence_md.db.enums import RAGRequestStatus
@@ -94,6 +94,33 @@ class RAGLogRepository:
             select(RAGRequestLog).where(
                 RAGRequestLog.id == request_id,
                 RAGRequestLog.user_id == user_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def count_active_requests(self) -> int:
+        """Count queued or running requests (global queue depth)."""
+        stmt = (
+            select(func.count())
+            .select_from(RAGRequestLog)
+            .where(
+                RAGRequestLog.status.in_((RAGRequestStatus.QUEUED, RAGRequestStatus.RUNNING)),
+            )
+        )
+        result = await self._session.execute(stmt)
+        return int(result.scalar_one())
+
+    async def get_request_by_idempotency_key(
+        self,
+        *,
+        user_id: uuid.UUID,
+        idempotency_key: str,
+    ) -> RAGRequestLog | None:
+        """Return the request for this user and idempotency key, if any."""
+        result = await self._session.execute(
+            select(RAGRequestLog).where(
+                RAGRequestLog.user_id == user_id,
+                RAGRequestLog.idempotency_key == idempotency_key,
             )
         )
         return result.scalar_one_or_none()

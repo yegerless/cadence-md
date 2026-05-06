@@ -8,12 +8,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cadence_md.backend.exceptions import ApiError
 from cadence_md.backend.security import decode_access_token
+from cadence_md.backend.services.rag_enqueue import NoopRAGEnqueueService, RAGEnqueueService
 from cadence_md.backend.settings import BackendSettings, backend_settings
 from cadence_md.db.models import User
 from cadence_md.db.repositories import UserRepository
 from cadence_md.db.session import get_async_session
 
 http_bearer = HTTPBearer(auto_error=False)
+
+
+def get_rag_enqueue() -> RAGEnqueueService:
+    """Return the queue enqueue hook (noop until Celery wiring)."""
+    return NoopRAGEnqueueService()
 
 
 def get_backend_settings() -> BackendSettings:

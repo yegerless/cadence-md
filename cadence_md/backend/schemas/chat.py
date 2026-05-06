@@ -32,6 +32,11 @@ class CreateRAGRequest(BaseModel):
         default=None,
         description="Optional frontend conversation id for grouping requests.",
     )
+    idempotency_key: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Optional idempotency token when the Idempotency-Key header is not used.",
+    )
     metadata: dict[str, str] = Field(
         default_factory=dict,
         description="Optional lightweight client metadata for tracing.",

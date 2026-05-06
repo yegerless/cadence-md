@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
@@ -41,7 +42,14 @@ class RAGRequestLog(CreatedAtMixin, Base):
         Index("ix_rag_requests_status", "status"),
         Index("ix_rag_requests_created_at", "created_at"),
         Index("ix_rag_requests_query_hash", "query_hash"),
-        Index("ix_rag_requests_idempotency_key", "idempotency_key"),
+        Index(
+            "uq_rag_requests_user_id_idempotency_key",
+            "user_id",
+            "idempotency_key",
+            unique=True,
+            sqlite_where=text("idempotency_key IS NOT NULL"),
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
         CheckConstraint("retry_count >= 0", name="retry_count_non_negative"),
     )
 
