@@ -22,6 +22,11 @@ from cadence_md.backend.api.deps import get_backend_settings, get_rag_enqueue
 from cadence_md.backend.limiter import limiter
 from cadence_md.backend.main import create_app
 from cadence_md.backend.schemas.limits import MAX_QUERY_LENGTH
+from cadence_md.backend.services.rag_enqueue import (
+    CeleryRAGEnqueueService,
+    NoopRAGEnqueueService,
+    make_rag_task_id,
+)
 from cadence_md.backend.settings import BackendSettings
 from cadence_md.db.base import Base
 from cadence_md.db.repositories.rag_logs import RAGLogRepository
@@ -71,6 +76,7 @@ async def chat_app_bundle() -> AsyncIterator[ChatBundle]:
     app = create_app()
     app.dependency_overrides[get_async_session] = override_session
     app.dependency_overrides[get_backend_settings] = lambda: test_settings
+    app.dependency_overrides[get_rag_enqueue] = lambda: NoopRAGEnqueueService()
     app.state.settings = test_settings
 
     yield app, test_settings, session_factory
@@ -115,6 +121,12 @@ async def test_create_chat_message_returns_queued_and_enqueues(chat_app_bundle: 
         assert body["status"] == "queued"
         rid = uuid.UUID(body["request_id"])
         assert enqueue_calls == [rid]
+
+    async with _sf() as session:
+        repo = RAGLogRepository(session)
+        row = await repo.get_request(rid)
+        assert row is not None
+        assert row.celery_task_id == make_rag_task_id(rid)
 
 
 @pytest.mark.asyncio
@@ -501,3 +513,31 @@ def test_chat_router_import_does_not_load_app_rag() -> None:
         check=False,
     )
     assert proc.returncode == 0
+
+
+@pytest.mark.asyncio
+async def test_celery_enqueue_service_sends_deterministic_task_id() -> None:
+    sent: dict[str, Any] = {}
+
+    class FakeCeleryApp:
+        def send_task(self, name: str, **kwargs: Any) -> None:
+            sent["name"] = name
+            sent.update(kwargs)
+
+    settings = BackendSettings(
+        JWT_SECRET="unit-test-jwt-secret-min-32-characters!",
+        CELERY_RAG_TASK_NAME="test.rag",
+        CELERY_RAG_QUEUE_NAME="test-rag",
+    )
+    service = CeleryRAGEnqueueService(settings=settings, app=FakeCeleryApp())
+    request_id = uuid.uuid4()
+
+    task_id = await service.enqueue(request_id)
+
+    assert task_id == make_rag_task_id(request_id)
+    assert sent == {
+        "name": "test.rag",
+        "args": (str(request_id),),
+        "task_id": task_id,
+        "queue": "test-rag",
+    }

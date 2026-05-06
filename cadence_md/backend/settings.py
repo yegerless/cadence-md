@@ -11,6 +11,28 @@ class BackendSettings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/1"
+    CELERY_RAG_QUEUE_NAME: str = "rag"
+    CELERY_RAG_TASK_NAME: str = "cadence_md.workers.rag_tasks.run_rag_request"
+    CELERY_TASK_SOFT_TIME_LIMIT_SECONDS: int = Field(
+        default=300,
+        ge=1,
+        description="Soft timeout for a single RAG Celery task.",
+    )
+    CELERY_TASK_TIME_LIMIT_SECONDS: int = Field(
+        default=360,
+        ge=1,
+        description="Hard timeout for a single RAG Celery task.",
+    )
+    CELERY_TASK_MAX_RETRIES: int = Field(
+        default=3,
+        ge=0,
+        description="Max Celery retries for transient infrastructure failures.",
+    )
+    CELERY_TASK_RETRY_BACKOFF_SECONDS: int = Field(
+        default=5,
+        ge=1,
+        description="Initial retry backoff for transient infrastructure failures.",
+    )
 
     JWT_SECRET: str = Field(
         default="cadence-md-dev-only-secret-change-in-production!",

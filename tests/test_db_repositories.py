@@ -220,3 +220,73 @@ async def test_rag_log_repository_guards_against_duplicate_response(
             rag_request_id=request_log.id,
             answer="Повторный ответ.",
         )
+
+
+@pytest.mark.asyncio
+async def test_rag_log_repository_guarded_status_transitions(db_session: AsyncSession) -> None:
+    user = await UserRepository(db_session).create_user(
+        email="guarded@example.org",
+        password_hash="hashed-password",
+    )
+    repo = RAGLogRepository(db_session)
+    request_log = await repo.create_request(
+        user_id=user.id,
+        query="Guarded transition",
+        query_hash="hash",
+    )
+
+    claimed = await repo.claim_queued_request(request_log.id, celery_task_id="task-1")
+    assert claimed is not None
+    assert claimed.status == RAGRequestStatus.RUNNING
+    assert claimed.celery_task_id == "task-1"
+    assert claimed.started_at is not None
+
+    second_claim = await repo.claim_queued_request(request_log.id, celery_task_id="task-2")
+    assert second_claim is None
+
+    succeeded = await repo.mark_succeeded_from_running(request_log.id)
+    assert succeeded is not None
+    assert succeeded.status == RAGRequestStatus.SUCCEEDED
+
+    failed_after_terminal = await repo.mark_failed_from_running(request_log.id)
+    assert failed_after_terminal is None
+
+
+@pytest.mark.asyncio
+async def test_rag_log_repository_queued_task_id_guard(db_session: AsyncSession) -> None:
+    user = await UserRepository(db_session).create_user(
+        email="taskid@example.org",
+        password_hash="hashed-password",
+    )
+    repo = RAGLogRepository(db_session)
+    request_log = await repo.create_request(
+        user_id=user.id,
+        query="Task id",
+        query_hash="hash",
+    )
+
+    updated = await repo.set_queued_task_id(request_log.id, celery_task_id="task-1")
+    assert updated is not None
+    assert updated.celery_task_id == "task-1"
+
+    await repo.claim_queued_request(request_log.id, celery_task_id="task-1")
+    stale_update = await repo.set_queued_task_id(request_log.id, celery_task_id="task-2")
+    assert stale_update is None
+
+
+@pytest.mark.asyncio
+async def test_rag_log_repository_has_response_for_request(db_session: AsyncSession) -> None:
+    user = await UserRepository(db_session).create_user(
+        email="has-response@example.org",
+        password_hash="hashed-password",
+    )
+    repo = RAGLogRepository(db_session)
+    request_log = await repo.create_request(
+        user_id=user.id,
+        query="Has response",
+        query_hash="hash",
+    )
+
+    assert not await repo.has_response_for_request(request_log.id)
+    await repo.create_response(rag_request_id=request_log.id, answer="Ответ.")
+    assert await repo.has_response_for_request(request_log.id)

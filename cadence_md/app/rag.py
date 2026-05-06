@@ -541,7 +541,10 @@ class RAGPipeline:
 
     def run(self, query: str) -> RAGState:
         """Execute the pipeline for one user query and return the final :class:`RAGState`."""
+        self.ensure_compiled()
+        return self._graph.invoke(self.build_initial_state(query))
+
+    def ensure_compiled(self) -> None:
+        """Compile the LangGraph once without running retrieval or generation."""
         if self._graph is None:
             self._graph = self._build_graph()
-
-        return self._graph.invoke(self.build_initial_state(query))

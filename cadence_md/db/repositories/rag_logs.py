@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cadence_md.db.enums import RAGRequestStatus
@@ -139,11 +139,35 @@ class RAGLogRepository:
             celery_task_id=celery_task_id,
         )
 
+    async def claim_queued_request(
+        self,
+        request_id: uuid.UUID,
+        *,
+        celery_task_id: str | None = None,
+    ) -> RAGRequestLog | None:
+        """Atomically move a queued request to running and return it if claimed."""
+        return await self._guarded_status_update(
+            request_id,
+            from_status=RAGRequestStatus.QUEUED,
+            to_status=RAGRequestStatus.RUNNING,
+            started_at=datetime.now(UTC),
+            celery_task_id=celery_task_id,
+        )
+
     async def mark_succeeded(self, request_id: uuid.UUID) -> RAGRequestLog | None:
         """Mark a request as succeeded and store its finish timestamp."""
         return await self._update_request(
             request_id,
             status=RAGRequestStatus.SUCCEEDED,
+            finished_at=datetime.now(UTC),
+        )
+
+    async def mark_succeeded_from_running(self, request_id: uuid.UUID) -> RAGRequestLog | None:
+        """Atomically mark a running request as succeeded."""
+        return await self._guarded_status_update(
+            request_id,
+            from_status=RAGRequestStatus.RUNNING,
+            to_status=RAGRequestStatus.SUCCEEDED,
             finished_at=datetime.now(UTC),
         )
 
@@ -155,6 +179,15 @@ class RAGLogRepository:
             finished_at=datetime.now(UTC),
         )
 
+    async def mark_failed_from_running(self, request_id: uuid.UUID) -> RAGRequestLog | None:
+        """Atomically mark a running request as failed."""
+        return await self._guarded_status_update(
+            request_id,
+            from_status=RAGRequestStatus.RUNNING,
+            to_status=RAGRequestStatus.FAILED,
+            finished_at=datetime.now(UTC),
+        )
+
     async def mark_cancelled(self, request_id: uuid.UUID) -> RAGRequestLog | None:
         """Mark a request as cancelled and store its finish timestamp."""
         return await self._update_request(
@@ -163,9 +196,31 @@ class RAGLogRepository:
             finished_at=datetime.now(UTC),
         )
 
+    async def mark_cancelled_from_running(self, request_id: uuid.UUID) -> RAGRequestLog | None:
+        """Atomically mark a running request as cancelled."""
+        return await self._guarded_status_update(
+            request_id,
+            from_status=RAGRequestStatus.RUNNING,
+            to_status=RAGRequestStatus.CANCELLED,
+            finished_at=datetime.now(UTC),
+        )
+
     async def request_cancel(self, request_id: uuid.UUID) -> RAGRequestLog | None:
         """Record that cancellation was requested for a queued or running request."""
         return await self._update_request(request_id, cancel_requested_at=datetime.now(UTC))
+
+    async def set_queued_task_id(
+        self,
+        request_id: uuid.UUID,
+        *,
+        celery_task_id: str,
+    ) -> RAGRequestLog | None:
+        """Store a Celery task id only while the request is still queued."""
+        return await self._guarded_update(
+            request_id,
+            allowed_statuses=(RAGRequestStatus.QUEUED,),
+            celery_task_id=celery_task_id,
+        )
 
     async def increment_retry(self, request_id: uuid.UUID) -> RAGRequestLog | None:
         """Increment retry count on an existing request."""
@@ -216,6 +271,15 @@ class RAGLogRepository:
         )
         return result.scalar_one_or_none()
 
+    async def has_response_for_request(self, rag_request_id: uuid.UUID) -> bool:
+        """Return whether a response already exists for a RAG request."""
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(RAGResponseLog)
+            .where(RAGResponseLog.rag_request_id == rag_request_id)
+        )
+        return int(result.scalar_one()) > 0
+
     async def _update_request(
         self,
         request_id: uuid.UUID,
@@ -231,3 +295,50 @@ class RAGLogRepository:
                 setattr(request_log, field_name, value)
         await self._session.flush()
         return request_log
+
+    async def _guarded_status_update(
+        self,
+        request_id: uuid.UUID,
+        *,
+        from_status: RAGRequestStatus,
+        to_status: RAGRequestStatus,
+        **values: object,
+    ) -> RAGRequestLog | None:
+        """Update a request only if it is currently in the expected status."""
+        return await self._guarded_update(
+            request_id,
+            allowed_statuses=(from_status,),
+            status=to_status,
+            **values,
+        )
+
+    async def _guarded_update(
+        self,
+        request_id: uuid.UUID,
+        *,
+        allowed_statuses: tuple[RAGRequestStatus, ...],
+        **values: object,
+    ) -> RAGRequestLog | None:
+        """Run an atomic status-guarded UPDATE and reload the changed row."""
+        update_values = {
+            field_name: value for field_name, value in values.items() if value is not None
+        }
+        if not update_values:
+            return await self.get_request(request_id)
+
+        stmt = (
+            update(RAGRequestLog)
+            .where(
+                RAGRequestLog.id == request_id,
+                RAGRequestLog.status.in_(allowed_statuses),
+            )
+            .values(**update_values)
+            .returning(RAGRequestLog.id)
+        )
+        result = await self._session.execute(stmt)
+        updated_id = result.scalar_one_or_none()
+        if updated_id is None:
+            return None
+        await self._session.flush()
+        self._session.expire_all()
+        return await self.get_request(updated_id)

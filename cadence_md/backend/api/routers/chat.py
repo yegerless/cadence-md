@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Annotated
 
@@ -23,7 +24,7 @@ from cadence_md.backend.schemas.limits import (
     GLOBAL_QUEUE_LIMIT,
     QUEUE_LIMIT_ERROR_CODE,
 )
-from cadence_md.backend.services.rag_enqueue import RAGEnqueueService
+from cadence_md.backend.services.rag_enqueue import RAGEnqueueService, make_rag_task_id
 from cadence_md.backend.settings import BackendSettings
 from cadence_md.db.enums import RAGRequestStatus as DbRAGRequestStatus
 from cadence_md.db.models import User
@@ -31,6 +32,7 @@ from cadence_md.db.repositories.rag_logs import RAGLogRepository
 from cadence_md.db.session import get_async_session
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+logger = logging.getLogger(__name__)
 
 CHAT_LIMIT_RESPONSES = {
     429: {
@@ -72,6 +74,30 @@ async def _ensure_queue_capacity(session: AsyncSession, settings: BackendSetting
             code=QUEUE_LIMIT_ERROR_CODE,
             message="System queue capacity exceeded. Try again later.",
         )
+
+
+async def _enqueue_or_fail(
+    *,
+    repo: RAGLogRepository,
+    session: AsyncSession,
+    enqueue: RAGEnqueueService,
+    request_id: uuid.UUID,
+) -> None:
+    """Send a persisted request to the queue or mark it failed if dispatch fails."""
+    try:
+        await enqueue.enqueue(request_id)
+    except Exception as exc:
+        logger.exception(
+            "Failed to enqueue RAG request",
+            extra={"rag_request_id": str(request_id), "error_type": type(exc).__name__},
+        )
+        await repo.mark_failed(request_id)
+        await session.commit()
+        raise ApiError(
+            status_code=503,
+            code="rag_enqueue_failed",
+            message="Could not enqueue RAG request. Try again later.",
+        ) from exc
 
 
 @router.post(
@@ -121,7 +147,9 @@ async def create_rag_message(
             conversation_id=body.conversation_id,
             idempotency_key=effective_key,
         )
-        await enqueue.enqueue(request_log.id)
+        request_log.celery_task_id = make_rag_task_id(request_log.id)
+        await session.flush()
+        await session.commit()
     except IntegrityError:
         await session.rollback()
         if effective_key:
@@ -136,6 +164,8 @@ async def create_rag_message(
             code="idempotency_conflict",
             message="Could not create request due to a conflicting idempotency key.",
         ) from None
+
+    await _enqueue_or_fail(repo=repo, session=session, enqueue=enqueue, request_id=request_log.id)
 
     return await rag_request_to_status_response(repo, request_log)
 
@@ -251,7 +281,15 @@ async def retry_rag_message(
 
     try:
         new_request = await repo.create_retry_request(original_request_id=row.id)
-        await enqueue.enqueue(new_request.id)
+        new_request.celery_task_id = make_rag_task_id(new_request.id)
+        await session.flush()
+        await session.commit()
+        await _enqueue_or_fail(
+            repo=repo,
+            session=session,
+            enqueue=enqueue,
+            request_id=new_request.id,
+        )
     except ValueError as exc:
         raise ApiError(
             status_code=404,

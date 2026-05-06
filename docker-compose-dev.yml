@@ -73,13 +73,40 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+    ports:
+      - 127.0.0.1:${BACKEND_PORT:-8000}:8000
+    networks:
+      - backend-network
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  rag-worker:
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    command:
+      - celery
+      - -A
+      - cadence_md.workers.celery_app:celery_app
+      - worker
+      - --loglevel=INFO
+      - --queues
+      - ${CELERY_RAG_QUEUE_NAME:-rag}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://cadence_md:cadence_md_dev@postgres:5432/cadence_md}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      CELERY_RAG_QUEUE_NAME: ${CELERY_RAG_QUEUE_NAME:-rag}
       QDRANT_BASE_URL: ${QDRANT_BASE_URL:-http://qdrant:6333}
       QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:-dev-qdrant-api-key}
       QDRANT_HTTPS: ${QDRANT_HTTPS:-false}
       MODEL_INFERENCE_BASE_URL: ${MODEL_INFERENCE_BASE_URL:-http://host.docker.internal:8080/v1}
       MODEL_INFERENCE_API_KEY: ${MODEL_INFERENCE_API_KEY:-lm-studio}
-    ports:
-      - 127.0.0.1:${BACKEND_PORT:-8000}:8000
     networks:
       - backend-network
     depends_on:
