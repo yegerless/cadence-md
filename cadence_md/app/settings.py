@@ -3,9 +3,10 @@ Pydantic settings and nested RAG configuration.
 """
 
 from pathlib import Path
+from typing import Any
 
 from fastembed import SparseTextEmbedding
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from qdrant_client import models as qdrant_models
 
@@ -48,7 +49,7 @@ class QdrantConfig(BaseModel):
 
     data_dir: Path = Path("data/main_specialities/")
     collection_name: str = "clinical_recs"
-    rebuild_collection: bool = False
+    rebuild_collection: bool = True
     vector_size: int = 1024  # For BGE-m3 and Qwen3-Embedding-0.6b
     # vector_size: int = 2560  # For Qwen3-Embedding-4b
     distance: qdrant_models.Distance = qdrant_models.Distance.COSINE
@@ -132,6 +133,30 @@ class RAGConfig(BaseModel):
     qdrant_config: QdrantConfig
 
 
+def _default_rag_config() -> RAGConfig:
+    """Build the default nested RAG config."""
+    return RAGConfig(
+        chunking=ChunkConfig(),
+        retrieval=RetrievalConfig(),
+        llm=LLMConfig(),
+        embedding=EmbeddingConfig(),
+        reranker=RerankerConfig(),
+        qdrant_config=QdrantConfig(),
+    )
+
+
+def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge a partial nested settings dict into defaults."""
+    merged = dict(base)
+    for key, value in override.items():
+        base_value = merged.get(key)
+        if isinstance(base_value, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_dict(base_value, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 class Settings(BaseSettings):
     """Top-level app config: Qdrant, inference URLs/keys, nested ``rag_config``."""
 
@@ -145,19 +170,25 @@ class Settings(BaseSettings):
     MODEL_INFERENCE_API_KEY: str = "lm-studio"
 
     # RAG configuration
-    rag_config: RAGConfig = Field(
-        default_factory=lambda: RAGConfig(
-            chunking=ChunkConfig(),
-            retrieval=RetrievalConfig(),
-            llm=LLMConfig(),
-            embedding=EmbeddingConfig(),
-            reranker=RerankerConfig(),
-            qdrant_config=QdrantConfig(),
-        )
-    )
+    rag_config: RAGConfig = Field(default_factory=_default_rag_config)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_partial_rag_config(cls, data: Any) -> Any:
+        """Allow env vars to override only one nested RAG section."""
+        if not isinstance(data, dict):
+            return data
+        rag_config = data.get("rag_config")
+        if isinstance(rag_config, dict):
+            defaults = _default_rag_config().model_dump()
+            data = dict(data)
+            data["rag_config"] = _deep_merge_dict(defaults, rag_config)
+        return data
 
     model_config = SettingsConfigDict(
         env_file=".env.dev",
+        env_nested_delimiter="__",
+        nested_model_default_partial_update=True,
         extra="ignore",
     )
 

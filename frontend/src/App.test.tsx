@@ -110,6 +110,7 @@ describe('chat lifecycle', () => {
               rank: 1,
               doc_ref: '[Doc 1]',
               filename: 'guideline.pdf',
+              source_path: 'main_specialities/guideline.pdf',
               document_title: 'Клинические рекомендации',
               section_title: 'Терапия',
               section_id: 'section-1',
@@ -138,6 +139,7 @@ describe('chat lifecycle', () => {
 
     expect(await screen.findByText(/ответ с цитатой/i)).toBeInTheDocument()
     expect(screen.getByText('Клинические рекомендации')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /скачать pdf/i })).toBeInTheDocument()
   })
 
   test('clears auth state on API 401', async () => {

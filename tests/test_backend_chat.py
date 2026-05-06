@@ -509,6 +509,213 @@ async def test_get_succeeded_returns_answer(chat_app_bundle: ChatBundle) -> None
 
 
 @pytest.mark.asyncio
+async def test_download_own_source_file(chat_app_bundle: ChatBundle, tmp_path: Path) -> None:
+    app, settings, session_factory = chat_app_bundle
+    corpus_dir = tmp_path / "corpus"
+    source_dir = corpus_dir / "main_specialities"
+    source_dir.mkdir(parents=True)
+    source_file = source_dir / "guideline.pdf"
+    source_file.write_bytes(b"%PDF-1.4 test")
+    docker_like_settings = settings.model_copy(update={"RAG_CORPUS_DIR": corpus_dir})
+    app.dependency_overrides[get_backend_settings] = lambda: docker_like_settings
+    app.state.settings = docker_like_settings
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _register(client, "download@example.org")
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Вопрос с источником"},
+        )
+        rid = uuid.UUID(created.json()["request_id"])
+
+        async with session_factory() as session:
+            repo = RAGLogRepository(session)
+            await repo.create_response(
+                rag_request_id=rid,
+                answer="Ответ.",
+                sources=[
+                    {
+                        "rank": 1,
+                        "doc_ref": "[Doc 1]",
+                        "filename": "guideline.pdf",
+                        "source_path": "main_specialities/guideline.pdf",
+                        "score": 0.9,
+                    }
+                ],
+                latency_ms={},
+                flags={},
+            )
+            await repo.mark_succeeded(rid)
+            await session.commit()
+
+        downloaded = await client.get(
+            f"/api/v1/chat/messages/{rid}/sources/1/download",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"%PDF-1.4 test"
+    assert "guideline.pdf" in downloaded.headers["content-disposition"]
+
+
+@pytest.mark.asyncio
+async def test_download_source_for_other_user_returns_404(
+    chat_app_bundle: ChatBundle,
+    tmp_path: Path,
+) -> None:
+    app, settings, session_factory = chat_app_bundle
+    corpus_dir = tmp_path / "corpus"
+    (corpus_dir / "main_specialities").mkdir(parents=True)
+    (corpus_dir / "main_specialities" / "guideline.pdf").write_bytes(b"pdf")
+    test_settings = settings.model_copy(update={"RAG_CORPUS_DIR": corpus_dir})
+    app.dependency_overrides[get_backend_settings] = lambda: test_settings
+    app.state.settings = test_settings
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token_a = await _register(client, "download-a@example.org")
+        token_b = await _register(client, "download-b@example.org")
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token_a}"},
+            json={"query": "Чужой источник"},
+        )
+        rid = uuid.UUID(created.json()["request_id"])
+
+        async with session_factory() as session:
+            repo = RAGLogRepository(session)
+            await repo.create_response(
+                rag_request_id=rid,
+                answer="Ответ.",
+                sources=[
+                    {
+                        "rank": 1,
+                        "doc_ref": "[Doc 1]",
+                        "filename": "guideline.pdf",
+                        "source_path": "main_specialities/guideline.pdf",
+                    }
+                ],
+                latency_ms={},
+                flags={},
+            )
+            await repo.mark_succeeded(rid)
+            await session.commit()
+
+        leaked = await client.get(
+            f"/api/v1/chat/messages/{rid}/sources/1/download",
+            headers={"Authorization": f"Bearer {token_b}"},
+        )
+
+    assert leaked.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_download_source_missing_rank_and_file_return_404(
+    chat_app_bundle: ChatBundle,
+    tmp_path: Path,
+) -> None:
+    app, settings, session_factory = chat_app_bundle
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    test_settings = settings.model_copy(update={"RAG_CORPUS_DIR": corpus_dir})
+    app.dependency_overrides[get_backend_settings] = lambda: test_settings
+    app.state.settings = test_settings
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _register(client, "download-missing@example.org")
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Нет файла"},
+        )
+        rid = uuid.UUID(created.json()["request_id"])
+
+        async with session_factory() as session:
+            repo = RAGLogRepository(session)
+            await repo.create_response(
+                rag_request_id=rid,
+                answer="Ответ.",
+                sources=[
+                    {
+                        "rank": 1,
+                        "doc_ref": "[Doc 1]",
+                        "filename": "missing.pdf",
+                        "source_path": "main_specialities/missing.pdf",
+                    }
+                ],
+                latency_ms={},
+                flags={},
+            )
+            await repo.mark_succeeded(rid)
+            await session.commit()
+
+        missing_rank = await client.get(
+            f"/api/v1/chat/messages/{rid}/sources/2/download",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        missing_file = await client.get(
+            f"/api/v1/chat/messages/{rid}/sources/1/download",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert missing_rank.status_code == 404
+    assert missing_file.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_download_source_rejects_path_traversal(
+    chat_app_bundle: ChatBundle,
+    tmp_path: Path,
+) -> None:
+    app, settings, session_factory = chat_app_bundle
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    (tmp_path / "secret.pdf").write_bytes(b"secret")
+    test_settings = settings.model_copy(update={"RAG_CORPUS_DIR": corpus_dir})
+    app.dependency_overrides[get_backend_settings] = lambda: test_settings
+    app.state.settings = test_settings
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _register(client, "download-traversal@example.org")
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Traversal"},
+        )
+        rid = uuid.UUID(created.json()["request_id"])
+
+        async with session_factory() as session:
+            repo = RAGLogRepository(session)
+            await repo.create_response(
+                rag_request_id=rid,
+                answer="Ответ.",
+                sources=[
+                    {
+                        "rank": 1,
+                        "doc_ref": "[Doc 1]",
+                        "filename": "secret.pdf",
+                        "source_path": "../secret.pdf",
+                    }
+                ],
+                latency_ms={},
+                flags={},
+            )
+            await repo.mark_succeeded(rid)
+            await session.commit()
+
+        blocked = await client.get(
+            f"/api/v1/chat/messages/{rid}/sources/1/download",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert blocked.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_cancel_and_retry_authorization_enforced(chat_app_bundle: ChatBundle) -> None:
     app, _settings, _sf = chat_app_bundle
     transport = ASGITransport(app=app)

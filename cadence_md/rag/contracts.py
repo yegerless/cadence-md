@@ -19,6 +19,7 @@ class RAGSource(BaseModel):
     rank: int = Field(ge=1)
     doc_ref: str
     filename: str | None = None
+    source_path: str | None = None
     document_title: str | None = None
     section_title: str | None = None
     section_id: str | None = None

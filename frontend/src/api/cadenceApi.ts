@@ -1,4 +1,4 @@
-import { apiRequest } from './client'
+import { apiBlobRequest, apiRequest } from './client'
 import type {
   CreateRAGRequest,
   LoginRequest,
@@ -53,4 +53,8 @@ export function retryChatMessage(requestId: string): Promise<RAGRequestStatusRes
   return apiRequest<RAGRequestStatusResponse>(`/api/v1/chat/messages/${requestId}/retry`, {
     method: 'POST',
   })
+}
+
+export function downloadChatSource(requestId: string, rank: number): Promise<Blob> {
+  return apiBlobRequest(`/api/v1/chat/messages/${requestId}/sources/${rank}/download`)
 }

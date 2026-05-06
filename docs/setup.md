@@ -52,6 +52,11 @@ poetry run dvc remote modify --local yandex secret_access_key '<your_secret_acce
 poetry run dvc pull
 ```
 
+When using `docker-compose-dev.yml`, the `dvc-pull` service downloads `data.dvc`
+into the shared `rag-corpus` volume automatically. The same volume is mounted
+read-only into `rag-worker` for optional Qdrant indexing and into `backend` for
+authenticated source PDF downloads.
+
 #### Additional info
 
 Always run pre-commit before create new commits:

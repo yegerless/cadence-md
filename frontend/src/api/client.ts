@@ -73,3 +73,36 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 
   return (await response.json()) as T
 }
+
+export async function apiBlobRequest(path: string, options: RequestOptions = {}): Promise<Blob> {
+  const headers = new Headers(options.headers)
+  const hasBody = options.body !== undefined
+
+  if (hasBody && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  if (options.auth !== false) {
+    const token = getAccessToken()
+    if (token) {
+      headers.set('Authorization', `Bearer ${token}`)
+    }
+  }
+
+  const response = await fetch(`${getApiBaseUrl()}${path}`, {
+    method: options.method ?? 'GET',
+    headers,
+    body: hasBody ? JSON.stringify(options.body) : undefined,
+  })
+
+  if (response.status === 401) {
+    clearAccessToken()
+    unauthorizedHandler?.()
+  }
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorResponse(response))
+  }
+
+  return response.blob()
+}

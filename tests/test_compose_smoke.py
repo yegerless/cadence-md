@@ -39,3 +39,12 @@ def test_docker_compose_dev_contains_migrations_service() -> None:
     config = _docker_compose_config(project_root, "-f", "docker-compose-dev.yml")
     assert "migrations:" in config
     assert "alembic" in config
+
+
+def test_docker_compose_dev_contains_dvc_corpus_volume() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    config = _docker_compose_config(project_root, "-f", "docker-compose-dev.yml")
+    assert "dvc-pull:" in config
+    assert "dvc pull data.dvc" in config or "- data.dvc" in config
+    assert "rag-corpus:" in config
+    assert "/app/data" in config

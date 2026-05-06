@@ -49,6 +49,7 @@ class RAGSourceResponse(BaseModel):
     rank: int = Field(ge=1)
     doc_ref: str = Field(description="Citation marker used in the answer, e.g. [Doc 1].")
     filename: str | None = None
+    source_path: str | None = None
     document_title: str | None = None
     section_title: str | None = None
     section_id: str | None = None

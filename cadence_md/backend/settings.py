@@ -1,5 +1,7 @@
 """Backend service settings for API, database, Redis, and Celery infrastructure."""
 
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -78,6 +80,10 @@ class BackendSettings(BaseSettings):
     LANGFUSE_HOST: str | None = None
     LANGFUSE_TRACE_QUERY_MODE: str = "redacted"
     LANGFUSE_PROMPT_VERSION: str | None = None
+    RAG_CORPUS_DIR: Path = Field(
+        default=Path("/app/data"),
+        description="Root directory containing the DVC-pulled RAG corpus for source downloads.",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env.dev",

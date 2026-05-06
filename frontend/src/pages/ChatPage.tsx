@@ -182,7 +182,7 @@ export function ChatPage() {
                   {turn.status === 'succeeded' && turn.answer ? (
                     <>
                       <p className="answer-text">{turn.answer.answer}</p>
-                      <SourceList sources={turn.answer.sources} />
+                      <SourceList requestId={turn.request_id} sources={turn.answer.sources} />
                     </>
                   ) : null}
                   <div className="turn-actions">

@@ -52,7 +52,14 @@ def _base_state(**overrides: object) -> dict:
 
 def test_run_maps_ranked_docs_to_sources_with_score_order() -> None:
     pipeline = MagicMock()
-    doc1 = Document(page_content="a", metadata={"filename": "1.pdf", "section_id": "s1"})
+    doc1 = Document(
+        page_content="a",
+        metadata={
+            "filename": "1.pdf",
+            "source_path": "main_specialities/1.pdf",
+            "section_id": "s1",
+        },
+    )
     doc2 = Document(page_content="b", metadata={"filename": "2.pdf", "section_id": "s2"})
     pipeline.run.return_value = _base_state(
         ranked_docs=[
@@ -65,6 +72,7 @@ def test_run_maps_ranked_docs_to_sources_with_score_order() -> None:
     response = service.run(RAGRequest(query="query"))
 
     assert [src.filename for src in response.sources] == ["1.pdf", "2.pdf"]
+    assert response.sources[0].source_path == "main_specialities/1.pdf"
     assert [src.doc_ref for src in response.sources] == ["[Doc 1]", "[Doc 2]"]
     assert [src.score for src in response.sources] == [0.9, 0.7]
     assert response.latency.total_ms == 74.0

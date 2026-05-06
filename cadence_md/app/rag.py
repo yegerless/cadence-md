@@ -103,6 +103,7 @@ def _source_record(i: int, doc: Document) -> dict[str, Any]:
     return {
         "doc_ref": f"[Doc {i}]",
         "filename": meta.get("filename"),
+        "source_path": meta.get("source_path"),
         "document_title": meta.get("document_title"),
         "section_title": meta.get("section_title"),
         "section_id": meta.get("section_id"),

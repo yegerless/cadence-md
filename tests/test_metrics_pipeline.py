@@ -8,7 +8,7 @@ from langchain_core.documents import Document
 
 from cadence_md.rag import RAGRequest, RAGResponse, RAGRetrieveResponse, RAGSource
 from commands import build_project_cli_parser
-from metrics.evaluation_pipeline import RAGEvaluationPipeline
+from metrics.evaluation_pipeline import RAGEvaluationPipeline, _response_to_test_result_inputs
 from metrics.schemas import QATestCase, RAGTestResult
 
 
@@ -23,6 +23,7 @@ def _source(
     *,
     rank: int = 1,
     section_id: str | None = None,
+    source_path: str | None = None,
     retrieval_score: float | None = None,
     rerank_score: float | None = None,
     final_score: float | None = None,
@@ -32,6 +33,7 @@ def _source(
         rank=rank,
         doc_ref=f"[Doc {rank}]",
         section_id=section_id,
+        source_path=source_path,
         content=content,
         score=final_score,
         retrieval_score=retrieval_score,
@@ -196,6 +198,18 @@ def test_calculate_text_match_metrics_uses_prefixed_keys() -> None:
     assert metrics["text_match_k"] == 1
     assert metrics["text_match_hit_rate"] == 1.0
     assert "hit_rate" not in metrics
+
+
+def test_response_to_test_result_inputs_preserves_source_path_metadata() -> None:
+    response = _retrieve_response(
+        "q",
+        [_source("ctx", section_id="sec", source_path="main_specialities/guideline.pdf")],
+    )
+
+    docs, _scores, _answer = _response_to_test_result_inputs(response)
+
+    assert docs[0].metadata["source_path"] == "main_specialities/guideline.pdf"
+    assert docs[0].metadata["section_id"] == "sec"
 
 
 def test_metrics_parser_rejects_non_positive_k(tmp_path: Path) -> None:

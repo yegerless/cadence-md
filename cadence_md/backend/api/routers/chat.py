@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi.responses import FileResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -98,6 +100,51 @@ async def _enqueue_or_fail(
             code="rag_enqueue_failed",
             message="Could not enqueue RAG request. Try again later.",
         ) from exc
+
+
+def _source_rank(source: dict[str, object]) -> int | None:
+    """Return a source rank from persisted JSON, accepting int-like values."""
+    try:
+        return int(source.get("rank", 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_source_by_rank(
+    sources: list[dict[str, object]],
+    rank: int,
+) -> dict[str, object] | None:
+    """Find a persisted source row by 1-based rank."""
+    return next((source for source in sources if _source_rank(source) == rank), None)
+
+
+def _resolve_source_file(corpus_dir: Path, source_path: str) -> Path:
+    """Resolve a source path under corpus root and reject traversal or missing files."""
+    corpus_root = corpus_dir.resolve()
+    candidate = (corpus_root / source_path).resolve()
+    try:
+        candidate.relative_to(corpus_root)
+    except ValueError as exc:
+        raise ApiError(
+            status_code=404,
+            code="source_not_found",
+            message="Source file was not found.",
+        ) from exc
+    if not candidate.is_file():
+        raise ApiError(
+            status_code=404,
+            code="source_not_found",
+            message="Source file was not found.",
+        )
+    return candidate
+
+
+def _download_filename(source: dict[str, object], source_file: Path) -> str:
+    """Return a safe download filename from source metadata or resolved file path."""
+    raw_filename = source.get("filename")
+    if isinstance(raw_filename, str) and raw_filename.strip():
+        return Path(raw_filename).name
+    return source_file.name
 
 
 @router.post(
@@ -194,6 +241,65 @@ async def get_rag_message(
             message="RAG request not found.",
         )
     return await rag_request_to_status_response(repo, row)
+
+
+@router.get(
+    "/messages/{request_id}/sources/{rank}/download",
+    response_class=FileResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "RAG request or source file was not found."},
+        409: {"model": ErrorResponse, "description": "RAG request has no completed sources yet."},
+    },
+    summary="Download a RAG source PDF",
+    description="Downloads one source PDF from a completed RAG answer by source rank.",
+)
+async def download_rag_source(
+    request_id: uuid.UUID,
+    rank: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+    settings: BackendSettings = Depends(get_backend_settings),
+) -> FileResponse:
+    """Download a source file that belongs to the current user's completed RAG request."""
+    repo = RAGLogRepository(session)
+    row = await repo.get_request_for_user(request_id=request_id, user_id=user.id)
+    if row is None:
+        raise ApiError(
+            status_code=404,
+            code="not_found",
+            message="RAG request not found.",
+        )
+    if row.status != DbRAGRequestStatus.SUCCEEDED:
+        raise ApiError(
+            status_code=409,
+            code="source_download_not_available",
+            message="Source downloads are available only for completed RAG requests.",
+        )
+
+    response_row = await repo.get_response_for_request(row.id)
+    if response_row is None:
+        raise ApiError(
+            status_code=404,
+            code="source_not_found",
+            message="Source file was not found.",
+        )
+
+    sources: list[dict[str, object]] = list(response_row.sources_json or [])
+    source = _find_source_by_rank(sources, rank)
+    source_path = source.get("source_path") if source is not None else None
+    if source is None or not isinstance(source_path, str) or not source_path.strip():
+        raise ApiError(
+            status_code=404,
+            code="source_not_found",
+            message="Source file was not found.",
+        )
+
+    source_file = _resolve_source_file(settings.RAG_CORPUS_DIR, source_path)
+    return FileResponse(
+        path=source_file,
+        media_type="application/pdf",
+        filename=_download_filename(source, source_file),
+    )
 
 
 @router.post(

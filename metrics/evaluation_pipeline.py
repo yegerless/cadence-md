@@ -73,6 +73,7 @@ def _response_to_test_result_inputs(
                     "doc_ref": source.doc_ref,
                     "rank": source.rank,
                     "filename": source.filename,
+                    "source_path": source.source_path,
                     "document_title": source.document_title,
                     "section_title": source.section_title,
                     "section_id": source.section_id,

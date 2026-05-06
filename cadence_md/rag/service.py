@@ -58,6 +58,7 @@ class RAGService:
                     rank=idx,
                     doc_ref=f"[Doc {idx}]",
                     filename=meta.get("filename"),
+                    source_path=meta.get("source_path"),
                     document_title=meta.get("document_title"),
                     section_title=meta.get("section_title"),
                     section_id=meta.get("section_id"),

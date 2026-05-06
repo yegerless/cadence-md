@@ -43,6 +43,7 @@ export type RAGSourceResponse = {
   rank: number
   doc_ref: string
   filename: string | null
+  source_path: string | null
   document_title: string | null
   section_title: string | null
   section_id: string | null

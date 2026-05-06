@@ -68,6 +68,15 @@ class TestSettingsRequiredAndTopLevel:
         assert s.MODEL_INFERENCE_BASE_URL == "http://infer.example/v1"
         assert s.MODEL_INFERENCE_API_KEY == "infer-secret"
 
+    def test_nested_rag_env_overrides_keep_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("QDRANT__SERVICE__API_KEY", "k")
+        monkeypatch.setenv("RAG_CONFIG__QDRANT_CONFIG__DATA_DIR", "/app/data/main_specialities")
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+
+        assert s.rag_config.qdrant_config.data_dir == Path("/app/data/main_specialities")
+        assert s.rag_config.qdrant_config.rebuild_collection is QdrantConfig().rebuild_collection
+        assert s.rag_config.chunking.chunk_size == ChunkConfig().chunk_size
+
     def test_extra_env_vars_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("QDRANT__SERVICE__API_KEY", "k")
         monkeypatch.setenv("CADENCE_UNKNOWN_SETTING_XYZ", "should-be-ignored")

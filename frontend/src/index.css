@@ -518,6 +518,28 @@ a {
   -webkit-line-clamp: 4;
 }
 
+.source-download {
+  justify-self: start;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.45rem 0.75rem;
+  background: var(--surface);
+  color: var(--primary);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.source-download:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.source-download-error {
+  margin: 0 0 0.75rem;
+  color: var(--danger);
+  font-weight: 700;
+}
+
 .turn-actions {
   display: flex;
   gap: 0.7rem;

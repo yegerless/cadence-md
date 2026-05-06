@@ -16,6 +16,8 @@ RUN pip install --no-cache-dir poetry
 COPY pyproject.toml poetry.lock ./
 RUN poetry install --only main --no-root --no-ansi
 
+COPY data.dvc ./data.dvc
+COPY .dvc/config ./.dvc/config
 COPY alembic.ini ./alembic.ini
 COPY cadence_md ./cadence_md
 

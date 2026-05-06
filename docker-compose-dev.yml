@@ -58,6 +58,25 @@ services:
       start_period: 40s
     restart: unless-stopped # TODO: set autoheal container
 
+  dvc-pull:
+    build:
+      context: .
+      dockerfile: infra/docker/rag-worker.Dockerfile
+    command:
+      - sh
+      - -c
+      - >
+        printf '[core]\n    no_scm = true\n' > .dvc/config.local && dvc pull
+        data.dvc
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${S3_KEY:-}
+    networks:
+      - backend-network
+    volumes:
+      - rag-corpus:/app/data
+    restart: "no"
+
   backend:
     build:
       context: .
@@ -91,6 +110,8 @@ services:
       QDRANT_BASE_URL: ${QDRANT_BASE_URL:-http://qdrant:6333}
       QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:-dev-qdrant-api-key}
       QDRANT_HTTPS: ${QDRANT_HTTPS:-false}
+      RAG_CONFIG__QDRANT_CONFIG__DATA_DIR: ${RAG_CONFIG__QDRANT_CONFIG__DATA_DIR:-/app/data/main_specialities}
+      RAG_CORPUS_DIR: ${RAG_CORPUS_DIR:-/app/data}
       MODEL_INFERENCE_BASE_URL: ${MODEL_INFERENCE_BASE_URL:-http://host.docker.internal:8080/v1}
       MODEL_INFERENCE_API_KEY: ${MODEL_INFERENCE_API_KEY:-lm-studio}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -109,8 +130,12 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - backend-network
+    volumes:
+      - rag-corpus:/app/data:ro
     depends_on:
       migrations:
+        condition: service_completed_successfully
+      dvc-pull:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
@@ -157,6 +182,7 @@ services:
       QDRANT_BASE_URL: ${QDRANT_BASE_URL:-http://qdrant:6333}
       QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:-dev-qdrant-api-key}
       QDRANT_HTTPS: ${QDRANT_HTTPS:-false}
+      RAG_CONFIG__QDRANT_CONFIG__DATA_DIR: ${RAG_CONFIG__QDRANT_CONFIG__DATA_DIR:-/app/data/main_specialities}
       MODEL_INFERENCE_BASE_URL: ${MODEL_INFERENCE_BASE_URL:-http://host.docker.internal:8080/v1}
       MODEL_INFERENCE_API_KEY: ${MODEL_INFERENCE_API_KEY:-lm-studio}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -178,9 +204,11 @@ services:
     networks:
       - backend-network
     volumes:
-      - ./data/main_specialities:/app/data/main_specialities:ro
+      - rag-corpus:/app/data:ro
     depends_on:
       migrations:
+        condition: service_completed_successfully
+      dvc-pull:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
@@ -299,6 +327,7 @@ volumes:
   postgres-data:
   redis-data:
   qdrant:
+  rag-corpus:
   prometheus-data:
   grafana-data:
 
