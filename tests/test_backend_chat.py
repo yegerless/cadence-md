@@ -18,9 +18,10 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from cadence_md.backend.api.deps import get_backend_settings, get_rag_enqueue
+from cadence_md.backend.api.deps import get_backend_settings, get_health_service, get_rag_enqueue
 from cadence_md.backend.limiter import limiter
 from cadence_md.backend.main import create_app
+from cadence_md.backend.schemas.health import HealthResponse, HealthStatus
 from cadence_md.backend.schemas.limits import MAX_QUERY_LENGTH
 from cadence_md.backend.services.rag_enqueue import (
     CeleryRAGEnqueueService,
@@ -127,6 +128,43 @@ async def test_create_chat_message_returns_queued_and_enqueues(chat_app_bundle: 
         row = await repo.get_request(rid)
         assert row is not None
         assert row.celery_task_id == make_rag_task_id(rid)
+
+
+@pytest.mark.asyncio
+async def test_create_chat_message_still_queues_when_rag_health_unavailable(
+    chat_app_bundle: ChatBundle,
+) -> None:
+    app, _settings, _sf = chat_app_bundle
+    enqueue_calls: list[uuid.UUID] = []
+
+    class RecordingEnqueue:
+        async def enqueue(self, request_id: uuid.UUID) -> None:
+            enqueue_calls.append(request_id)
+
+    class UnreadyHealthService:
+        async def rag(self) -> HealthResponse:
+            return HealthResponse(
+                status=HealthStatus.UNAVAILABLE,
+                checks={"qdrant": HealthStatus.UNAVAILABLE},
+            )
+
+    app.dependency_overrides[get_rag_enqueue] = lambda: RecordingEnqueue()
+    app.dependency_overrides[get_health_service] = lambda: UnreadyHealthService()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _register(client, "rag-unready@example.org")
+        health = await client.get("/api/v1/health/rag")
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Можно ли поставить запрос в очередь при неготовом RAG?"},
+        )
+
+    assert health.status_code == 503
+    assert created.status_code == 202
+    assert created.json()["status"] == "queued"
+    assert enqueue_calls
 
 
 @pytest.mark.asyncio

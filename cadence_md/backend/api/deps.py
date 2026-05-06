@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cadence_md.backend.exceptions import ApiError
 from cadence_md.backend.security import decode_access_token
+from cadence_md.backend.services.health import HealthService
 from cadence_md.backend.services.rag_enqueue import CeleryRAGEnqueueService, RAGEnqueueService
 from cadence_md.backend.settings import BackendSettings, backend_settings
 from cadence_md.db.models import User
@@ -25,6 +26,21 @@ def get_rag_enqueue() -> RAGEnqueueService:
 def get_backend_settings() -> BackendSettings:
     """Return backend settings (override in tests via ``dependency_overrides``)."""
     return backend_settings
+
+
+def get_app_settings() -> object:
+    """Return RAG app settings without importing the RAG stack at backend import time."""
+    from cadence_md.app.settings import settings as app_settings  # noqa: PLC0415
+
+    return app_settings
+
+
+def get_health_service(
+    settings: BackendSettings = Depends(get_backend_settings),
+    app_settings: object = Depends(get_app_settings),
+) -> HealthService:
+    """Return dependency health service for backend and RAG readiness endpoints."""
+    return HealthService(backend_settings=settings, app_settings=app_settings)
 
 
 async def get_current_user(

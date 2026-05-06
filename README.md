@@ -164,6 +164,26 @@ poetry run python commands.py metrics-eval-retriever --k 5
 See `poetry run python commands.py metrics-eval-full --help` and
 `metrics-eval-retriever --help` for all evaluation flags.
 
+## Service Health
+
+The FastAPI backend exposes versioned health probes for local Docker Compose and
+future orchestration:
+
+- `GET /api/v1/health/live` checks only that the backend process is alive.
+- `GET /api/v1/health/ready` checks Postgres, Redis, Qdrant collection/schema,
+  and the OpenAI-compatible inference API. It returns `503` when a required
+  dependency is unavailable.
+- `GET /api/v1/health/rag` returns detailed RAG dependency status for Qdrant,
+  inference, and the queue broker without exposing API keys or secrets.
+
+Graceful degradation policy: backend startup does not construct the heavy RAG
+stack and does not fail just because Qdrant or inference is temporarily
+unavailable. Readiness reports `503` in that state so Docker/orchestrators can
+stop routing traffic. The chat API remains asynchronous:
+`POST /api/v1/chat/messages` can still persist and enqueue a request when
+Postgres, Redis, and Celery are available; the worker records a controlled
+failure if RAG execution later cannot reach Qdrant or inference.
+
 ## License
 
 Proprietary - See [LICENSE.md](LICENSE.md) for details.

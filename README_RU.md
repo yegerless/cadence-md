@@ -159,6 +159,26 @@ poetry run python commands.py metrics-eval-retriever --k 5
 Список флагов: `poetry run python commands.py metrics-eval-full --help` и
 `metrics-eval-retriever --help`.
 
+## Health сервиса
+
+FastAPI backend отдаёт versioned health-пробы для локального Docker Compose и
+дальнейшей оркестрации:
+
+- `GET /api/v1/health/live` проверяет только то, что процесс backend жив.
+- `GET /api/v1/health/ready` проверяет Postgres, Redis, Qdrant
+  (доступность+схему коллекции) и OpenAI-compatible inference API. При
+  недоступности обязательной зависимости возвращает `503`.
+- `GET /api/v1/health/rag` возвращает детальный статус RAG-зависимостей (Qdrant,
+  inference, queue broker) без раскрытия API keys и других секретов.
+
+Политика graceful degradation: при старте backend не поднимает тяжёлый RAG stack
+и не падает, если Qdrant или inference временно недоступны. В таком состоянии
+readiness возвращает `503`, чтобы Docker/оркестратор не направлял трафик. При
+этом chat API остаётся асинхронным: `POST /api/v1/chat/messages` может сохранить
+и поставить запрос в очередь, если доступны Postgres, Redis и Celery; если на
+этапе выполнения worker не сможет достучаться до Qdrant или inference, запрос
+завершится контролируемой ошибкой.
+
 ## Лицензия
 
 Проприетарная - подробности в [LICENSE_RU.md](LICENSE_RU.md).

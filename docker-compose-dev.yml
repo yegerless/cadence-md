@@ -73,6 +73,11 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      QDRANT_BASE_URL: ${QDRANT_BASE_URL:-http://qdrant:6333}
+      QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:-dev-qdrant-api-key}
+      QDRANT_HTTPS: ${QDRANT_HTTPS:-false}
+      MODEL_INFERENCE_BASE_URL: ${MODEL_INFERENCE_BASE_URL:-http://host.docker.internal:8080/v1}
+      MODEL_INFERENCE_API_KEY: ${MODEL_INFERENCE_API_KEY:-lm-studio}
     ports:
       - 127.0.0.1:${BACKEND_PORT:-8000}:8000
     networks:
@@ -82,6 +87,20 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import urllib.request;
+          urllib.request.urlopen(''http://localhost:8000/api/v1/health/ready'',
+          timeout=5).read()"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     restart: unless-stopped
 
   rag-worker:
@@ -116,6 +135,20 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-m",
+          "cadence_md.workers.rag_health",
+          "--timeout",
+          "5",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     restart: unless-stopped
 
   migrations:

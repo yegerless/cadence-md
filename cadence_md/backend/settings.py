@@ -61,6 +61,11 @@ class BackendSettings(BaseSettings):
         ge=1,
         description="Max concurrent queued + running RAG requests across all users.",
     )
+    HEALTH_CHECK_TIMEOUT_SECONDS: float = Field(
+        default=3.0,
+        gt=0,
+        description="Timeout for a single dependency health check.",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env.dev",

@@ -80,3 +80,5 @@ def test_rate_limit_error_responses_are_documented() -> None:
     assert "429" in paths["/api/v1/auth/login"]["post"]["responses"]
     assert "429" in paths["/api/v1/chat/messages"]["post"]["responses"]
     assert "503" in paths["/api/v1/chat/messages"]["post"]["responses"]
+    assert "503" in paths["/api/v1/health/ready"]["get"]["responses"]
+    assert "503" in paths["/api/v1/health/rag"]["get"]["responses"]
