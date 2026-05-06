@@ -67,6 +67,7 @@ class RAGAnswerResponse(BaseModel):
     flags: dict[str, bool] = Field(default_factory=dict)
     error_type: str | None = None
     error_message: str | None = None
+    langfuse_trace_id: str | None = None
 
 
 class RAGRequestStatusResponse(BaseModel):

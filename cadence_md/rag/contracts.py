@@ -9,6 +9,8 @@ class RAGRequest(BaseModel):
     """Input DTO for RAG service methods."""
 
     query: str = Field(min_length=1)
+    rag_request_id: str | None = None
+    user_id: str | None = None
 
 
 class RAGSource(BaseModel):
@@ -58,6 +60,7 @@ class RAGResponse(BaseModel):
     answer_word_count: int = 0
     error_type: str | None = None
     error_message: str | None = None
+    langfuse_trace_id: str | None = None
 
 
 class RAGRetrieveResponse(BaseModel):

@@ -25,6 +25,10 @@ from cadence_md.app.rag_prompts import (
 )
 from cadence_md.app.reranker import RerankerAPIError, RerankerWrapper
 from cadence_md.app.settings import settings
+from cadence_md.observability.langfuse import record_generation, record_span
+from cadence_md.observability.metrics import inc_rag_fallback, observe_rag_node
+from cadence_md.observability.privacy import redact_medical_query
+from cadence_md.observability.settings import observability_settings
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +242,18 @@ class RAGPipeline:
             state["answer"] = RETRIEVAL_FALLBACK_ANSWER
             state["answer_word_count"] = len(state["answer"].split())
             state.setdefault("latency_ms", {})["qdrant"] = dt_ms
+            observe_rag_node("qdrant", dt_ms)
+            inc_rag_fallback("retrieval_failed")
+            record_span(
+                "retrieve",
+                metadata={
+                    "query_hash": qh,
+                    "latency_ms": round(dt_ms, 2),
+                    "retrieval_failed": True,
+                    "error_type": state["error_type"],
+                    "prompt_version": settings.rag_config.prompt_version,
+                },
+            )
             logger.warning(
                 "rag.retrieve_fallback",
                 extra={
@@ -260,6 +276,17 @@ class RAGPipeline:
         ]
         state["ranked_docs"] = ranked
         state.setdefault("latency_ms", {})["qdrant"] = dt_ms
+        observe_rag_node("qdrant", dt_ms)
+        record_span(
+            "retrieve",
+            metadata={
+                "query_hash": qh,
+                "latency_ms": round(dt_ms, 2),
+                "n_docs": len(ranked),
+                "search_mode": str(self.qdrant_manager.search_mode),
+                "prompt_version": settings.rag_config.prompt_version,
+            },
+        )
 
         logger.info(
             "rag.retrieve",
@@ -315,6 +342,7 @@ class RAGPipeline:
             state["ranked_docs"] = new_ranked
             state["rerank_fallback"] = False
         except (RerankerAPIError, httpx.RequestError, OSError, ValueError) as exc:
+            inc_rag_fallback("rerank_fallback")
             logger.warning(
                 "rag.rerank_fallback",
                 extra={
@@ -343,6 +371,17 @@ class RAGPipeline:
 
         dt_ms = (time.perf_counter() - t0) * 1000
         state.setdefault("latency_ms", {})["rerank"] = dt_ms
+        observe_rag_node("rerank", dt_ms)
+        record_span(
+            "rerank",
+            metadata={
+                "query_hash": qh,
+                "latency_ms": round(dt_ms, 2),
+                "n_docs": len(state["ranked_docs"]),
+                "rerank_fallback": state["rerank_fallback"],
+                "prompt_version": settings.rag_config.prompt_version,
+            },
+        )
         logger.info(
             "rag.rerank",
             extra={
@@ -368,6 +407,7 @@ class RAGPipeline:
         if state.get("retrieval_failed"):
             return state
 
+        t0 = time.perf_counter()
         budget = int(settings.rag_config.max_context_chars)
         separator = "\n\n---\n\n"
 
@@ -425,6 +465,21 @@ class RAGPipeline:
         state["context_chars"] = len(context)
         state["sources"] = sources
         state["context_truncated"] = truncated
+        dt_ms = (time.perf_counter() - t0) * 1000
+        observe_rag_node("context", dt_ms)
+        if truncated:
+            inc_rag_fallback("context_truncated")
+        record_span(
+            "context",
+            metadata={
+                "query_hash": state["query_hash"],
+                "latency_ms": round(dt_ms, 2),
+                "context_chars": state["context_chars"],
+                "n_sources": len(sources),
+                "context_truncated": truncated,
+                "prompt_version": settings.rag_config.prompt_version,
+            },
+        )
 
         logger.info(
             "rag.context",
@@ -454,6 +509,16 @@ class RAGPipeline:
             state["answer"] = NO_CONTEXT_ANSWER
             state["answer_word_count"] = len(state["answer"].split())
             state.setdefault("latency_ms", {})["llm"] = 0.0
+            observe_rag_node("llm", 0.0)
+            record_span(
+                "generate",
+                metadata={
+                    "query_hash": state["query_hash"],
+                    "latency_ms": 0.0,
+                    "skipped": "no_context",
+                    "prompt_version": settings.rag_config.prompt_version,
+                },
+            )
             logger.info(
                 "rag.generate_skipped_no_context",
                 extra={
@@ -478,6 +543,7 @@ class RAGPipeline:
             state["answer"] = answer
         except Exception as exc:
             state["generate_fallback"] = True
+            inc_rag_fallback("generate_fallback")
             state["error_type"] = type(exc).__name__
             state["error_message"] = str(exc)
             state["answer"] = GENERATE_FALLBACK_ANSWER
@@ -493,8 +559,35 @@ class RAGPipeline:
         dt_ms = (time.perf_counter() - t0) * 1000
         state.setdefault("latency_ms", {})["llm"] = dt_ms
         state["answer_word_count"] = len(state["answer"].split())
+        observe_rag_node("llm", dt_ms)
 
         lat = state.get("latency_ms", {})
+        trace_query = redact_medical_query(
+            state["query"],
+            observability_settings.LANGFUSE_TRACE_QUERY_MODE,
+        )
+        trace_output = (
+            state["answer"]
+            if observability_settings.LANGFUSE_TRACE_QUERY_MODE == "full"
+            else "[redacted rag answer]"
+        )
+        generation_metadata = {
+            "query_hash": state["query_hash"],
+            "latency_ms_llm": round(dt_ms, 2),
+            "model": settings.rag_config.llm.model_name,
+            "prompt_version": settings.rag_config.prompt_version,
+            "sources": state.get("sources", []),
+            "rerank_fallback": state["rerank_fallback"],
+            "generate_fallback": state["generate_fallback"],
+            "context_truncated": state["context_truncated"],
+        }
+        record_generation(
+            "generate",
+            input_data=trace_query,
+            output_data=trace_output,
+            metadata=generation_metadata,
+        )
+        record_span("generate", metadata=generation_metadata)
         logger.info(
             "rag.generate",
             extra={

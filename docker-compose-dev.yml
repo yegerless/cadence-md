@@ -78,6 +78,14 @@ services:
       QDRANT_HTTPS: ${QDRANT_HTTPS:-false}
       MODEL_INFERENCE_BASE_URL: ${MODEL_INFERENCE_BASE_URL:-http://host.docker.internal:8080/v1}
       MODEL_INFERENCE_API_KEY: ${MODEL_INFERENCE_API_KEY:-lm-studio}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-plain}
+      PROMETHEUS_ENABLED: ${PROMETHEUS_ENABLED:-true}
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      LANGFUSE_TRACE_QUERY_MODE: ${LANGFUSE_TRACE_QUERY_MODE:-redacted}
     ports:
       - 127.0.0.1:${BACKEND_PORT:-8000}:8000
     networks:
@@ -108,13 +116,13 @@ services:
       context: .
       dockerfile: infra/docker/backend.Dockerfile
     command:
-      - celery
-      - -A
-      - cadence_md.workers.celery_app:celery_app
-      - worker
-      - --loglevel=INFO
-      - --queues
-      - ${CELERY_RAG_QUEUE_NAME:-rag}
+      - sh
+      - -c
+      - >
+        rm -rf "${PROMETHEUS_MULTIPROC_DIR:-/tmp/cadence-prometheus}" && mkdir
+        -p "${PROMETHEUS_MULTIPROC_DIR:-/tmp/cadence-prometheus}" && celery -A
+        cadence_md.workers.celery_app:celery_app worker --loglevel=INFO --queues
+        ${CELERY_RAG_QUEUE_NAME:-rag}
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://cadence_md:cadence_md_dev@postgres:5432/cadence_md}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
@@ -126,6 +134,16 @@ services:
       QDRANT_HTTPS: ${QDRANT_HTTPS:-false}
       MODEL_INFERENCE_BASE_URL: ${MODEL_INFERENCE_BASE_URL:-http://host.docker.internal:8080/v1}
       MODEL_INFERENCE_API_KEY: ${MODEL_INFERENCE_API_KEY:-lm-studio}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-plain}
+      PROMETHEUS_ENABLED: ${PROMETHEUS_ENABLED:-true}
+      WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9100}
+      PROMETHEUS_MULTIPROC_DIR: ${PROMETHEUS_MULTIPROC_DIR:-/tmp/cadence-prometheus}
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      LANGFUSE_TRACE_QUERY_MODE: ${LANGFUSE_TRACE_QUERY_MODE:-redacted}
     networks:
       - backend-network
     depends_on:
@@ -171,10 +189,69 @@ services:
         condition: service_healthy
     restart: "no"
 
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - 127.0.0.1:${PROMETHEUS_PORT:-9090}:9090
+    networks:
+      - backend-network
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      backend:
+        condition: service_started
+      rag-worker:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:9090/-/healthy >/dev/null 2>&1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    ports:
+      - 127.0.0.1:${GRAFANA_PORT:-3000}:3000
+    networks:
+      - backend-network
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:3000/api/health >/dev/null 2>&1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   redis-data:
   qdrant:
+  prometheus-data:
+  grafana-data:
 
 configs:
   qdrant_config:

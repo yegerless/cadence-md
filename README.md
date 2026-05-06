@@ -184,6 +184,25 @@ stop routing traffic. The chat API remains asynchronous:
 Postgres, Redis, and Celery are available; the worker records a controlled
 failure if RAG execution later cannot reach Qdrant or inference.
 
+## Observability
+
+The backend exposes Prometheus metrics at `GET /metrics` outside the versioned
+user API. The RAG worker exposes its own metrics endpoint on
+`WORKER_METRICS_PORT` inside Docker Compose, and Prometheus/Grafana dev services
+are configured in `docker-compose-dev.yml`.
+
+Start the local observability stack with the service stack:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml up backend rag-worker prometheus grafana
+```
+
+Grafana is available on `http://127.0.0.1:3000` by default, Prometheus on
+`http://127.0.0.1:9090`. Langfuse tracing is disabled by default; enable it with
+`LANGFUSE_ENABLED=true` and real `LANGFUSE_*` credentials in `.env.dev`. Medical
+queries are redacted from logs and Langfuse by default; use
+`LANGFUSE_TRACE_QUERY_MODE=full` only for explicitly approved debugging.
+
 ## License
 
 Proprietary - See [LICENSE.md](LICENSE.md) for details.

@@ -107,16 +107,31 @@ docker compose --env-file .env.dev -f docker-compose-dev.yml up postgres redis q
 docker compose --env-file .env.dev -f docker-compose-dev.yml run --rm migrations
 ```
 
-В dev compose также есть backend skeleton service, потому что FastAPI app
-factory уже существует. При запуске через compose `backend` ждёт успешного
-выполнения миграций:
+В dev compose также есть FastAPI backend и RAG Celery worker. При запуске через
+compose `backend` ждёт успешного выполнения миграций:
 
 ```bash
 docker compose --env-file .env.dev -f docker-compose-dev.yml up backend
 ```
 
-RAG worker service намеренно пока не добавлен, потому что Celery worker
-entrypoint ещё отсутствует.
+Запустите RAG worker, когда нужно обрабатывать асинхронные chat-запросы:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml up rag-worker
+```
+
+Для локальной наблюдаемости доступны Prometheus и Grafana:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml up prometheus grafana
+```
+
+Метрики backend доступны на `http://127.0.0.1:8000/metrics`. Prometheus по
+умолчанию доступен на `http://127.0.0.1:9090`, Grafana — на
+`http://127.0.0.1:3000`. Langfuse выключен по умолчанию. Если включаете
+`LANGFUSE_ENABLED=true`, храните реальные `LANGFUSE_PUBLIC_KEY` и
+`LANGFUSE_SECRET_KEY` только в `.env.dev`. Полный медицинский текст запроса
+редактируется, пока явно не задан `LANGFUSE_TRACE_QUERY_MODE=full`.
 
 Inference server остаётся внешним для `docker-compose-dev.yml` и должен быть
 доступен по `MODEL_INFERENCE_BASE_URL`.

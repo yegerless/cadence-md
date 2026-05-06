@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from typing import Any
 
 from celery import Task
 from celery.exceptions import SoftTimeLimitExceeded
-from celery.signals import worker_process_init, worker_process_shutdown
+from celery.signals import worker_process_init, worker_process_shutdown, worker_ready
 from kombu.exceptions import KombuError
 from redis.exceptions import RedisError
 from sqlalchemy.exc import DBAPIError, OperationalError
@@ -19,8 +20,11 @@ from cadence_md.db.enums import RAGRequestStatus
 from cadence_md.db.models import RAGRequestLog
 from cadence_md.db.repositories import DuplicateRAGResponseError, RAGLogRepository
 from cadence_md.db.session import AsyncSessionLocal
+from cadence_md.observability.logging import log_context
+from cadence_md.observability.metrics import record_celery_task_result, update_queue_depth
 from cadence_md.rag.contracts import RAGRequest, RAGResponse
 from cadence_md.workers.celery_app import celery_app
+from cadence_md.workers.metrics_server import start_worker_metrics_server
 from cadence_md.workers.rag_bootstrap import get_rag_runtime, shutdown_rag_runtime
 
 logger = logging.getLogger(__name__)
@@ -45,6 +49,12 @@ def _shutdown_worker_process(**_: object) -> None:
     shutdown_rag_runtime()
 
 
+@worker_ready.connect
+def _start_worker_metrics_endpoint(**_: object) -> None:
+    """Expose worker Prometheus metrics after the Celery worker is ready."""
+    start_worker_metrics_server()
+
+
 @celery_app.task(
     bind=True,
     name=backend_settings.CELERY_RAG_TASK_NAME,
@@ -58,7 +68,8 @@ def _shutdown_worker_process(**_: object) -> None:
 def run_rag_request(self: Task, rag_request_id: str) -> str:
     """Celery entrypoint for running a persisted RAG request."""
     celery_task_id = str(self.request.id) if self.request.id else None
-    return asyncio.run(_run_rag_request_async(rag_request_id, celery_task_id=celery_task_id))
+    with log_context(rag_request_id=rag_request_id, task_id=celery_task_id):
+        return asyncio.run(_run_rag_request_async(rag_request_id, celery_task_id=celery_task_id))
 
 
 async def _run_rag_request_async(
@@ -67,29 +78,51 @@ async def _run_rag_request_async(
     celery_task_id: str | None,
 ) -> str:
     """Run a RAG request and persist the terminal state."""
+    started = time.perf_counter()
+    result = "failed"
     request_id = uuid.UUID(rag_request_id)
-    async with AsyncSessionLocal() as session:
-        repo = RAGLogRepository(session)
-        row = await repo.get_request(request_id)
-        if row is None:
-            logger.warning("RAG task request not found", extra={"rag_request_id": rag_request_id})
-            return "not_found"
-
-        if await _is_already_done(repo, row):
-            return "already_done"
-
-        if row.status == RAGRequestStatus.QUEUED and row.cancel_requested_at is not None:
-            await repo.mark_cancelled(row.id)
-            await session.commit()
-            return "cancelled"
-
-        claimed = await repo.claim_queued_request(row.id, celery_task_id=celery_task_id)
-        if claimed is None:
-            await session.rollback()
-            return await _handle_unclaimed_request(repo, request_id)
-
-        await session.commit()
-        return await _run_claimed_request(repo, session, claimed, request_id, rag_request_id)
+    with log_context(rag_request_id=rag_request_id, task_id=celery_task_id):
+        try:
+            async with AsyncSessionLocal() as session:
+                repo = RAGLogRepository(session)
+                row = await repo.get_request(request_id)
+                if row is None:
+                    logger.warning(
+                        "RAG task request not found",
+                        extra={"rag_request_id": rag_request_id},
+                    )
+                    result = "not_found"
+                elif await _is_already_done(repo, row):
+                    result = "already_done"
+                elif row.status == RAGRequestStatus.QUEUED and row.cancel_requested_at is not None:
+                    await repo.mark_cancelled(row.id)
+                    await session.commit()
+                    result = "cancelled"
+                else:
+                    claimed = await repo.claim_queued_request(row.id, celery_task_id=celery_task_id)
+                    if claimed is None:
+                        await session.rollback()
+                        result = await _handle_unclaimed_request(repo, request_id)
+                    else:
+                        await session.commit()
+                        result = await _run_claimed_request(
+                            repo,
+                            session,
+                            claimed,
+                            request_id,
+                            rag_request_id,
+                        )
+                return result
+        finally:
+            record_celery_task_result(
+                backend_settings.CELERY_RAG_TASK_NAME,
+                result,
+                time.perf_counter() - started,
+            )
+            update_queue_depth(
+                broker_url=backend_settings.CELERY_BROKER_URL,
+                queue_name=backend_settings.CELERY_RAG_QUEUE_NAME,
+            )
 
 
 async def _run_claimed_request(
@@ -106,7 +139,13 @@ async def _run_claimed_request(
         return "cancelled"
 
     try:
-        response = get_rag_runtime().service.run(RAGRequest(query=claimed.query))
+        response = get_rag_runtime().service.run(
+            RAGRequest(
+                query=claimed.query,
+                rag_request_id=rag_request_id,
+                user_id=str(claimed.user_id),
+            )
+        )
     except SoftTimeLimitExceeded as exc:
         await _persist_failure(repo, session, request_id, "soft_time_limit", str(exc))
         return "failed"
@@ -184,6 +223,7 @@ async def _persist_success(
             flags=response.flags.model_dump(),
             error_type=response.error_type,
             error_message=response.error_message,
+            langfuse_trace_id=response.langfuse_trace_id,
         )
         updated = await repo.mark_succeeded_from_running(request_id)
     except DuplicateRAGResponseError:

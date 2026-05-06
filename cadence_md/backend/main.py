@@ -8,14 +8,17 @@ from slowapi.middleware import SlowAPIMiddleware
 from cadence_md.backend.api.routers import api_router
 from cadence_md.backend.error_handlers import register_exception_handlers
 from cadence_md.backend.limiter import limiter
+from cadence_md.backend.metrics import PrometheusMiddleware, metrics_router
 from cadence_md.backend.request_context import RequestContextMiddleware
 from cadence_md.backend.settings import backend_settings
+from cadence_md.observability.logging import configure_logging
 
 API_V1_PREFIX = "/api/v1"
 
 
 def create_app() -> FastAPI:
     """Create the FastAPI app and register the public API contract routes."""
+    configure_logging()
     app = FastAPI(
         title="CADENCE-MD Backend API",
         version="0.1.0",
@@ -24,9 +27,11 @@ def create_app() -> FastAPI:
     app.state.settings = backend_settings
     app.state.limiter = limiter
     register_exception_handlers(app)
+    app.add_middleware(PrometheusMiddleware)
     app.add_middleware(SlowAPIMiddleware)
     app.add_middleware(RequestContextMiddleware)
     app.include_router(api_router, prefix=API_V1_PREFIX)
+    app.include_router(metrics_router)
     return app
 
 

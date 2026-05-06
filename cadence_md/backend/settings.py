@@ -66,6 +66,18 @@ class BackendSettings(BaseSettings):
         gt=0,
         description="Timeout for a single dependency health check.",
     )
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "plain"
+    LOG_REDACT_MEDICAL_QUERY: bool = True
+    PROMETHEUS_ENABLED: bool = True
+    WORKER_METRICS_PORT: int = Field(default=9100, ge=1, le=65535)
+    PROMETHEUS_MULTIPROC_DIR: str | None = None
+    LANGFUSE_ENABLED: bool = False
+    LANGFUSE_PUBLIC_KEY: str | None = None
+    LANGFUSE_SECRET_KEY: str | None = None
+    LANGFUSE_HOST: str | None = None
+    LANGFUSE_TRACE_QUERY_MODE: str = "redacted"
+    LANGFUSE_PROMPT_VERSION: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env.dev",

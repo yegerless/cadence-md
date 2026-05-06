@@ -179,6 +179,26 @@ readiness возвращает `503`, чтобы Docker/оркестратор �
 этапе выполнения worker не сможет достучаться до Qdrant или inference, запрос
 завершится контролируемой ошибкой.
 
+## Наблюдаемость
+
+Backend отдаёт Prometheus-метрики на `GET /metrics` вне versioned
+пользовательского API. RAG worker отдаёт отдельный metrics endpoint на
+`WORKER_METRICS_PORT` внутри Docker Compose, а dev-сервисы Prometheus/Grafana
+подключены в `docker-compose-dev.yml`.
+
+Запуск локального observability stack вместе с сервисами:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml up backend rag-worker prometheus grafana
+```
+
+Grafana по умолчанию доступна на `http://127.0.0.1:3000`, Prometheus — на
+`http://127.0.0.1:9090`. Langfuse tracing выключен по умолчанию; включайте его
+через `LANGFUSE_ENABLED=true` и реальные `LANGFUSE_*` credentials только в
+`.env.dev`. Медицинский текст запроса по умолчанию редактируется в логах и
+Langfuse; `LANGFUSE_TRACE_QUERY_MODE=full` используйте только для явно
+разрешённой отладки.
+
 ## Лицензия
 
 Проприетарная - подробности в [LICENSE_RU.md](LICENSE_RU.md).

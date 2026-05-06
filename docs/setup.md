@@ -106,16 +106,31 @@ Run database migrations before backend startup:
 docker compose --env-file .env.dev -f docker-compose-dev.yml run --rm migrations
 ```
 
-The dev compose file also contains a backend skeleton service because the
-FastAPI app factory already exists. Starting `backend` through compose waits for
-successful migrations:
+The dev compose file also contains the FastAPI backend and the RAG Celery
+worker. Starting `backend` through compose waits for successful migrations:
 
 ```bash
 docker compose --env-file .env.dev -f docker-compose-dev.yml up backend
 ```
 
-The RAG worker service is intentionally not present yet because the Celery
-worker entrypoint has not been added.
+Start the RAG worker when you want asynchronous chat requests to be processed:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml up rag-worker
+```
+
+Prometheus and Grafana are available for local observability:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml up prometheus grafana
+```
+
+Backend metrics are exposed at `http://127.0.0.1:8000/metrics`. Prometheus is
+available at `http://127.0.0.1:9090`; Grafana is available at
+`http://127.0.0.1:3000`. Langfuse is disabled by default. If you enable
+`LANGFUSE_ENABLED=true`, keep real `LANGFUSE_PUBLIC_KEY` and
+`LANGFUSE_SECRET_KEY` only in `.env.dev`. Full medical query text is redacted
+unless `LANGFUSE_TRACE_QUERY_MODE=full` is explicitly configured.
 
 The inference server is external to `docker-compose-dev.yml` and must be
 available at `MODEL_INFERENCE_BASE_URL`.

@@ -72,6 +72,13 @@ def test_create_rag_request_exposes_query_length_limit() -> None:
     assert create_request["properties"]["query"]["minLength"] == 1
 
 
+def test_rag_answer_response_exposes_langfuse_trace_id() -> None:
+    schema = _openapi_schema()
+    answer = schema["components"]["schemas"]["RAGAnswerResponse"]
+
+    assert "langfuse_trace_id" in answer["properties"]
+
+
 def test_rate_limit_error_responses_are_documented() -> None:
     schema = _openapi_schema()
     paths = schema["paths"]

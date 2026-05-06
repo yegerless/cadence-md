@@ -11,6 +11,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from cadence_md.backend.settings import BackendSettings, backend_settings
+from cadence_md.observability.logging import log_context
 
 settings_ctx: ContextVar[BackendSettings | None] = ContextVar(
     "backend_settings_ctx",
@@ -38,7 +39,8 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         settings: BackendSettings = request.app.state.settings
         token = settings_ctx.set(settings)
         try:
-            response = await call_next(request)
+            with log_context(request_id=rid, correlation_id=rid):
+                response = await call_next(request)
             response.headers["X-Request-ID"] = rid
             return response
         finally:

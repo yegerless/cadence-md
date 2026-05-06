@@ -10,6 +10,7 @@ import httpx
 import pytest
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
+from prometheus_client import REGISTRY
 
 from cadence_md.app.enums import VectorSearchType
 from cadence_md.app.qdrant import QdrantManager
@@ -210,6 +211,11 @@ def test_retrieve_node_graceful_fallback_on_qdrant_error() -> None:
     assert out["answer"] == RETRIEVAL_FALLBACK_ANSWER
     assert out["answer_word_count"] > 0
     assert "qdrant" in out["latency_ms"]
+    sample = REGISTRY.get_sample_value(
+        "cadence_rag_fallbacks_total",
+        labels={"type": "retrieval_failed"},
+    )
+    assert sample is not None and sample >= 1
 
 
 def test_reranker_context_generate_short_circuit_on_retrieval_failure() -> None:

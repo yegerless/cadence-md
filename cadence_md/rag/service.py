@@ -5,6 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from cadence_md.app.rag import RAGPipeline
+from cadence_md.app.settings import settings
+from cadence_md.observability.langfuse import (
+    LangfuseTracer,
+    active_trace,
+    get_langfuse_tracer,
+)
+from cadence_md.observability.privacy import query_hash_only
 from cadence_md.rag.contracts import (
     RAGFlags,
     RAGLatency,
@@ -18,12 +25,21 @@ from cadence_md.rag.contracts import (
 class RAGService:
     """Stable entrypoint for callers that must not depend on RAGState internals."""
 
-    def __init__(self, pipeline: RAGPipeline) -> None:
+    def __init__(self, pipeline: RAGPipeline, tracer: LangfuseTracer | None = None) -> None:
         self.pipeline = pipeline
+        self.tracer = tracer or get_langfuse_tracer()
 
     def run(self, request: RAGRequest) -> RAGResponse:
-        state = self.pipeline.run(request.query)
-        return self._state_to_response(state)
+        trace = self.tracer.start_trace(
+            query=request.query,
+            query_hash=query_hash_only(request.query),
+            rag_request_id=request.rag_request_id,
+            user_id=request.user_id,
+            prompt_version=settings.rag_config.prompt_version,
+        )
+        with active_trace(trace):
+            state = self.pipeline.run(request.query)
+        return self._state_to_response(state, langfuse_trace_id=trace.trace_id)
 
     def retrieve(self, request: RAGRequest) -> RAGRetrieveResponse:
         state = self.pipeline.build_initial_state(request.query)
@@ -72,7 +88,12 @@ class RAGService:
             total_ms=total_ms,
         )
 
-    def _state_to_response(self, state: dict[str, Any]) -> RAGResponse:
+    def _state_to_response(
+        self,
+        state: dict[str, Any],
+        *,
+        langfuse_trace_id: str | None = None,
+    ) -> RAGResponse:
         return RAGResponse(
             query=str(state.get("query", "")),
             answer=str(state.get("answer", "")),
@@ -84,6 +105,7 @@ class RAGService:
             answer_word_count=int(state.get("answer_word_count", 0)),
             error_type=state.get("error_type"),
             error_message=state.get("error_message"),
+            langfuse_trace_id=langfuse_trace_id,
         )
 
     def _state_to_retrieve_response(self, state: dict[str, Any]) -> RAGRetrieveResponse:

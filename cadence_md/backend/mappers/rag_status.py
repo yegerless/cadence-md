@@ -35,6 +35,7 @@ async def rag_request_to_status_response(
             flags=dict(response_row.flags_json or {}),
             error_type=response_row.error_type,
             error_message=response_row.error_message,
+            langfuse_trace_id=response_row.langfuse_trace_id,
         )
     elif request_log.status == DbRAGRequestStatus.FAILED:
         error = (

@@ -14,6 +14,7 @@ from cadence_md.backend.settings import BackendSettings, backend_settings
 from cadence_md.db.models import User
 from cadence_md.db.repositories import UserRepository
 from cadence_md.db.session import get_async_session
+from cadence_md.observability.logging import set_user_id
 
 http_bearer = HTTPBearer(auto_error=False)
 
@@ -64,4 +65,5 @@ async def get_current_user(
             code="not_authenticated",
             message="Authentication is required.",
         )
+    set_user_id(str(user.id))
     return user

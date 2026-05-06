@@ -91,6 +91,7 @@ def _response(answer: str = "Ответ [Doc 1].") -> RAGResponse:
         sources=[RAGSource(rank=1, doc_ref="[Doc 1]", filename="guideline.pdf", score=0.9)],
         latency=RAGLatency(qdrant=1.0, rerank=2.0, llm=3.0),
         flags=RAGFlags(context_truncated=False),
+        langfuse_trace_id="trace-1",
     )
 
 
@@ -143,6 +144,7 @@ async def test_run_rag_request_happy_path(
         assert response is not None
         assert response.answer == "Ответ [Doc 1]."
         assert response.sources_json[0]["doc_ref"] == "[Doc 1]"
+        assert response.langfuse_trace_id == "trace-1"
         assert row is not None
         assert row.celery_task_id == "task-1"
 
