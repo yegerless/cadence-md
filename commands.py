@@ -148,6 +148,12 @@ def build_project_cli_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also compute prefixed retrieval metrics using text matcher",
     )
+    metrics_ret.add_argument(
+        "--workers",
+        type=_positive_int,
+        default=1,
+        help="Parallel worker threads for retriever cases",
+    )
 
     # command parse-pdf
     parse_pdf = subparsers.add_parser(
@@ -251,6 +257,7 @@ def main() -> None:
                 sample_size=args.sample_size,
                 k=args.k,
                 enable_text_matcher_metrics=args.enable_text_matcher_metrics,
+                workers=args.workers,
             )
     elif args.command == "parse-pdf":
         _run_parse_pdf(

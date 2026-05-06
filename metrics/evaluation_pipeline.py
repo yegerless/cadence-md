@@ -5,6 +5,7 @@ import re
 import statistics
 import unicodedata
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -248,6 +249,7 @@ class RAGEvaluationPipeline:
         self,
         test_cases: list[QATestCase],
         sample_size: int | None = None,
+        workers: int = 1,
     ) -> list[RAGTestResult]:
         """
         Retrieve + rerank only; no LLM generation (retriever-focused evaluation).
@@ -255,46 +257,92 @@ class RAGEvaluationPipeline:
         Args:
             test_cases: List of test cases
             sample_size: Number of test cases to sample
+            workers: Number of parallel worker threads for independent retriever cases
         Returns:
             List of RAG test results
         """
+        if workers <= 0:
+            raise ValueError("workers must be a positive integer")
 
         # If sample size is provided, sample the test cases
         if sample_size and sample_size < len(test_cases):
             test_cases = random.sample(test_cases, sample_size)
             logger.info(f"A sample of {sample_size} cases is used")
 
-        results: list[RAGTestResult] = []
-        logger.info(f"Running retriever (retrieve + rerank) for {len(test_cases)} cases...")
+        logger.info(
+            "Running retriever (retrieve + rerank) for %s cases with %s worker(s)...",
+            len(test_cases),
+            workers,
+        )
 
-        # Run the retriever pipeline for all test cases
-        for idx, test_case in enumerate(tqdm(test_cases, desc="Retriever")):
-            try:
-                retrieve_result = self.rag_service.retrieve(RAGRequest(query=test_case.question))
-                retrieved_contexts, retrieval_scores, _ = _response_to_test_result_inputs(
-                    retrieve_result
-                )
-
-                result = RAGTestResult(
-                    question=test_case.question,
-                    ground_truth_answer=test_case.answer,
-                    ground_truth_context=test_case.context,
-                    retrieved_contexts=retrieved_contexts,
-                    retrieval_scores=retrieval_scores,
-                    generated_answer="",
-                    question_type=test_case.question_type,
-                    section_type=test_case.section_type,
-                    test_case_id=idx,
-                    ground_truth_section_id=test_case.section_id,
-                )
-                results.append(result)
-
-            except Exception as e:
-                logger.error(f"Case processing error {idx}: {e}")
-                continue
+        indexed_cases = list(enumerate(test_cases))
+        if workers == 1:
+            results = [
+                result
+                for idx, test_case in tqdm(indexed_cases, desc="Retriever")
+                if (result := self._run_retriever_case(idx, test_case)) is not None
+            ]
+        else:
+            results_by_idx: dict[int, RAGTestResult] = {}
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(self._run_retriever_case, idx, test_case): idx
+                    for idx, test_case in indexed_cases
+                }
+                for future in tqdm(
+                    as_completed(futures),
+                    total=len(futures),
+                    desc="Retriever",
+                ):
+                    idx = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        logger.error("Case processing error %s: %s", idx, exc)
+                        continue
+                    if result is not None:
+                        results_by_idx[idx] = result
+            results = [results_by_idx[idx] for idx in sorted(results_by_idx)]
 
         logger.info(f"✓ Processed {len(results)} cases (retriever only)")
         return results
+
+    def _run_retriever_case(
+        self,
+        idx: int,
+        test_case: QATestCase,
+    ) -> RAGTestResult | None:
+        """
+        Run retrieve + rerank for a single QA case.
+
+        Args:
+            idx: Stable case id within the sampled evaluation set
+            test_case: QA test case
+        Returns:
+            RAG test result, or None when the case fails
+        """
+        try:
+            retrieve_result = self.rag_service.retrieve(RAGRequest(query=test_case.question))
+            retrieved_contexts, retrieval_scores, _ = _response_to_test_result_inputs(
+                retrieve_result
+            )
+
+            return RAGTestResult(
+                question=test_case.question,
+                ground_truth_answer=test_case.answer,
+                ground_truth_context=test_case.context,
+                retrieved_contexts=retrieved_contexts,
+                retrieval_scores=retrieval_scores,
+                generated_answer="",
+                question_type=test_case.question_type,
+                section_type=test_case.section_type,
+                test_case_id=idx,
+                ground_truth_section_id=test_case.section_id,
+            )
+
+        except Exception as e:
+            logger.error(f"Case processing error {idx}: {e}")
+            return None
 
     def convert_to_ragas_format(self, results: list[RAGTestResult]) -> Dataset:
         """
@@ -580,6 +628,7 @@ class RAGEvaluationPipeline:
         sample_size: int | None = None,
         k: int | None = None,
         enable_text_matcher_metrics: bool = False,
+        workers: int = 1,
     ) -> dict[str, float | int]:
         """
         Evaluate retrieve + rerank only: no RAGAS and no answer generation
@@ -590,13 +639,14 @@ class RAGEvaluationPipeline:
             sample_size: Number of test cases to sample
             k: Number of retrieved documents to evaluate
             enable_text_matcher_metrics: Whether to enable text matcher metrics
+            workers: Number of parallel worker threads for independent retriever cases
         Returns:
             Dictionary with retrieval metrics
         """
         logger.info("Starting retriever-only evaluation...")
 
         test_cases = self.load_test_cases(dataset_file)
-        results = self.run_retriever_pipeline(test_cases, sample_size)
+        results = self.run_retriever_pipeline(test_cases, sample_size, workers=workers)
         retrieval_metrics = self.calculate_retrieval_metrics(results, k=k)
         resolved_k = int(retrieval_metrics.get("k", settings.rag_config.retrieval.dense_top_k))
         text_match_retrieval_metrics = (
@@ -625,6 +675,7 @@ class RAGEvaluationPipeline:
             k=resolved_k,
             ragas_metric_names=[metric.name for metric in self.ragas_metrics],
             enable_text_matcher_metrics=enable_text_matcher_metrics,
+            workers=workers,
         )
         write_json(run_dir / "run_manifest.json", manifest)
 

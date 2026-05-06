@@ -105,6 +105,7 @@ def create_run_manifest(
     k: int | None,
     ragas_metric_names: list[str],
     enable_text_matcher_metrics: bool = False,
+    workers: int | None = None,
 ) -> dict[str, Any]:
     """
     Build manifest payload for a validation run
@@ -120,6 +121,7 @@ def create_run_manifest(
         k: Number of retrieved documents to evaluate
         ragas_metric_names: List of RAGAS metric names to evaluate
         enable_text_matcher_metrics: Whether to enable text matcher metrics
+        workers: Number of parallel retriever workers, when applicable
     Returns:
         Dictionary containing the manifest payload for a validation run
     """
@@ -143,6 +145,14 @@ def create_run_manifest(
     if mode == "full":
         rag_config["llm_model"] = rag_cfg.llm.model_name
 
+    run_parameters: dict[str, Any] = {
+        "sample_size": sample_size,
+        "k": k,
+        "enable_text_matcher_metrics": enable_text_matcher_metrics,
+    }
+    if workers is not None:
+        run_parameters["workers"] = workers
+
     return {
         "mode": mode,
         "run_id": run_id,
@@ -152,11 +162,7 @@ def create_run_manifest(
             "run_dir": str(run_dir),
             "dataset_file": str(dataset_file),
         },
-        "run_parameters": {
-            "sample_size": sample_size,
-            "k": k,
-            "enable_text_matcher_metrics": enable_text_matcher_metrics,
-        },
+        "run_parameters": run_parameters,
         "rag_config": rag_config,
         "evaluation_config": {
             "ragas_metrics": ragas_metric_names,

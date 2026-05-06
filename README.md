@@ -128,9 +128,10 @@ generation.
 
 Same options as `metrics-eval-full`, plus:
 
-| Option | Default          | Description                  |
-| ------ | ---------------- | ---------------------------- |
-| `--k`  | pipeline default | K for recall@K / precision@K |
+| Option      | Default          | Description                                                     |
+| ----------- | ---------------- | --------------------------------------------------------------- |
+| `--k`       | pipeline default | K for recall@K / precision@K                                    |
+| `--workers` | `1`              | Parallel worker threads for independent retrieve + rerank cases |
 
 Both `full` and `retriever` modes now create a dedicated run directory under
 `--output-dir`:

@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -213,6 +214,22 @@ def test_metrics_parser_rejects_non_positive_k(tmp_path: Path) -> None:
         )
 
 
+def test_metrics_parser_rejects_non_positive_workers(tmp_path: Path) -> None:
+    parser = build_project_cli_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "metrics-eval-retriever",
+                "--dataset-file",
+                "data/metrics_evaluation_datasets/qa_dataset.jsonl",
+                "--output-dir",
+                str(tmp_path),
+                "--workers",
+                "0",
+            ]
+        )
+
+
 def test_metrics_parser_accepts_valid_full_args(tmp_path: Path) -> None:
     parser = build_project_cli_parser()
     args = parser.parse_args(
@@ -233,6 +250,24 @@ def test_metrics_parser_accepts_valid_full_args(tmp_path: Path) -> None:
     assert args.sample_size == 10
     assert args.k == 7
     assert args.enable_text_matcher_metrics is True
+
+
+def test_metrics_parser_accepts_retriever_workers(tmp_path: Path) -> None:
+    parser = build_project_cli_parser()
+    args = parser.parse_args(
+        [
+            "metrics-eval-retriever",
+            "--dataset-file",
+            "data/metrics_evaluation_datasets/qa_dataset.jsonl",
+            "--output-dir",
+            str(tmp_path),
+            "--workers",
+            "4",
+        ]
+    )
+
+    assert args.command == "metrics-eval-retriever"
+    assert args.workers == 4
 
 
 def test_metrics_parser_full_uses_default_k(tmp_path: Path) -> None:
@@ -536,19 +571,30 @@ def test_run_full_evaluation_tracks_rag_and_ragas_failures(
 
 def test_run_retriever_evaluation_writes_artifacts(tmp_path: Path) -> None:
     pipeline = _pipeline_without_init()
-    pipeline.run_retriever_pipeline = lambda *_args, **_kwargs: [
-        RAGTestResult(
-            question="q",
-            ground_truth_answer="a",
-            ground_truth_context="ctx",
-            retrieved_contexts=[Document(page_content="ctx", metadata={})],
-            retrieval_scores=[0.9],
-            generated_answer="",
-            question_type="factoid",
-            section_type="therapy",
-            test_case_id=0,
-        )
-    ]
+    captured: dict[str, int] = {}
+
+    def run_retriever_pipeline(
+        _test_cases: list[QATestCase],
+        _sample_size: int | None,
+        *,
+        workers: int = 1,
+    ) -> list[RAGTestResult]:
+        captured["workers"] = workers
+        return [
+            RAGTestResult(
+                question="q",
+                ground_truth_answer="a",
+                ground_truth_context="ctx",
+                retrieved_contexts=[Document(page_content="ctx", metadata={})],
+                retrieval_scores=[0.9],
+                generated_answer="",
+                question_type="factoid",
+                section_type="therapy",
+                test_case_id=0,
+            )
+        ]
+
+    pipeline.run_retriever_pipeline = run_retriever_pipeline
     pipeline.load_test_cases = lambda _: [
         QATestCase("q", "a", "ctx", "factoid", "therapy", "", [], {})
     ]
@@ -566,9 +612,13 @@ def test_run_retriever_evaluation_writes_artifacts(tmp_path: Path) -> None:
         output_dir=tmp_path,
         sample_size=None,
         k=5,
+        workers=3,
     )
 
     run_dir = next(path for path in tmp_path.iterdir() if path.is_dir())
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["run_parameters"]["workers"] == 3
+    assert captured["workers"] == 3
     assert (run_dir / "run_manifest.json").exists()
     assert (run_dir / "retrieval_cases.jsonl").exists()
     assert (run_dir / "summary_metrics.json").exists()
@@ -877,6 +927,37 @@ def test_run_retriever_pipeline_scores_and_errors() -> None:
     assert results[0].retrieval_scores == [0.99]
     assert results[0].test_case_id == 0
     assert results[1].question == "q2"
+
+
+def test_run_retriever_pipeline_parallel_preserves_case_order() -> None:
+    pipeline = _pipeline_without_init()
+
+    def retrieve(request: RAGRequest) -> RAGRetrieveResponse:
+        if request.query == "q0":
+            time.sleep(0.03)
+        return _retrieve_response(
+            request.query,
+            [_source(f"d-{request.query}", retrieval_score=0.5, final_score=0.5)],
+        )
+
+    pipeline.rag_service = type("R", (), {"retrieve": staticmethod(retrieve)})()
+    cases = [
+        QATestCase("q0", "a0", "c0", "f", "s", "", [], {}),
+        QATestCase("q1", "a1", "c1", "f", "s", "", [], {}),
+        QATestCase("q2", "a2", "c2", "f", "s", "", [], {}),
+    ]
+
+    results = pipeline.run_retriever_pipeline(cases, workers=3)
+
+    assert [result.test_case_id for result in results] == [0, 1, 2]
+    assert [result.question for result in results] == ["q0", "q1", "q2"]
+
+
+def test_run_retriever_pipeline_rejects_non_positive_workers() -> None:
+    pipeline = _pipeline_without_init()
+
+    with pytest.raises(ValueError, match="positive integer"):
+        pipeline.run_retriever_pipeline([], workers=0)
 
 
 def test_run_retriever_pipeline_uses_ranked_docs_final_score() -> None:
