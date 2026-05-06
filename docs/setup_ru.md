@@ -175,6 +175,50 @@ auth state и переводят пользователя на `/login`. Пос�
 проверяйте logout, автоматический redirect на `401`, chat submit/polling,
 cancel, retry и отображение источников.
 
+#### 5.1 Тестовый стек и команды тестов
+
+Поднимите отдельные зависимости для integration-тестов (тесты сами сервисы не
+поднимают):
+
+```bash
+docker compose -f docker-compose-test.yml up -d postgres-test redis-test
+```
+
+Опциональный Qdrant для smoke-проверок:
+
+```bash
+docker compose -f docker-compose-test.yml --profile with-qdrant up -d qdrant-test
+```
+
+Smoke-проверка compose-конфигов:
+
+```bash
+docker compose -f docker-compose-test.yml config
+docker compose -f docker-compose-dev.yml config
+```
+
+Быстрые unit-тесты:
+
+```bash
+poetry run pytest -m "not integration"
+```
+
+Integration и smoke тесты:
+
+```bash
+INTEGRATION_DATABASE_URL=postgresql+asyncpg://cadence_md:cadence_md_dev@127.0.0.1:55432/cadence_md_test \
+INTEGRATION_REDIS_URL=redis://127.0.0.1:56379/0 \
+poetry run pytest -m integration
+```
+
+Frontend smoke и build:
+
+```bash
+cd frontend
+npm test
+npm run build
+```
+
 Langfuse выключен по умолчанию и считается внешним сервисом для этого dev
 compose-файла. Если включаете `LANGFUSE_ENABLED=true`, храните реальные
 `LANGFUSE_PUBLIC_KEY` и `LANGFUSE_SECRET_KEY` только в `.env.dev`. Полный

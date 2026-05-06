@@ -11,6 +11,10 @@ npm run build
 npm test
 ```
 
+`npm test` включает smoke-покрытие навигации по маршрутам (`/login`,
+`/register`, `/chat`, `/profile`) и mocked chat lifecycle статусов (`queued`,
+`running`, `succeeded`, `failed`, `cancelled`).
+
 Приложение использует `VITE_API_BASE_URL` для API-запросов. Для локальной
 разработки рекомендуется оставить значение пустым, чтобы запросы к `/api/v1/...`
 шли через Vite proxy и не требовали CORS в браузере. Укажите

@@ -130,3 +130,7 @@ skip = "*.lock"
 addopts = "-p no:warnings"
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: tests that require external services (postgres/redis/docker)",
+    "smoke: lightweight end-to-end smoke checks",
+]

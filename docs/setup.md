@@ -175,6 +175,49 @@ refresh token is used in the MVP. Logout and any API `401` clear client auth
 state and redirect to `/login`. Smoke-check logout, automatic `401` redirect,
 chat submit/polling, cancel, retry, and source rendering after backend changes.
 
+#### 5.1 Test stack and test commands
+
+Bring up dedicated integration dependencies (tests do not auto-start services):
+
+```bash
+docker compose -f docker-compose-test.yml up -d postgres-test redis-test
+```
+
+Optional Qdrant smoke target:
+
+```bash
+docker compose -f docker-compose-test.yml --profile with-qdrant up -d qdrant-test
+```
+
+Compose smoke validation:
+
+```bash
+docker compose -f docker-compose-test.yml config
+docker compose -f docker-compose-dev.yml config
+```
+
+Run fast unit tests only:
+
+```bash
+poetry run pytest -m "not integration"
+```
+
+Run integration and smoke tests:
+
+```bash
+INTEGRATION_DATABASE_URL=postgresql+asyncpg://cadence_md:cadence_md_dev@127.0.0.1:55432/cadence_md_test \
+INTEGRATION_REDIS_URL=redis://127.0.0.1:56379/0 \
+poetry run pytest -m integration
+```
+
+Frontend smoke and build:
+
+```bash
+cd frontend
+npm test
+npm run build
+```
+
 Langfuse is disabled by default and is treated as an external service for this
 dev compose file. If you enable `LANGFUSE_ENABLED=true`, keep real
 `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` only in `.env.dev`. Full medical

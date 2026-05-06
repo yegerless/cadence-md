@@ -11,6 +11,10 @@ npm run build
 npm test
 ```
 
+Smoke test scope in `npm test` covers route navigation (`/login`, `/register`,
+`/chat`, `/profile`) and mocked chat lifecycle statuses (`queued`, `running`,
+`succeeded`, `failed`, `cancelled`).
+
 The app uses `VITE_API_BASE_URL` for API requests. In local development the
 recommended value is empty, so requests to `/api/v1/...` go through the Vite
 proxy and avoid browser CORS requirements. Set

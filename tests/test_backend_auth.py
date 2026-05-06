@@ -24,6 +24,7 @@ from cadence_md.db.base import Base
 from cadence_md.db.session import get_async_session
 
 AuthAppPair = tuple[FastAPI, BackendSettings]
+pytestmark = pytest.mark.integration
 
 
 @pytest_asyncio.fixture

@@ -151,4 +151,109 @@ describe('chat lifecycle', () => {
     expect(await screen.findByRole('heading', { name: /добро пожаловать/i })).toBeInTheDocument()
     expect(window.sessionStorage.getItem('cadence_md_access_token')).toBeNull()
   })
+
+  test('renders running status during polling', async () => {
+    setAccessToken('access-token')
+    vi.spyOn(window, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/users/me')) {
+        return jsonResponse(profile)
+      }
+      if (url.endsWith('/api/v1/chat/messages') && init?.method === 'POST') {
+        return jsonResponse(
+          { request_id: 'req-running', status: 'queued', original_request_id: null, answer: null, error: null },
+          202,
+        )
+      }
+      if (url.endsWith('/api/v1/chat/messages/req-running')) {
+        return jsonResponse({
+          request_id: 'req-running',
+          status: 'running',
+          original_request_id: null,
+          answer: null,
+          error: null,
+        })
+      }
+      return jsonResponse({ code: 'not_found', message: 'Not found', details: {}, request_id: null }, 404)
+    })
+
+    renderApp('/chat')
+    await userEvent.type(await screen.findByLabelText(/клинический вопрос/i), 'Проверка running статуса')
+    await userEvent.click(screen.getByRole('button', { name: /отправить/i }))
+
+    expect(await screen.findByText(/выполняется/i)).toBeInTheDocument()
+    expect(screen.getByText(/генерируем ответ/i)).toBeInTheDocument()
+  })
+
+  test('renders failed status with retry action', async () => {
+    setAccessToken('access-token')
+    vi.spyOn(window, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/users/me')) {
+        return jsonResponse(profile)
+      }
+      if (url.endsWith('/api/v1/chat/messages') && init?.method === 'POST') {
+        return jsonResponse(
+          { request_id: 'req-failed', status: 'queued', original_request_id: null, answer: null, error: null },
+          202,
+        )
+      }
+      if (url.endsWith('/api/v1/chat/messages/req-failed')) {
+        return jsonResponse({
+          request_id: 'req-failed',
+          status: 'failed',
+          original_request_id: null,
+          answer: null,
+          error: 'Ошибка worker',
+        })
+      }
+      return jsonResponse({ code: 'not_found', message: 'Not found', details: {}, request_id: null }, 404)
+    })
+
+    renderApp('/chat')
+    await userEvent.type(await screen.findByLabelText(/клинический вопрос/i), 'Проверка failed статуса')
+    await userEvent.click(screen.getByRole('button', { name: /отправить/i }))
+
+    expect(await screen.findByText(/ошибка worker/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /повторить/i })).toBeInTheDocument()
+  })
+
+  test('renders cancelled status with retry action', async () => {
+    setAccessToken('access-token')
+    vi.spyOn(window, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/users/me')) {
+        return jsonResponse(profile)
+      }
+      if (url.endsWith('/api/v1/chat/messages') && init?.method === 'POST') {
+        return jsonResponse(
+          {
+            request_id: 'req-cancelled',
+            status: 'queued',
+            original_request_id: null,
+            answer: null,
+            error: null,
+          },
+          202,
+        )
+      }
+      if (url.endsWith('/api/v1/chat/messages/req-cancelled')) {
+        return jsonResponse({
+          request_id: 'req-cancelled',
+          status: 'cancelled',
+          original_request_id: null,
+          answer: null,
+          error: null,
+        })
+      }
+      return jsonResponse({ code: 'not_found', message: 'Not found', details: {}, request_id: null }, 404)
+    })
+
+    renderApp('/chat')
+    await userEvent.type(await screen.findByLabelText(/клинический вопрос/i), 'Проверка cancelled статуса')
+    await userEvent.click(screen.getByRole('button', { name: /отправить/i }))
+
+    expect(await screen.findByText(/запрос отменен/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /повторить/i })).toBeInTheDocument()
+  })
 })

@@ -34,6 +34,7 @@ from cadence_md.db.repositories.rag_logs import RAGLogRepository
 from cadence_md.db.session import get_async_session
 
 ChatBundle = tuple[FastAPI, BackendSettings, async_sessionmaker[AsyncSession]]
+pytestmark = pytest.mark.integration
 
 
 @pytest_asyncio.fixture

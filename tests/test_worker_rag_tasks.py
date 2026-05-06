@@ -24,6 +24,8 @@ from cadence_md.workers.rag_bootstrap import (
     shutdown_rag_runtime,
 )
 
+pytestmark = pytest.mark.integration
+
 
 class DummyPipeline:
     """Minimal pipeline object for worker runtime tests."""

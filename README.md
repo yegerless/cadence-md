@@ -207,6 +207,30 @@ docker compose --env-file .env.dev -f docker-compose-dev.yml --profile frontend 
 stores only the short-lived access token in `sessionStorage`; logout and API
 `401` responses clear client state and require re-login.
 
+## Test Commands
+
+Use dedicated integration dependencies from `docker-compose-test.yml`:
+
+```bash
+docker compose -f docker-compose-test.yml up -d postgres-test redis-test
+docker compose -f docker-compose-test.yml config
+docker compose -f docker-compose-dev.yml config
+```
+
+Run fast unit tests:
+
+```bash
+poetry run pytest -m "not integration"
+```
+
+Run backend/worker integration and smoke tests:
+
+```bash
+INTEGRATION_DATABASE_URL=postgresql+asyncpg://cadence_md:cadence_md_dev@127.0.0.1:55432/cadence_md_test \
+INTEGRATION_REDIS_URL=redis://127.0.0.1:56379/0 \
+poetry run pytest -m integration
+```
+
 ## Observability
 
 The backend exposes Prometheus metrics at `GET /metrics` outside the versioned
