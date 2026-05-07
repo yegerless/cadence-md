@@ -4,6 +4,7 @@ import type {
   LoginRequest,
   RAGRequestStatusResponse,
   RegisterRequest,
+  SubmitClarificationRequest,
   TokenResponse,
   UserProfileResponse,
 } from './types'
@@ -53,6 +54,19 @@ export function retryChatMessage(requestId: string): Promise<RAGRequestStatusRes
   return apiRequest<RAGRequestStatusResponse>(`/api/v1/chat/messages/${requestId}/retry`, {
     method: 'POST',
   })
+}
+
+export function submitChatClarification(
+  requestId: string,
+  payload: SubmitClarificationRequest,
+): Promise<RAGRequestStatusResponse> {
+  return apiRequest<RAGRequestStatusResponse>(
+    `/api/v1/chat/messages/${requestId}/clarification`,
+    {
+      method: 'POST',
+      body: payload,
+    },
+  )
 }
 
 export function downloadChatSource(requestId: string, rank: number): Promise<Blob> {

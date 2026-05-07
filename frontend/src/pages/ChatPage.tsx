@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { FormEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -6,6 +6,7 @@ import {
   createChatMessage,
   getChatMessage,
   retryChatMessage,
+  submitChatClarification,
 } from '../api/cadenceApi'
 import { ApiError } from '../api/client'
 import type { RAGRequestStatus, RAGRequestStatusResponse } from '../api/types'
@@ -30,6 +31,10 @@ const promptSuggestions = [
 
 function isTerminal(status: RAGRequestStatus): boolean {
   return terminalStatuses.has(status)
+}
+
+function shouldPollStatus(status: RAGRequestStatus): boolean {
+  return status === 'queued' || status === 'running'
 }
 
 function errorMessage(error: unknown): string {
@@ -58,16 +63,27 @@ function makeRequestKey(): string {
   return crypto.randomUUID()
 }
 
+const chatPollQueryKey = ['chat-message-poll'] as const
+
 export function ChatPage() {
+  const queryClient = useQueryClient()
   const conversationId = useRef(makeRequestKey())
   const [query, setQuery] = useState('')
   const [turns, setTurns] = useState<ChatTurn[]>([])
   const [actionError, setActionError] = useState<string | null>(null)
+  const [clarificationDrafts, setClarificationDrafts] = useState<Record<string, string>>({})
 
   const activeTurn = useMemo(
     () => [...turns].reverse().find((turn) => !isTerminal(turn.status)),
     [turns],
   )
+
+  const pollableTurn = useMemo(() => {
+    if (!activeTurn) {
+      return undefined
+    }
+    return shouldPollStatus(activeTurn.status) ? activeTurn : undefined
+  }, [activeTurn])
 
   const createMutation = useMutation({
     mutationFn: async (clinicalQuery: string) => {
@@ -95,6 +111,23 @@ export function ChatPage() {
     onError: (error) => setActionError(errorMessage(error)),
   })
 
+  const clarificationMutation = useMutation({
+    mutationFn: ({ requestId, answer }: { requestId: string; answer: string }) =>
+      submitChatClarification(requestId, { answer }),
+    onSuccess: (response) => {
+      setActionError(null)
+      /** Avoid merging stale poll cache (e.g. awaiting_clarification) after resume. */
+      queryClient.removeQueries({ queryKey: chatPollQueryKey })
+      setTurns((current) => updateTurn(current, response))
+      setClarificationDrafts((prev) => {
+        const next = { ...prev }
+        delete next[response.request_id]
+        return next
+      })
+    },
+    onError: (error) => setActionError(errorMessage(error)),
+  })
+
   const retryMutation = useMutation({
     mutationFn: async (turn: ChatTurn) => {
       const response = await retryChatMessage(turn.request_id)
@@ -107,9 +140,9 @@ export function ChatPage() {
   })
 
   const pollQuery = useQuery({
-    queryKey: ['chat-message-poll', activeTurn?.request_id],
-    queryFn: () => getChatMessage(activeTurn?.request_id ?? ''),
-    enabled: Boolean(activeTurn),
+    queryKey: [...chatPollQueryKey, pollableTurn?.request_id],
+    queryFn: () => getChatMessage(pollableTurn?.request_id ?? ''),
+    enabled: Boolean(pollableTurn),
     refetchInterval: (queryResult) => {
       const data = queryResult.state.data
       return data && isTerminal(data.status) ? false : 2500
@@ -130,6 +163,15 @@ export function ChatPage() {
     }
     setActionError(null)
     createMutation.mutate(normalized)
+  }
+
+  function handleClarificationSubmit(requestId: string) {
+    const normalized = (clarificationDrafts[requestId] ?? '').trim()
+    if (!normalized) {
+      return
+    }
+    setActionError(null)
+    clarificationMutation.mutate({ requestId, answer: normalized })
   }
 
   return (
@@ -179,6 +221,45 @@ export function ChatPage() {
                   {turn.status === 'cancelled' ? (
                     <Alert tone="warning">Запрос отменен. Его можно запустить повторно.</Alert>
                   ) : null}
+                  {turn.status === 'awaiting_clarification' && turn.clarification ? (
+                    <div className="clarification-panel">
+                      <Alert tone="info">
+                        <span className="clarification-question">{turn.clarification.question}</span>
+                      </Alert>
+                      <div className="clarification-form">
+                        <label htmlFor={`clarification-${turn.request_id}`}>Уточнение врача</label>
+                        <textarea
+                          id={`clarification-${turn.request_id}`}
+                          className="clarification-textarea"
+                          value={clarificationDrafts[turn.request_id] ?? ''}
+                          maxLength={4000}
+                          onChange={(event) =>
+                            setClarificationDrafts((prev) => ({
+                              ...prev,
+                              [turn.request_id]: event.target.value,
+                            }))
+                          }
+                          placeholder="Уточните контекст или выберите допущения..."
+                          rows={3}
+                        />
+                        <div className="clarification-footer">
+                          <span>
+                            {(clarificationDrafts[turn.request_id] ?? '').length}/4000
+                          </span>
+                          <Button
+                            type="button"
+                            disabled={
+                              clarificationMutation.isPending
+                              || !(clarificationDrafts[turn.request_id] ?? '').trim()
+                            }
+                            onClick={() => handleClarificationSubmit(turn.request_id)}
+                          >
+                            {clarificationMutation.isPending ? 'Отправляем...' : 'Отправить уточнение'}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                   {turn.status === 'succeeded' && turn.answer ? (
                     <>
                       <p className="answer-text">{turn.answer.answer}</p>
@@ -186,7 +267,9 @@ export function ChatPage() {
                     </>
                   ) : null}
                   <div className="turn-actions">
-                    {(turn.status === 'queued' || turn.status === 'running') ? (
+                    {(turn.status === 'queued'
+                      || turn.status === 'running'
+                      || turn.status === 'awaiting_clarification') ? (
                       <Button
                         variant="secondary"
                         disabled={cancelMutation.isPending}

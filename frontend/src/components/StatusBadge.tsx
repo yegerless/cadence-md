@@ -3,6 +3,7 @@ import type { RAGRequestStatus } from '../api/types'
 const labels: Record<RAGRequestStatus, string> = {
   queued: 'В очереди',
   running: 'Выполняется',
+  awaiting_clarification: 'Требуется уточнение',
   succeeded: 'Готово',
   failed: 'Ошибка',
   cancelled: 'Отменено',

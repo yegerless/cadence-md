@@ -30,7 +30,13 @@ export type UserProfileResponse = {
   last_name: string | null
 }
 
-export type RAGRequestStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type RAGRequestStatus =
+  | 'queued'
+  | 'running'
+  | 'awaiting_clarification'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
 
 export type CreateRAGRequest = {
   query: string
@@ -63,10 +69,21 @@ export type RAGAnswerResponse = {
   langfuse_trace_id: string | null
 }
 
+export type ClarificationResponse = {
+  question: string
+  answered: boolean
+  requested_at: string | null
+}
+
+export type SubmitClarificationRequest = {
+  answer: string
+}
+
 export type RAGRequestStatusResponse = {
   request_id: string
   status: RAGRequestStatus
   original_request_id: string | null
   answer: RAGAnswerResponse | null
   error: string | null
+  clarification: ClarificationResponse | null
 }
