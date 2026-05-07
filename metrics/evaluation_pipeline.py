@@ -342,6 +342,10 @@ class RAGEvaluationPipeline:
                 section_type=test_case.section_type,
                 test_case_id=idx,
                 ground_truth_section_id=test_case.section_id,
+                retrieval_query=retrieve_result.retrieval_query,
+                rewritten_queries=list(retrieve_result.rewritten_queries),
+                rag_flags=retrieve_result.flags.model_dump(),
+                context_relevance_score=retrieve_result.context_relevance_score,
             )
 
         except Exception as e:
@@ -702,6 +706,10 @@ class RAGEvaluationPipeline:
                 "k": resolved_k,
                 "matched": matched_rank is not None,
                 "matched_rank": matched_rank,
+                "retrieval_query": result.retrieval_query,
+                "rewritten_queries": result.rewritten_queries,
+                "rag_flags": result.rag_flags,
+                "context_relevance_score": result.context_relevance_score,
                 "retrieved_docs": self._serialize_retrieved_docs(result),
             }
             if enable_text_matcher_metrics:

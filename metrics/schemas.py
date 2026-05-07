@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from langchain_core.documents import Document
 
@@ -66,3 +66,7 @@ class RAGTestResult:
     section_type: str
     test_case_id: int
     ground_truth_section_id: str = ""
+    retrieval_query: str | None = None
+    rewritten_queries: list[str] = field(default_factory=list)
+    rag_flags: dict[str, bool] = field(default_factory=dict)
+    context_relevance_score: float | None = None

@@ -23,37 +23,91 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
-def _add_rag_optional_node_flags(
-    parser: argparse.ArgumentParser, *, include_formatter: bool
+def _non_negative_int(value: str) -> int:
+    """Parse non-negative integer from CLI."""
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be a non-negative integer")
+    return parsed
+
+
+def _add_enable_disable_flag(
+    parser: argparse.ArgumentParser,
+    *,
+    dest: str,
+    enable_flag: str,
+    disable_flag: str,
+    help_label: str,
 ) -> None:
+    """Add a mutually exclusive enable/disable boolean override pair."""
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        enable_flag,
+        dest=dest,
+        action="store_true",
+        default=None,
+        help=f"Enable optional RAG {help_label} for this metrics run",
+    )
+    group.add_argument(
+        disable_flag,
+        dest=dest,
+        action="store_false",
+        default=None,
+        help=f"Disable optional RAG {help_label} for this metrics run",
+    )
+
+
+def _add_rag_optional_node_flags(parser: argparse.ArgumentParser) -> None:
     """Add optional RAG graph override flags to a metrics subcommand."""
-    parser.add_argument(
-        "--disable-rag-query-rewriter",
-        action="store_true",
-        help="Disable optional RAG query rewriting for this metrics run",
+    _add_enable_disable_flag(
+        parser,
+        dest="enable_query_rewriter",
+        enable_flag="--enable-query-rewriter",
+        disable_flag="--disable-query-rewriter",
+        help_label="query rewriting",
+    )
+    _add_enable_disable_flag(
+        parser,
+        dest="enable_context_relevance_grader",
+        enable_flag="--enable-context-relevance-grader",
+        disable_flag="--disable-context-relevance-grader",
+        help_label="context relevance grading",
+    )
+    _add_enable_disable_flag(
+        parser,
+        dest="enable_answer_formatter",
+        enable_flag="--enable-answer-formatter",
+        disable_flag="--disable-answer-formatter",
+        help_label="answer formatting",
+    )
+    _add_enable_disable_flag(
+        parser,
+        dest="enable_query_clarification",
+        enable_flag="--enable-query-clarification",
+        disable_flag="--disable-query-clarification",
+        help_label="query clarification",
     )
     parser.add_argument(
-        "--disable-rag-context-relevance-grader",
-        action="store_true",
-        help="Disable optional RAG context relevance grading for this metrics run",
+        "--max-query-rewrite-iterations",
+        type=_non_negative_int,
+        default=None,
+        help="Maximum context relevance rewrite iterations for this metrics run",
     )
-    if include_formatter:
-        parser.add_argument(
-            "--disable-rag-answer-formatter",
-            action="store_true",
-            help="Disable optional RAG answer formatting for this full metrics run",
-        )
 
 
-def _rag_optional_node_overrides(args: argparse.Namespace) -> dict[str, bool]:
-    """Translate optional CLI disable flags into partial RAGOptionalNodesConfig updates."""
-    overrides: dict[str, bool] = {}
-    if getattr(args, "disable_rag_query_rewriter", False):
-        overrides["enable_query_rewriter"] = False
-    if getattr(args, "disable_rag_context_relevance_grader", False):
-        overrides["enable_context_relevance_grader"] = False
-    if getattr(args, "disable_rag_answer_formatter", False):
-        overrides["enable_answer_formatter"] = False
+def _rag_optional_node_overrides(args: argparse.Namespace) -> dict[str, bool | int]:
+    """Translate optional CLI flags into partial RAGOptionalNodesConfig updates."""
+    overrides: dict[str, bool | int] = {}
+    for field_name in (
+        "enable_query_rewriter",
+        "enable_context_relevance_grader",
+        "enable_answer_formatter",
+        "enable_query_clarification",
+        "max_query_rewrite_iterations",
+    ):
+        value = getattr(args, field_name, None)
+        if value is not None:
+            overrides[field_name] = value
     return overrides
 
 
@@ -147,7 +201,7 @@ def build_project_cli_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also compute prefixed retrieval metrics using text matcher",
     )
-    _add_rag_optional_node_flags(metrics_full, include_formatter=True)
+    _add_rag_optional_node_flags(metrics_full)
 
     # command metrics-eval-retriever
     metrics_ret = subparsers.add_parser(
@@ -189,7 +243,7 @@ def build_project_cli_parser() -> argparse.ArgumentParser:
         default=1,
         help="Parallel worker threads for retriever cases",
     )
-    _add_rag_optional_node_flags(metrics_ret, include_formatter=False)
+    _add_rag_optional_node_flags(metrics_ret)
 
     # command parse-pdf
     parse_pdf = subparsers.add_parser(

@@ -1,4 +1,5 @@
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -6,9 +7,11 @@ import pandas as pd
 import pytest
 from langchain_core.documents import Document
 
-from cadence_md.rag import RAGRequest, RAGResponse, RAGRetrieveResponse, RAGSource
-from commands import build_project_cli_parser
+from cadence_md.rag import RAGFlags, RAGRequest, RAGResponse, RAGRetrieveResponse, RAGSource
+from commands import _rag_optional_node_overrides, build_project_cli_parser
+from commands import main as commands_main
 from metrics.evaluation_pipeline import RAGEvaluationPipeline, _response_to_test_result_inputs
+from metrics.main import build_rag_optional_nodes_config
 from metrics.schemas import QATestCase, RAGTestResult
 
 
@@ -45,8 +48,24 @@ def _response(question: str, answer: str, sources: list[RAGSource]) -> RAGRespon
     return RAGResponse(query=question, answer=answer, query_hash="hash", sources=sources)
 
 
-def _retrieve_response(question: str, sources: list[RAGSource]) -> RAGRetrieveResponse:
-    return RAGRetrieveResponse(query=question, query_hash="hash", sources=sources)
+def _retrieve_response(
+    question: str,
+    sources: list[RAGSource],
+    *,
+    retrieval_query: str | None = None,
+    rewritten_queries: list[str] | None = None,
+    flags: RAGFlags | None = None,
+    context_relevance_score: float | None = None,
+) -> RAGRetrieveResponse:
+    return RAGRetrieveResponse(
+        query=question,
+        query_hash="hash",
+        sources=sources,
+        flags=flags or RAGFlags(),
+        retrieval_query=retrieval_query,
+        rewritten_queries=rewritten_queries or [],
+        context_relevance_score=context_relevance_score,
+    )
 
 
 def test_load_test_cases_skips_malformed_rows(tmp_path: Path) -> None:
@@ -258,18 +277,23 @@ def test_metrics_parser_accepts_valid_full_args(tmp_path: Path) -> None:
             "--k",
             "7",
             "--enable-text-matcher-metrics",
-            "--disable-rag-query-rewriter",
-            "--disable-rag-context-relevance-grader",
-            "--disable-rag-answer-formatter",
+            "--disable-query-rewriter",
+            "--enable-context-relevance-grader",
+            "--disable-answer-formatter",
+            "--enable-query-clarification",
+            "--max-query-rewrite-iterations",
+            "2",
         ]
     )
     assert args.command == "metrics-eval-full"
     assert args.sample_size == 10
     assert args.k == 7
     assert args.enable_text_matcher_metrics is True
-    assert args.disable_rag_query_rewriter is True
-    assert args.disable_rag_context_relevance_grader is True
-    assert args.disable_rag_answer_formatter is True
+    assert args.enable_query_rewriter is False
+    assert args.enable_context_relevance_grader is True
+    assert args.enable_answer_formatter is False
+    assert args.enable_query_clarification is True
+    assert args.max_query_rewrite_iterations == 2
 
 
 def test_metrics_parser_accepts_retriever_workers(tmp_path: Path) -> None:
@@ -283,15 +307,17 @@ def test_metrics_parser_accepts_retriever_workers(tmp_path: Path) -> None:
             str(tmp_path),
             "--workers",
             "4",
-            "--disable-rag-query-rewriter",
-            "--disable-rag-context-relevance-grader",
+            "--enable-query-rewriter",
+            "--disable-context-relevance-grader",
+            "--enable-answer-formatter",
         ]
     )
 
     assert args.command == "metrics-eval-retriever"
     assert args.workers == 4
-    assert args.disable_rag_query_rewriter is True
-    assert args.disable_rag_context_relevance_grader is True
+    assert args.enable_query_rewriter is True
+    assert args.enable_context_relevance_grader is False
+    assert args.enable_answer_formatter is True
 
 
 def test_metrics_parser_full_uses_default_k(tmp_path: Path) -> None:
@@ -306,6 +332,151 @@ def test_metrics_parser_full_uses_default_k(tmp_path: Path) -> None:
         ]
     )
     assert args.k == 5
+    assert args.enable_query_rewriter is None
+    assert args.enable_context_relevance_grader is None
+    assert args.enable_answer_formatter is None
+    assert args.enable_query_clarification is None
+    assert args.max_query_rewrite_iterations is None
+
+
+def test_metrics_parser_rejects_negative_max_query_rewrite_iterations() -> None:
+    parser = build_project_cli_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "metrics-eval-full",
+                "--max-query-rewrite-iterations",
+                "-1",
+            ]
+        )
+
+
+def test_metrics_parser_rejects_conflicting_optional_node_flags() -> None:
+    parser = build_project_cli_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "metrics-eval-full",
+                "--enable-query-rewriter",
+                "--disable-query-rewriter",
+            ]
+        )
+
+
+def test_metrics_help_contains_new_flags_and_omits_old_flags(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = build_project_cli_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["metrics-eval-full", "--help"])
+    full_help = capsys.readouterr().out
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["metrics-eval-retriever", "--help"])
+    retriever_help = capsys.readouterr().out
+
+    for help_text in (full_help, retriever_help):
+        assert "--enable-query-rewriter" in help_text
+        assert "--disable-query-rewriter" in help_text
+        assert "--enable-context-relevance-grader" in help_text
+        assert "--disable-context-relevance-grader" in help_text
+        assert "--enable-answer-formatter" in help_text
+        assert "--disable-answer-formatter" in help_text
+        assert "--enable-query-clarification" in help_text
+        assert "--disable-query-clarification" in help_text
+        assert "--max-query-rewrite-iterations" in help_text
+        assert "--disable-rag-query-rewriter" not in help_text
+        assert "--disable-rag-context-relevance-grader" not in help_text
+        assert "--disable-rag-answer-formatter" not in help_text
+
+
+def test_rag_optional_node_overrides_collects_explicit_values(tmp_path: Path) -> None:
+    parser = build_project_cli_parser()
+    args = parser.parse_args(
+        [
+            "metrics-eval-retriever",
+            "--output-dir",
+            str(tmp_path),
+            "--disable-query-rewriter",
+            "--enable-context-relevance-grader",
+            "--disable-answer-formatter",
+            "--enable-query-clarification",
+            "--max-query-rewrite-iterations",
+            "0",
+        ]
+    )
+
+    assert _rag_optional_node_overrides(args) == {
+        "enable_query_rewriter": False,
+        "enable_context_relevance_grader": True,
+        "enable_answer_formatter": False,
+        "enable_query_clarification": True,
+        "max_query_rewrite_iterations": 0,
+    }
+
+
+def test_rag_optional_nodes_config_helper_does_not_mutate_settings() -> None:
+    cfg = build_rag_optional_nodes_config(
+        {
+            "enable_query_rewriter": False,
+            "enable_query_clarification": True,
+            "max_query_rewrite_iterations": 3,
+        }
+    )
+    default_cfg = build_rag_optional_nodes_config()
+
+    assert cfg.enable_query_rewriter is False
+    assert cfg.enable_query_clarification is True
+    assert cfg.max_query_rewrite_iterations == 3
+    assert default_cfg.enable_query_rewriter is True
+    assert default_cfg.enable_query_clarification is False
+    assert default_cfg.max_query_rewrite_iterations == 1
+
+
+def test_commands_main_passes_optional_node_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeEvaluationPipeline:
+        def run_full_evaluation(self, **kwargs: object) -> None:
+            captured["run_kwargs"] = kwargs
+
+    def fake_build_evaluation_pipeline(
+        *,
+        optional_nodes_overrides: dict[str, bool | int],
+    ) -> FakeEvaluationPipeline:
+        captured["overrides"] = optional_nodes_overrides
+        return FakeEvaluationPipeline()
+
+    monkeypatch.setattr(
+        "metrics.main.build_evaluation_pipeline",
+        fake_build_evaluation_pipeline,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "commands.py",
+            "metrics-eval-full",
+            "--output-dir",
+            str(tmp_path),
+            "--disable-query-rewriter",
+            "--enable-query-clarification",
+            "--max-query-rewrite-iterations",
+            "2",
+        ],
+    )
+
+    commands_main()
+
+    assert captured["overrides"] == {
+        "enable_query_rewriter": False,
+        "enable_query_clarification": True,
+        "max_query_rewrite_iterations": 2,
+    }
 
 
 def test_run_full_evaluation_writes_run_artifacts(
@@ -374,10 +545,15 @@ def test_run_full_evaluation_writes_run_artifacts(
     assert (run_dir / "cases.jsonl").exists()
     assert (run_dir / "ragas_scores.parquet").exists()
     assert (run_dir / "summary_metrics.json").exists()
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["rag_graph_profile"]["configured"]["enable_query_clarification"] is False
+    assert manifest["rag_graph_profile"]["configured"]["max_query_rewrite_iterations"] == 1
+    assert "answer_formatter" in manifest["rag_graph_profile"]["effective_optional_nodes"]
     report_file = run_dir / "report.md"
     assert report_file.exists()
     report_text = report_file.read_text(encoding="utf-8")
     assert "## Run" in report_text
+    assert "## RAG graph profile" in report_text
     assert "Run ID" in report_text
     assert "## Retriever Metrics" in report_text
     assert "## Artifacts" in report_text
@@ -615,6 +791,10 @@ def test_run_retriever_evaluation_writes_artifacts(tmp_path: Path) -> None:
                 question_type="factoid",
                 section_type="therapy",
                 test_case_id=0,
+                retrieval_query="rewritten q",
+                rewritten_queries=["rewritten q"],
+                rag_flags={"query_rewritten": True, "requires_clarification": False},
+                context_relevance_score=0.82,
             )
         ]
 
@@ -642,14 +822,25 @@ def test_run_retriever_evaluation_writes_artifacts(tmp_path: Path) -> None:
     run_dir = next(path for path in tmp_path.iterdir() if path.is_dir())
     manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["run_parameters"]["workers"] == 3
+    assert manifest["rag_graph_profile"]["mode"] == "retriever"
+    assert "answer_formatter" in manifest["rag_graph_profile"]["inactive_configured_nodes"]
     assert captured["workers"] == 3
     assert (run_dir / "run_manifest.json").exists()
     assert (run_dir / "retrieval_cases.jsonl").exists()
+    retrieval_case = json.loads(
+        (run_dir / "retrieval_cases.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert retrieval_case["question"] == "q"
+    assert retrieval_case["retrieval_query"] == "rewritten q"
+    assert retrieval_case["rewritten_queries"] == ["rewritten q"]
+    assert retrieval_case["rag_flags"]["query_rewritten"] is True
+    assert retrieval_case["context_relevance_score"] == 0.82
     assert (run_dir / "summary_metrics.json").exists()
     report_file = run_dir / "report.md"
     assert report_file.exists()
     report_text = report_file.read_text(encoding="utf-8")
     assert "## Run" in report_text
+    assert "## RAG graph profile" in report_text
     assert "## Retriever Metrics" in report_text
     assert "## Artifacts" in report_text
 
@@ -996,6 +1187,10 @@ def test_run_retriever_pipeline_uses_ranked_docs_final_score() -> None:
                 lambda request: _retrieve_response(
                     request.query,
                     [_source("d", retrieval_score=0.42, final_score=0.42)],
+                    retrieval_query="rewritten question",
+                    rewritten_queries=["rewritten question"],
+                    flags=RAGFlags(query_rewritten=True),
+                    context_relevance_score=0.7,
                 )
             )
         },
@@ -1003,6 +1198,10 @@ def test_run_retriever_pipeline_uses_ranked_docs_final_score() -> None:
     cases = [QATestCase("q", "a", "c", "f", "s", "", [], {})]
     results = pipeline.run_retriever_pipeline(cases)
     assert results[0].retrieval_scores == [0.42]
+    assert results[0].retrieval_query == "rewritten question"
+    assert results[0].rewritten_queries == ["rewritten question"]
+    assert results[0].rag_flags["query_rewritten"] is True
+    assert results[0].context_relevance_score == 0.7
 
 
 def test_run_full_evaluation_uses_ranked_docs_aligned_scores(

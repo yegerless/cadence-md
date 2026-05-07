@@ -93,6 +93,18 @@ def test_render_validation_report_retriever_skips_ragas_sections() -> None:
             },
             "qdrant_collection": "c",
         },
+        "rag_graph_profile": {
+            "mode": "retriever",
+            "configured": {
+                "enable_query_rewriter": True,
+                "enable_context_relevance_grader": True,
+                "enable_answer_formatter": True,
+                "enable_query_clarification": False,
+                "max_query_rewrite_iterations": 1,
+            },
+            "effective_optional_nodes": ["query_rewriter", "context_relevance_grader"],
+            "inactive_configured_nodes": ["answer_formatter"],
+        },
     }
     summary = {
         "total_loaded_cases": 1,
@@ -121,6 +133,8 @@ def test_render_validation_report_retriever_skips_ragas_sections() -> None:
     assert "## Retriever Metrics" in text
     assert "LLM:" not in text
     assert "0.500" in text or "0.5" in text
+    assert "## RAG graph profile" in text
+    assert "`answer_formatter`" in text
 
 
 def test_render_validation_report_full_includes_ragas_and_breakdown() -> None:
@@ -145,6 +159,22 @@ def test_render_validation_report_full_includes_ragas_and_breakdown() -> None:
                 "hybrid_top_k": 5,
             },
             "qdrant_collection": "c",
+        },
+        "rag_graph_profile": {
+            "mode": "full",
+            "configured": {
+                "enable_query_rewriter": True,
+                "enable_context_relevance_grader": False,
+                "enable_answer_formatter": True,
+                "enable_query_clarification": True,
+                "max_query_rewrite_iterations": 2,
+            },
+            "effective_optional_nodes": [
+                "query_rewriter",
+                "query_clarification",
+                "answer_formatter",
+            ],
+            "inactive_configured_nodes": [],
         },
     }
     summary = {
@@ -200,3 +230,4 @@ def test_render_validation_report_full_includes_ragas_and_breakdown() -> None:
     assert "Breakdown by Question Type" in text
     assert "`factoid` (n=1)" in text
     assert "## Text Matcher Retriever Metrics" not in text
+    assert "Max query rewrite iterations: `2`" in text
