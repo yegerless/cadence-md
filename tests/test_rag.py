@@ -55,6 +55,8 @@ def _make_state(**overrides: Any) -> RAGState:
         "query_hash": "h",
         "retrieval_query": "q",
         "rewritten_queries": [],
+        "clarification_answer": None,
+        "allow_clarification": True,
         "rewrite_iteration": 0,
         "query_rewritten": False,
         "query_rewrite_fallback": False,
@@ -473,6 +475,8 @@ def test_build_initial_state_has_schema_defaults() -> None:
     assert state["query_hash"] == _query_hash("Симптомы?")
     assert state["retrieval_query"] == "Симптомы?"
     assert state["rewritten_queries"] == []
+    assert state["clarification_answer"] is None
+    assert state["allow_clarification"] is True
     assert state["rewrite_iteration"] == 0
     assert state["query_rewritten"] is False
     assert state["requires_clarification"] is False
@@ -486,6 +490,20 @@ def test_build_initial_state_has_schema_defaults() -> None:
     assert state["latency_ms"] == {}
     assert state["retrieval_failed"] is False
     assert state["generate_fallback"] is False
+
+
+def test_build_initial_state_uses_clarification_for_retrieval_query() -> None:
+    state = RAGPipeline.build_initial_state(
+        "Симптомы?",
+        clarification_answer="Пациент взрослый.",
+        allow_clarification=False,
+    )
+
+    assert state["query"] == "Симптомы?"
+    assert state["query_hash"] == _query_hash("Симптомы?")
+    assert state["clarification_answer"] == "Пациент взрослый."
+    assert state["allow_clarification"] is False
+    assert state["retrieval_query"] == "Симптомы?\n\nУточнение пользователя: Пациент взрослый."
 
 
 def test_query_rewrite_node_keep_and_rewrite() -> None:
@@ -533,6 +551,34 @@ def test_query_rewrite_node_clarification_stop_state() -> None:
     assert out["clarification_question"] == "Уточните диагноз?"
     assert out["answer"] == "Уточните диагноз?"
     assert out["answer_word_count"] > 0
+
+
+def test_query_rewrite_node_disallows_repeated_clarification() -> None:
+    llm = MagicMock()
+    llm.invoke_messages.return_value = (
+        '{"action":"clarify","rewritten_query":"","clarification_question":'
+        '"Уточните диагноз?","reason":"ambiguous"}'
+    )
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    pipe = RAGPipeline(
+        llm,
+        qm,
+        reranker=reranker,  # type: ignore[arg-type]
+        optional_nodes_config=RAGOptionalNodesConfig(enable_query_clarification=True),
+    )
+
+    out = pipe.query_rewrite_node(
+        _make_state(
+            query="Что делать?",
+            clarification_answer="Пациент взрослый.",
+            allow_clarification=False,
+        )
+    )
+
+    assert out["requires_clarification"] is False
+    assert out["clarification_question"] is None
+    assert out["retrieval_query"] == "q"
 
 
 def test_query_rewrite_node_fallback_on_invalid_json() -> None:

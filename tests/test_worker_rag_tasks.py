@@ -16,6 +16,7 @@ from sqlalchemy.pool import StaticPool
 
 from cadence_md.db.base import Base
 from cadence_md.db.enums import RAGRequestStatus
+from cadence_md.db.models import RAGRequestLog
 from cadence_md.db.repositories import RAGLogRepository, UserRepository
 from cadence_md.rag.contracts import RAGFlags, RAGLatency, RAGRequest, RAGResponse, RAGSource
 from cadence_md.workers import rag_tasks
@@ -119,15 +120,21 @@ async def worker_session_factory_file(
     await engine.dispose()
 
 
-def _response(answer: str = "Ответ [Doc 1].") -> RAGResponse:
+def _response(
+    answer: str = "Ответ [Doc 1].",
+    *,
+    flags: RAGFlags | None = None,
+    clarification_question: str | None = None,
+) -> RAGResponse:
     return RAGResponse(
         query="Вопрос",
         answer=answer,
         query_hash="hash",
         sources=[RAGSource(rank=1, doc_ref="[Doc 1]", filename="guideline.pdf", score=0.9)],
         latency=RAGLatency(qdrant=1.0, rerank=2.0, llm=3.0),
-        flags=RAGFlags(context_truncated=False),
+        flags=flags or RAGFlags(context_truncated=False),
         langfuse_trace_id="trace-1",
+        clarification_question=clarification_question,
     )
 
 
@@ -160,6 +167,16 @@ async def _get_status(
         return row.status
 
 
+async def _get_request_row(
+    session_factory: async_sessionmaker[AsyncSession],
+    request_id: uuid.UUID,
+) -> RAGRequestLog:
+    async with session_factory() as session:
+        row = await RAGLogRepository(session).get_request(request_id)
+        assert row is not None
+        return row
+
+
 @pytest.mark.asyncio
 async def test_run_rag_request_happy_path(
     worker_session_factory: async_sessionmaker[AsyncSession],
@@ -183,6 +200,66 @@ async def test_run_rag_request_happy_path(
         assert response.langfuse_trace_id == "trace-1"
         assert row is not None
         assert row.celery_task_id == "task-1"
+
+
+@pytest.mark.asyncio
+async def test_run_rag_request_awaits_clarification_without_response_row(
+    worker_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    request_id = await _create_request(worker_session_factory)
+    service = DummyService(
+        response=_response(
+            "Уточните возраст пациента?",
+            flags=RAGFlags(requires_clarification=True),
+            clarification_question="Уточните возраст пациента?",
+        )
+    )
+    set_rag_runtime_for_tests(RAGWorkerRuntime(service=service))
+
+    result = await rag_tasks._run_rag_request_async(str(request_id), celery_task_id="task-1")
+
+    assert result == "awaiting_clarification"
+    row = await _get_request_row(worker_session_factory, request_id)
+    assert row.status == RAGRequestStatus.AWAITING_CLARIFICATION
+    assert row.clarification_question == "Уточните возраст пациента?"
+    assert row.clarification_requested_at is not None
+    assert row.clarification_attempts == 1
+    assert len(service.calls) == 1
+    assert service.calls[0].allow_clarification is True
+    async with worker_session_factory() as session:
+        response = await RAGLogRepository(session).get_response_for_request(request_id)
+        assert response is None
+
+
+@pytest.mark.asyncio
+async def test_run_rag_request_after_clarification_passes_answer(
+    worker_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    request_id = await _create_request(worker_session_factory)
+    async with worker_session_factory() as session:
+        repo = RAGLogRepository(session)
+        await repo.claim_queued_request(request_id, celery_task_id="task-1")
+        await repo.mark_awaiting_clarification(request_id, question="Уточните возраст?")
+        await repo.submit_clarification(
+            request_id,
+            answer="Пациент взрослый.",
+            celery_task_id="task-2",
+        )
+        await session.commit()
+    service = DummyService(response=_response("Финальный ответ [Doc 1]."))
+    set_rag_runtime_for_tests(RAGWorkerRuntime(service=service))
+
+    result = await rag_tasks._run_rag_request_async(str(request_id), celery_task_id="task-2")
+
+    assert result == "succeeded"
+    assert await _get_status(worker_session_factory, request_id) == RAGRequestStatus.SUCCEEDED
+    assert len(service.calls) == 1
+    assert service.calls[0].clarification_answer == "Пациент взрослый."
+    assert service.calls[0].allow_clarification is False
+    async with worker_session_factory() as session:
+        response = await RAGLogRepository(session).get_response_for_request(request_id)
+        assert response is not None
+        assert response.answer == "Финальный ответ [Doc 1]."
 
 
 @pytest.mark.asyncio

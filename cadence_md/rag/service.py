@@ -38,7 +38,11 @@ class RAGService:
             prompt_version=settings.rag_config.prompt_version,
         )
         with active_trace(trace):
-            state = self.pipeline.run(request.query)
+            state = self.pipeline.run(
+                request.query,
+                clarification_answer=request.clarification_answer,
+                allow_clarification=request.allow_clarification,
+            )
         return self._state_to_response(state, langfuse_trace_id=trace.trace_id)
 
     def retrieve(self, request: RAGRequest) -> RAGRetrieveResponse:

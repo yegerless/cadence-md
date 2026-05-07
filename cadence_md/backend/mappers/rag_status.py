@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from cadence_md.backend.schemas.chat import (
+    ClarificationResponse,
     RAGAnswerResponse,
     RAGRequestStatusResponse,
     RAGSourceResponse,
@@ -24,6 +25,7 @@ async def rag_request_to_status_response(
 
     answer = None
     error = None
+    clarification = None
     if request_log.status == DbRAGRequestStatus.SUCCEEDED and response_row is not None:
         sources_raw: list[dict[str, object]] = list(response_row.sources_json or [])
         sources = [RAGSourceResponse.model_validate(item) for item in sources_raw]
@@ -43,6 +45,15 @@ async def rag_request_to_status_response(
             if response_row is not None and response_row.error_message
             else "Request failed."
         )
+    elif (
+        request_log.status == DbRAGRequestStatus.AWAITING_CLARIFICATION
+        and request_log.clarification_question
+    ):
+        clarification = ClarificationResponse(
+            question=request_log.clarification_question,
+            answered=False,
+            requested_at=request_log.clarification_requested_at,
+        )
 
     original_request_id = (
         str(request_log.original_request_id) if request_log.original_request_id else None
@@ -54,4 +65,5 @@ async def rag_request_to_status_response(
         original_request_id=original_request_id,
         answer=answer,
         error=error,
+        clarification=clarification,
     )

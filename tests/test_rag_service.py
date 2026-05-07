@@ -34,6 +34,8 @@ def _base_state(**overrides: object) -> dict:
         "query_hash": "hash1",
         "retrieval_query": "q",
         "rewritten_queries": [],
+        "clarification_answer": None,
+        "allow_clarification": True,
         "query_rewritten": False,
         "query_rewrite_fallback": False,
         "requires_clarification": False,
@@ -84,6 +86,11 @@ def test_run_maps_ranked_docs_to_sources_with_score_order() -> None:
 
     response = service.run(RAGRequest(query="query"))
 
+    pipeline.run.assert_called_once_with(
+        "query",
+        clarification_answer=None,
+        allow_clarification=True,
+    )
     assert [src.filename for src in response.sources] == ["1.pdf", "2.pdf"]
     assert response.sources[0].source_path == "main_specialities/1.pdf"
     assert [src.doc_ref for src in response.sources] == ["[Doc 1]", "[Doc 2]"]
@@ -228,3 +235,23 @@ def test_retrieve_uses_retriever_only_helper() -> None:
     assert response.rewritten_queries == ["query rewritten"]
     assert response.flags.query_rewritten is True
     assert response.context_relevance_score == 0.9
+
+
+def test_run_passes_clarification_controls_to_pipeline() -> None:
+    pipeline = MagicMock()
+    pipeline.run.return_value = _base_state()
+    service = RAGService(pipeline=pipeline)
+
+    service.run(
+        RAGRequest(
+            query="query",
+            clarification_answer="Пациент взрослый.",
+            allow_clarification=False,
+        )
+    )
+
+    pipeline.run.assert_called_once_with(
+        "query",
+        clarification_answer="Пациент взрослый.",
+        allow_clarification=False,
+    )

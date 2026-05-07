@@ -173,6 +173,8 @@ async def _run_claimed_request(
                 query=claimed.query,
                 rag_request_id=rag_request_id,
                 user_id=str(claimed.user_id),
+                clarification_answer=claimed.clarification_answer,
+                allow_clarification=claimed.clarification_answer is None,
             )
         )
     except SoftTimeLimitExceeded as exc:
@@ -190,6 +192,18 @@ async def _run_claimed_request(
         await repo.mark_cancelled_from_running(request_id)
         await session.commit()
         return "cancelled"
+
+    if (
+        claimed.clarification_answer is None
+        and response.flags.requires_clarification
+        and response.clarification_question
+    ):
+        return await _persist_awaiting_clarification(
+            repo,
+            session,
+            request_id,
+            response.clarification_question,
+        )
 
     return await _persist_success(repo, session, request_id, response)
 
@@ -266,6 +280,23 @@ async def _persist_success(
     await session.commit()
     logger.info("RAG task succeeded", extra={"rag_request_id": str(request_id)})
     return "succeeded"
+
+
+async def _persist_awaiting_clarification(
+    repo: RAGLogRepository,
+    session: Any,
+    request_id: uuid.UUID,
+    question: str,
+) -> str:
+    """Persist a clarification prompt without creating a final response row."""
+    updated = await repo.mark_awaiting_clarification(request_id, question=question)
+    if updated is None:
+        await session.rollback()
+        return "not_claimed"
+
+    await session.commit()
+    logger.info("RAG task awaits clarification", extra={"rag_request_id": str(request_id)})
+    return "awaiting_clarification"
 
 
 async def _persist_failure(

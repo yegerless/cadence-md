@@ -8,6 +8,7 @@ class RAGRequestStatus(StrEnum):
 
     QUEUED = "queued"
     RUNNING = "running"
+    AWAITING_CLARIFICATION = "awaiting_clarification"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"

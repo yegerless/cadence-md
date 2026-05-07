@@ -11,6 +11,8 @@ class RAGRequest(BaseModel):
     query: str = Field(min_length=1)
     rag_request_id: str | None = None
     user_id: str | None = None
+    clarification_answer: str | None = None
+    allow_clarification: bool = True
 
 
 class RAGSource(BaseModel):

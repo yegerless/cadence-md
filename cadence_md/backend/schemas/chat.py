@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -14,6 +15,7 @@ class RAGRequestStatus(StrEnum):
 
     QUEUED = "queued"
     RUNNING = "running"
+    AWAITING_CLARIFICATION = "awaiting_clarification"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -71,6 +73,25 @@ class RAGAnswerResponse(BaseModel):
     langfuse_trace_id: str | None = None
 
 
+class ClarificationResponse(BaseModel):
+    """Pending clarification prompt returned while a request waits for the user."""
+
+    question: str
+    answered: bool = False
+    requested_at: datetime | None = None
+
+
+class SubmitClarificationRequest(BaseModel):
+    """Payload for resuming a RAG request after user clarification."""
+
+    answer: str = Field(
+        min_length=1,
+        max_length=MAX_QUERY_LENGTH,
+        description="User clarification answer used to continue the existing RAG request.",
+        examples=["Речь о взрослых пациентах с впервые выявленной гипертензией без ХБП."],
+    )
+
+
 class RAGRequestStatusResponse(BaseModel):
     """Polling response for an asynchronous RAG request."""
 
@@ -87,4 +108,8 @@ class RAGRequestStatusResponse(BaseModel):
     error: str | None = Field(
         default=None,
         description="Failure summary when status is failed.",
+    )
+    clarification: ClarificationResponse | None = Field(
+        default=None,
+        description="Present only while the request is awaiting user clarification.",
     )

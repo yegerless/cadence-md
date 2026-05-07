@@ -30,6 +30,7 @@ from cadence_md.backend.services.rag_enqueue import (
 )
 from cadence_md.backend.settings import BackendSettings
 from cadence_md.db.base import Base
+from cadence_md.db.enums import RAGRequestStatus
 from cadence_md.db.repositories.rag_logs import RAGLogRepository
 from cadence_md.db.session import get_async_session
 
@@ -211,6 +212,161 @@ async def test_get_other_users_message_returns_404(chat_app_bundle: ChatBundle) 
 
 
 @pytest.mark.asyncio
+async def test_get_awaiting_clarification_returns_question_and_no_cross_user_leak(
+    chat_app_bundle: ChatBundle,
+) -> None:
+    app, _settings, session_factory = chat_app_bundle
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token_a = await _register(client, "clarify-poll-a@example.org")
+        token_b = await _register(client, "clarify-poll-b@example.org")
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token_a}"},
+            json={"query": "Вопрос требует уточнения"},
+        )
+        rid = uuid.UUID(created.json()["request_id"])
+
+        async with session_factory() as session:
+            repo = RAGLogRepository(session)
+            await repo.mark_running(rid, celery_task_id="task-1")
+            await repo.mark_awaiting_clarification(
+                rid,
+                question="Уточните возраст пациента?",
+            )
+            await session.commit()
+
+        own_poll = await client.get(
+            f"/api/v1/chat/messages/{rid}",
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+        leaked_poll = await client.get(
+            f"/api/v1/chat/messages/{rid}",
+            headers={"Authorization": f"Bearer {token_b}"},
+        )
+
+    assert own_poll.status_code == 200
+    payload = own_poll.json()
+    assert payload["status"] == "awaiting_clarification"
+    assert payload["clarification"]["question"] == "Уточните возраст пациента?"
+    assert payload["clarification"]["answered"] is False
+    assert payload["clarification"]["requested_at"] is not None
+    assert leaked_poll.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_submit_clarification_requeues_and_enqueues(chat_app_bundle: ChatBundle) -> None:
+    app, _settings, session_factory = chat_app_bundle
+    enqueue_calls: list[tuple[uuid.UUID, str | None]] = []
+
+    class RecordingEnqueue:
+        async def enqueue(self, request_id: uuid.UUID, *, task_id: str | None = None) -> str:
+            enqueue_calls.append((request_id, task_id))
+            return task_id or make_rag_task_id(request_id)
+
+    app.dependency_overrides[get_rag_enqueue] = lambda: RecordingEnqueue()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _register(client, "clarify-submit@example.org")
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Нужны рекомендации"},
+        )
+        rid = uuid.UUID(created.json()["request_id"])
+
+        async with session_factory() as session:
+            repo = RAGLogRepository(session)
+            await repo.mark_running(rid, celery_task_id="task-1")
+            await repo.mark_awaiting_clarification(rid, question="Уточните возраст?")
+            await session.commit()
+
+        submitted = await client.post(
+            f"/api/v1/chat/messages/{rid}/clarification",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"answer": "Пациент взрослый."},
+        )
+
+    assert submitted.status_code == 200
+    assert submitted.json()["status"] == "queued"
+    assert submitted.json()["clarification"] is None
+    assert enqueue_calls[-1] == (rid, make_rag_task_id(rid, clarification_attempt=1))
+    async with session_factory() as session:
+        row = await RAGLogRepository(session).get_request(rid)
+        assert row is not None
+        assert row.status == RAGRequestStatus.QUEUED
+        assert row.clarification_answer == "Пациент взрослый."
+        assert row.celery_task_id == make_rag_task_id(rid, clarification_attempt=1)
+
+
+@pytest.mark.asyncio
+async def test_submit_clarification_wrong_status_returns_409(
+    chat_app_bundle: ChatBundle,
+) -> None:
+    app, _settings, _sf = chat_app_bundle
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _register(client, "clarify409@example.org")
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Обычный queued request"},
+        )
+        rid = created.json()["request_id"]
+        submitted = await client.post(
+            f"/api/v1/chat/messages/{rid}/clarification",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"answer": "Ответ без запроса уточнения."},
+        )
+
+    assert submitted.status_code == 409
+    assert submitted.json()["code"] == "clarification_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_submit_clarification_enqueue_error_keeps_answer(
+    chat_app_bundle: ChatBundle,
+) -> None:
+    app, _settings, session_factory = chat_app_bundle
+
+    class FailingEnqueue:
+        async def enqueue(self, request_id: uuid.UUID, *, task_id: str | None = None) -> str:
+            raise RuntimeError("broker down")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _register(client, "clarify503@example.org")
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Нужны уточнения"},
+        )
+        rid = uuid.UUID(created.json()["request_id"])
+
+        async with session_factory() as session:
+            repo = RAGLogRepository(session)
+            await repo.mark_running(rid, celery_task_id="task-1")
+            await repo.mark_awaiting_clarification(rid, question="Уточните?")
+            await session.commit()
+
+        app.dependency_overrides[get_rag_enqueue] = lambda: FailingEnqueue()
+        submitted = await client.post(
+            f"/api/v1/chat/messages/{rid}/clarification",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"answer": "Уточняющий ответ."},
+        )
+
+    assert submitted.status_code == 503
+    assert submitted.json()["code"] == "rag_enqueue_failed"
+    async with session_factory() as session:
+        row = await RAGLogRepository(session).get_request(rid)
+        assert row is not None
+        assert row.status == RAGRequestStatus.QUEUED
+        assert row.clarification_answer == "Уточняющий ответ."
+
+
+@pytest.mark.asyncio
 async def test_cancel_queued_marks_cancelled(chat_app_bundle: ChatBundle) -> None:
     app, _settings, _sf = chat_app_bundle
     transport = ASGITransport(app=app)
@@ -262,6 +418,36 @@ async def test_cancel_running_sets_cancel_requested(chat_app_bundle: ChatBundle)
         row = await repo.get_request(req_uuid)
         assert row is not None
         assert row.cancel_requested_at is not None
+
+
+@pytest.mark.asyncio
+async def test_cancel_awaiting_clarification_marks_cancelled(
+    chat_app_bundle: ChatBundle,
+) -> None:
+    app, _settings, session_factory = chat_app_bundle
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _register(client, "cancel-awaiting@example.org")
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Отмена уточнения"},
+        )
+        rid = uuid.UUID(created.json()["request_id"])
+
+        async with session_factory() as session:
+            repo = RAGLogRepository(session)
+            await repo.mark_running(rid, celery_task_id="task-1")
+            await repo.mark_awaiting_clarification(rid, question="Уточните?")
+            await session.commit()
+
+        cancel = await client.post(
+            f"/api/v1/chat/messages/{rid}/cancel",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert cancel.status_code == 200
+    assert cancel.json()["status"] == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -347,6 +533,36 @@ async def test_retry_while_queued_returns_409(chat_app_bundle: ChatBundle) -> No
         )
         assert retry.status_code == 409
         assert retry.json()["code"] == "retry_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_retry_while_awaiting_clarification_returns_409(
+    chat_app_bundle: ChatBundle,
+) -> None:
+    app, _settings, session_factory = chat_app_bundle
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _register(client, "retry-awaiting@example.org")
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Retry уточнения"},
+        )
+        rid = uuid.UUID(created.json()["request_id"])
+
+        async with session_factory() as session:
+            repo = RAGLogRepository(session)
+            await repo.mark_running(rid, celery_task_id="task-1")
+            await repo.mark_awaiting_clarification(rid, question="Уточните?")
+            await session.commit()
+
+        retry = await client.post(
+            f"/api/v1/chat/messages/{rid}/retry",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert retry.status_code == 409
+    assert retry.json()["code"] == "retry_not_allowed"
 
 
 @pytest.mark.asyncio

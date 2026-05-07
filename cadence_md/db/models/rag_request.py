@@ -51,6 +51,7 @@ class RAGRequestLog(CreatedAtMixin, Base):
             postgresql_where=text("idempotency_key IS NOT NULL"),
         ),
         CheckConstraint("retry_count >= 0", name="retry_count_non_negative"),
+        CheckConstraint("clarification_attempts >= 0", name="clarification_attempts_non_negative"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -82,6 +83,16 @@ class RAGRequestLog(CreatedAtMixin, Base):
     idempotency_key: Mapped[str | None] = mapped_column(String(255))
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    clarification_question: Mapped[str | None] = mapped_column(Text)
+    clarification_answer: Mapped[str | None] = mapped_column(Text)
+    clarification_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    clarification_answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    clarification_attempts: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default=text("0"),
+        nullable=False,
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

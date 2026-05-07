@@ -22,6 +22,7 @@ def test_openapi_contains_versioned_contract_paths() -> None:
         "/api/v1/chat/messages",
         "/api/v1/chat/messages/{request_id}",
         "/api/v1/chat/messages/{request_id}/sources/{rank}/download",
+        "/api/v1/chat/messages/{request_id}/clarification",
         "/api/v1/chat/messages/{request_id}/cancel",
         "/api/v1/chat/messages/{request_id}/retry",
         "/api/v1/health/live",
@@ -42,10 +43,12 @@ def test_openapi_contains_auth_chat_health_and_error_schemas() -> None:
         "TokenResponse",
         "UserProfileResponse",
         "CreateRAGRequest",
+        "ClarificationResponse",
         "RAGRequestStatus",
         "RAGRequestStatusResponse",
         "RAGAnswerResponse",
         "RAGSourceResponse",
+        "SubmitClarificationRequest",
         "ErrorResponse",
         "HealthResponse",
     }
@@ -59,6 +62,7 @@ def test_rag_request_status_enum_is_explicit() -> None:
     assert schema["components"]["schemas"]["RAGRequestStatus"]["enum"] == [
         "queued",
         "running",
+        "awaiting_clarification",
         "succeeded",
         "failed",
         "cancelled",

@@ -173,6 +173,8 @@ async def test_rag_log_repository_counts_active_requests(db_session: AsyncSessio
     assert await repo.count_active_requests() == 2
     await repo.mark_succeeded(r2.id)
     assert await repo.count_active_requests() == 1
+    await repo.mark_awaiting_clarification(r1.id, question="Уточните возраст пациента?")
+    assert await repo.count_active_requests() == 0
 
 
 @pytest.mark.asyncio
@@ -250,6 +252,64 @@ async def test_rag_log_repository_guarded_status_transitions(db_session: AsyncSe
 
     failed_after_terminal = await repo.mark_failed_from_running(request_log.id)
     assert failed_after_terminal is None
+
+
+@pytest.mark.asyncio
+async def test_rag_log_repository_clarification_guarded_transitions(
+    db_session: AsyncSession,
+) -> None:
+    user = await UserRepository(db_session).create_user(
+        email="clarify@example.org",
+        password_hash="hashed-password",
+    )
+    repo = RAGLogRepository(db_session)
+    request_log = await repo.create_request(
+        user_id=user.id,
+        query="Нужны рекомендации?",
+        query_hash="hash",
+    )
+
+    not_running = await repo.mark_awaiting_clarification(
+        request_log.id,
+        question="Уточните?",
+    )
+    assert not_running is None
+
+    await repo.claim_queued_request(request_log.id, celery_task_id="task-1")
+    awaiting = await repo.mark_awaiting_clarification(
+        request_log.id,
+        question="Уточните возраст пациента?",
+    )
+    assert awaiting is not None
+    assert awaiting.status == RAGRequestStatus.AWAITING_CLARIFICATION
+    assert awaiting.clarification_question == "Уточните возраст пациента?"
+    assert awaiting.clarification_requested_at is not None
+    assert awaiting.clarification_attempts == 1
+    assert awaiting.finished_at is None
+
+    second_awaiting = await repo.mark_awaiting_clarification(
+        request_log.id,
+        question="Повторный вопрос?",
+    )
+    assert second_awaiting is None
+
+    submitted = await repo.submit_clarification(
+        request_log.id,
+        answer="Пациент взрослый.",
+        celery_task_id="task-2",
+    )
+    assert submitted is not None
+    assert submitted.status == RAGRequestStatus.QUEUED
+    assert submitted.clarification_answer == "Пациент взрослый."
+    assert submitted.clarification_answered_at is not None
+    assert submitted.celery_task_id == "task-2"
+
+    duplicate_submit = await repo.submit_clarification(
+        request_log.id,
+        answer="Повторный ответ.",
+        celery_task_id="task-3",
+    )
+    assert duplicate_submit is None
 
 
 @pytest.mark.asyncio

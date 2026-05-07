@@ -19,7 +19,11 @@ from cadence_md.backend.limiter import limiter
 from cadence_md.backend.mappers.rag_status import rag_request_to_status_response
 from cadence_md.backend.query_hash import compute_query_hash
 from cadence_md.backend.request_context import get_route_settings
-from cadence_md.backend.schemas.chat import CreateRAGRequest, RAGRequestStatusResponse
+from cadence_md.backend.schemas.chat import (
+    CreateRAGRequest,
+    RAGRequestStatusResponse,
+    SubmitClarificationRequest,
+)
 from cadence_md.backend.schemas.errors import ErrorResponse
 from cadence_md.backend.schemas.limits import (
     CHAT_RATE_LIMIT,
@@ -95,6 +99,27 @@ async def _enqueue_or_fail(
         )
         await repo.mark_failed(request_id)
         await session.commit()
+        raise ApiError(
+            status_code=503,
+            code="rag_enqueue_failed",
+            message="Could not enqueue RAG request. Try again later.",
+        ) from exc
+
+
+async def _enqueue_clarification_or_503(
+    *,
+    enqueue: RAGEnqueueService,
+    request_id: uuid.UUID,
+    task_id: str,
+) -> None:
+    """Send a clarification resume task without changing persisted request state on failure."""
+    try:
+        await enqueue.enqueue(request_id, task_id=task_id)
+    except Exception as exc:
+        logger.exception(
+            "Failed to enqueue clarified RAG request",
+            extra={"rag_request_id": str(request_id), "error_type": type(exc).__name__},
+        )
         raise ApiError(
             status_code=503,
             code="rag_enqueue_failed",
@@ -243,6 +268,63 @@ async def get_rag_message(
     return await rag_request_to_status_response(repo, row)
 
 
+@router.post(
+    "/messages/{request_id}/clarification",
+    response_model=RAGRequestStatusResponse,
+    responses=CHAT_LIMIT_RESPONSES
+    | {
+        404: {"model": ErrorResponse, "description": "RAG request was not found."},
+        409: {"model": ErrorResponse, "description": "Clarification is not allowed."},
+    },
+    summary="Submit clarification for a RAG request",
+    description="Stores a user clarification answer and requeues the existing RAG request.",
+)
+@limiter.limit(_chat_user_limit, key_func=chat_rate_limit_key)
+async def submit_rag_clarification(
+    request: Request,
+    request_id: uuid.UUID,
+    body: SubmitClarificationRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+    enqueue: RAGEnqueueService = Depends(get_rag_enqueue),
+) -> RAGRequestStatusResponse:
+    """Resume a RAG request that is waiting for user clarification."""
+    repo = RAGLogRepository(session)
+    row = await repo.get_request_for_user(request_id=request_id, user_id=user.id)
+    if row is None:
+        raise ApiError(
+            status_code=404,
+            code="not_found",
+            message="RAG request not found.",
+        )
+
+    if row.status == DbRAGRequestStatus.QUEUED and row.clarification_answer:
+        return await rag_request_to_status_response(repo, row)
+    if row.status != DbRAGRequestStatus.AWAITING_CLARIFICATION:
+        raise ApiError(
+            status_code=409,
+            code="clarification_not_allowed",
+            message="Clarification is only accepted while the request is awaiting clarification.",
+        )
+
+    task_id = make_rag_task_id(row.id, clarification_attempt=row.clarification_attempts)
+    updated = await repo.submit_clarification(
+        row.id,
+        answer=body.answer,
+        celery_task_id=task_id,
+    )
+    if updated is None:
+        raise ApiError(
+            status_code=409,
+            code="clarification_not_allowed",
+            message="Clarification is only accepted while the request is awaiting clarification.",
+        )
+    await session.commit()
+
+    await _enqueue_clarification_or_503(enqueue=enqueue, request_id=updated.id, task_id=task_id)
+    return await rag_request_to_status_response(repo, updated)
+
+
 @router.get(
     "/messages/{request_id}/sources/{rank}/download",
     response_class=FileResponse,
@@ -327,7 +409,10 @@ async def cancel_rag_message(
             message="RAG request not found.",
         )
 
-    if row.status == DbRAGRequestStatus.QUEUED:
+    if row.status in (
+        DbRAGRequestStatus.QUEUED,
+        DbRAGRequestStatus.AWAITING_CLARIFICATION,
+    ):
         updated = await repo.mark_cancelled(row.id)
     elif row.status == DbRAGRequestStatus.RUNNING:
         updated = await repo.request_cancel(row.id)
@@ -376,7 +461,11 @@ async def retry_rag_message(
             message="RAG request not found.",
         )
 
-    if row.status in (DbRAGRequestStatus.QUEUED, DbRAGRequestStatus.RUNNING):
+    if row.status in (
+        DbRAGRequestStatus.QUEUED,
+        DbRAGRequestStatus.RUNNING,
+        DbRAGRequestStatus.AWAITING_CLARIFICATION,
+    ):
         raise ApiError(
             status_code=409,
             code="retry_not_allowed",

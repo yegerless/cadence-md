@@ -103,6 +103,13 @@ def _query_hash(query: str) -> str:
     return hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
 
 
+def _query_with_clarification(query: str, clarification_answer: str | None) -> str:
+    """Return the effective clinical question after user clarification."""
+    if clarification_answer is None or not clarification_answer.strip():
+        return query
+    return f"{query}\n\nУточнение пользователя: {clarification_answer.strip()}"
+
+
 def _doc_block_header(i: int, doc: Document) -> str:
     """Build ``[Doc i]`` header lines with filename, titles, and ``section_id`` when present."""
     meta = doc.metadata or {}
@@ -189,6 +196,8 @@ class RAGState(TypedDict):
     query_hash: str
     retrieval_query: str
     rewritten_queries: list[str]
+    clarification_answer: str | None
+    allow_clarification: bool
     rewrite_iteration: int
     query_rewritten: bool
     query_rewrite_fallback: bool
@@ -260,13 +269,21 @@ class RAGPipeline:
         self._graph = None  # Compiled graph; built on first run to avoid import-time graph build.
 
     @staticmethod
-    def build_initial_state(query: str) -> RAGState:
+    def build_initial_state(
+        query: str,
+        *,
+        clarification_answer: str | None = None,
+        allow_clarification: bool = True,
+    ) -> RAGState:
         """Build a fresh initial graph state for a single user query."""
+        effective_query = _query_with_clarification(query, clarification_answer)
         return {
             "query": query,
             "query_hash": _query_hash(query),
-            "retrieval_query": query,
+            "retrieval_query": effective_query,
             "rewritten_queries": [],
+            "clarification_answer": clarification_answer,
+            "allow_clarification": allow_clarification,
             "rewrite_iteration": 0,
             "query_rewritten": False,
             "query_rewrite_fallback": False,
@@ -336,16 +353,20 @@ class RAGPipeline:
         """Optionally rewrite the retrieval query while preserving the original user question."""
         cfg = self.optional_nodes_config
         state["context_relevance_should_rewrite"] = False
+        effective_question = _query_with_clarification(
+            state["query"],
+            state.get("clarification_answer"),
+        )
         if not cfg.enable_query_rewriter:
-            state["retrieval_query"] = state.get("retrieval_query") or state["query"]
+            state["retrieval_query"] = state.get("retrieval_query") or effective_question
             return state
 
         t0 = time.perf_counter()
         system = load_query_rewriter_system_prompt()
         user_tmpl = load_query_rewriter_user_prompt_template()
         user = user_tmpl.format(
-            question=state["query"],
-            retrieval_query=state.get("retrieval_query") or state["query"],
+            question=effective_question,
+            retrieval_query=state.get("retrieval_query") or effective_question,
             rewrite_iteration=state.get("rewrite_iteration", 0),
             context_relevance_score=state.get("context_relevance_score"),
             context_relevance_reason=state.get("context_relevance_reason") or "",
@@ -359,7 +380,7 @@ class RAGPipeline:
             )
         except Exception as exc:
             state["query_rewrite_fallback"] = True
-            state["retrieval_query"] = state["query"]
+            state["retrieval_query"] = effective_question
             state.setdefault("latency_ms", {})["query_rewrite"] = (time.perf_counter() - t0) * 1000
             inc_rag_fallback("query_rewrite_fallback")
             logger.warning(
@@ -373,8 +394,12 @@ class RAGPipeline:
             )
             return state
 
-        current_retrieval_query = state.get("retrieval_query") or state["query"]
-        if decision.action == "clarify" and cfg.enable_query_clarification:
+        current_retrieval_query = state.get("retrieval_query") or effective_question
+        if (
+            decision.action == "clarify"
+            and cfg.enable_query_clarification
+            and state.get("allow_clarification", True)
+        ):
             question = decision.clarification_question or (
                 "Уточните, пожалуйста, клинический вопрос для поиска в рекомендациях."
             )
@@ -721,9 +746,13 @@ class RAGPipeline:
         t0 = time.perf_counter()
         system = load_context_relevance_system_prompt()
         user_tmpl = load_context_relevance_user_prompt_template()
+        effective_question = _query_with_clarification(
+            state["query"],
+            state.get("clarification_answer"),
+        )
         user = user_tmpl.format(
-            question=state["query"],
-            retrieval_query=state.get("retrieval_query") or state["query"],
+            question=effective_question,
+            retrieval_query=state.get("retrieval_query") or effective_question,
             context=state["context"],
         )
         try:
@@ -847,9 +876,13 @@ class RAGPipeline:
 
         system = format_rag_system_prompt()
         user_tmpl = load_rag_user_prompt_template()
+        effective_question = _query_with_clarification(
+            state["query"],
+            state.get("clarification_answer"),
+        )
         user = user_tmpl.format(
             context=state["context"],
-            question=state["query"],
+            question=effective_question,
         )
         messages: list[BaseMessage] = [SystemMessage(content=system), HumanMessage(content=user)]
 
@@ -1106,10 +1139,22 @@ class RAGPipeline:
             state = self.query_rewrite_node(state)
         return state
 
-    def run(self, query: str) -> RAGState:
+    def run(
+        self,
+        query: str,
+        *,
+        clarification_answer: str | None = None,
+        allow_clarification: bool = True,
+    ) -> RAGState:
         """Execute the pipeline for one user query and return the final :class:`RAGState`."""
         self.ensure_compiled()
-        return self._graph.invoke(self.build_initial_state(query))
+        return self._graph.invoke(
+            self.build_initial_state(
+                query,
+                clarification_answer=clarification_answer,
+                allow_clarification=allow_clarification,
+            )
+        )
 
     def ensure_compiled(self) -> None:
         """Compile the LangGraph once without running retrieval or generation."""

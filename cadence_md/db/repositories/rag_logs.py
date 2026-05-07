@@ -188,6 +188,53 @@ class RAGLogRepository:
             finished_at=datetime.now(UTC),
         )
 
+    async def mark_awaiting_clarification(
+        self,
+        request_id: uuid.UUID,
+        *,
+        question: str,
+    ) -> RAGRequestLog | None:
+        """Atomically move a running request into the clarification wait state."""
+        return await self._guarded_status_update(
+            request_id,
+            from_status=RAGRequestStatus.RUNNING,
+            to_status=RAGRequestStatus.AWAITING_CLARIFICATION,
+            clarification_question=question,
+            clarification_requested_at=datetime.now(UTC),
+            clarification_attempts=RAGRequestLog.clarification_attempts + 1,
+        )
+
+    async def submit_clarification(
+        self,
+        request_id: uuid.UUID,
+        *,
+        answer: str,
+        celery_task_id: str,
+    ) -> RAGRequestLog | None:
+        """Atomically store a clarification answer and requeue the request."""
+        stmt = (
+            update(RAGRequestLog)
+            .where(
+                RAGRequestLog.id == request_id,
+                RAGRequestLog.status == RAGRequestStatus.AWAITING_CLARIFICATION,
+            )
+            .values(
+                status=RAGRequestStatus.QUEUED,
+                clarification_answer=answer,
+                clarification_answered_at=datetime.now(UTC),
+                celery_task_id=celery_task_id,
+                cancel_requested_at=None,
+            )
+            .returning(RAGRequestLog.id)
+        )
+        result = await self._session.execute(stmt)
+        updated_id = result.scalar_one_or_none()
+        if updated_id is None:
+            return None
+        await self._session.flush()
+        self._session.expire_all()
+        return await self.get_request(updated_id)
+
     async def mark_cancelled(self, request_id: uuid.UUID) -> RAGRequestLog | None:
         """Mark a request as cancelled and store its finish timestamp."""
         return await self._update_request(
