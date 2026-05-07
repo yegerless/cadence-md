@@ -6,32 +6,41 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 from collections.abc import Callable
-from typing import Any, TypedDict
+from itertools import pairwise
+from typing import Any, Literal, TypedDict
 
 import httpx
 from langchain_core.documents import Document
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.output_parsers import JsonOutputParser
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph
+from pydantic import BaseModel, Field, ValidationError
 
 from cadence_md.app.enums import VectorSearchType
 from cadence_md.app.llm import LLMWrapper
 from cadence_md.app.qdrant import QdrantManager
 from cadence_md.app.rag_prompts import (
     format_rag_system_prompt,
+    load_answer_formatter_system_prompt,
+    load_answer_formatter_user_prompt_template,
+    load_context_relevance_system_prompt,
+    load_context_relevance_user_prompt_template,
+    load_query_rewriter_system_prompt,
+    load_query_rewriter_user_prompt_template,
     load_rag_user_prompt_template,
 )
 from cadence_md.app.reranker import RerankerAPIError, RerankerWrapper
-from cadence_md.app.settings import settings
+from cadence_md.app.settings import RAGOptionalNodesConfig, settings
 from cadence_md.observability.langfuse import record_generation, record_span
 from cadence_md.observability.metrics import inc_rag_fallback, observe_rag_node
 from cadence_md.observability.privacy import redact_medical_query
 from cadence_md.observability.settings import observability_settings
 
 logger = logging.getLogger(__name__)
-
 
 # Safe answers used when the graph has to short-circuit a node because of an unrecoverable error.
 # Keep them aligned with the system prompt format ("Краткий вывод:" + "Подробнее:") so downstream
@@ -60,6 +69,33 @@ NO_CONTEXT_ANSWER = (
     "Подробнее:\n"
     "- Поиск по корпусу не вернул релевантных фрагментов клинических рекомендаций."
 )
+
+_DOC_REF_RE = re.compile(r"\[Doc \d+\]")
+
+
+class QueryRewriteDecision(BaseModel):
+    """Structured decision returned by the optional query rewriter."""
+
+    action: Literal["rewrite", "keep", "clarify"]
+    rewritten_query: str = ""
+    clarification_question: str | None = None
+    reason: str = ""
+
+
+class ContextRelevanceGrade(BaseModel):
+    """Structured grade returned by the optional context relevance evaluator."""
+
+    is_relevant: bool
+    score: float = Field(ge=0.0, le=1.0)
+    supported_doc_refs: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class AnswerFormatterResult(BaseModel):
+    """Structured result returned by the optional answer formatter."""
+
+    formatted_answer: str
+    reason: str = ""
 
 
 def _query_hash(query: str) -> str:
@@ -110,6 +146,20 @@ def _source_record(i: int, doc: Document) -> dict[str, Any]:
     }
 
 
+def _parse_json_model[JsonModelT: BaseModel](
+    raw_text: str, model_type: type[JsonModelT]
+) -> JsonModelT:
+    """Parse an LLM JSON response with LangChain's parser and validate with Pydantic."""
+    parser = JsonOutputParser(pydantic_object=model_type)
+    parsed = parser.parse(raw_text)
+    return model_type.model_validate(parsed)
+
+
+def _doc_refs(text: str) -> set[str]:
+    """Extract citation refs like ``[Doc 1]`` from model output."""
+    return set(_DOC_REF_RE.findall(text or ""))
+
+
 class RankedDocument(TypedDict):
     """A single retrieval candidate with all stage scores and stable identifiers.
 
@@ -137,6 +187,23 @@ class RAGState(TypedDict):
 
     query: str
     query_hash: str
+    retrieval_query: str
+    rewritten_queries: list[str]
+    rewrite_iteration: int
+    query_rewritten: bool
+    query_rewrite_fallback: bool
+    requires_clarification: bool
+    clarification_question: str | None
+    context_relevance_score: float | None
+    context_relevance_reason: str | None
+    context_relevance_supported_doc_refs: list[str]
+    context_relevance_failed: bool
+    context_relevance_fallback: bool
+    context_relevance_should_rewrite: bool
+    max_query_rewrite_iterations_reached: bool
+    raw_answer: str | None
+    answer_formatted: bool
+    answer_format_fallback: bool
     ranked_docs: list[RankedDocument]
     rerank_fallback: bool
     retrieval_failed: bool
@@ -183,11 +250,13 @@ class RAGPipeline:
         qdrant_manager: QdrantManager,
         reranker: RerankerWrapper,
         node_order: tuple[str, ...] | None = None,
+        optional_nodes_config: RAGOptionalNodesConfig | None = None,
     ) -> None:
         self.llm = llm
         self.reranker = reranker
         self.qdrant_manager = qdrant_manager
-        self._node_order = node_order or ("retrieve", "rerank", "context", "generate")
+        self._node_order = node_order
+        self.optional_nodes_config = optional_nodes_config or settings.rag_config.optional_nodes
         self._graph = None  # Compiled graph; built on first run to avoid import-time graph build.
 
     @staticmethod
@@ -196,6 +265,23 @@ class RAGPipeline:
         return {
             "query": query,
             "query_hash": _query_hash(query),
+            "retrieval_query": query,
+            "rewritten_queries": [],
+            "rewrite_iteration": 0,
+            "query_rewritten": False,
+            "query_rewrite_fallback": False,
+            "requires_clarification": False,
+            "clarification_question": None,
+            "context_relevance_score": None,
+            "context_relevance_reason": None,
+            "context_relevance_supported_doc_refs": [],
+            "context_relevance_failed": False,
+            "context_relevance_fallback": False,
+            "context_relevance_should_rewrite": False,
+            "max_query_rewrite_iterations_reached": False,
+            "raw_answer": None,
+            "answer_formatted": False,
+            "answer_format_fallback": False,
             "ranked_docs": [],
             "rerank_fallback": False,
             "retrieval_failed": False,
@@ -219,6 +305,128 @@ class RAGPipeline:
             return self.qdrant_manager.sparse_top_k
         return self.qdrant_manager.hybrid_top_k
 
+    def _invoke_json_model[JsonModelT: BaseModel](
+        self,
+        *,
+        node_name: str,
+        system_prompt: str,
+        user_prompt: str,
+        model_type: type[JsonModelT],
+    ) -> JsonModelT:
+        """Invoke the shared LLM wrapper and parse a typed JSON response."""
+        messages: list[BaseMessage] = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ]
+        raw_text = self.llm.invoke_messages(messages)
+        try:
+            return _parse_json_model(raw_text, model_type)
+        except (ValidationError, ValueError, TypeError) as exc:
+            logger.warning(
+                "rag.%s_json_parse_failed",
+                node_name,
+                extra={
+                    "event": f"rag.{node_name}_json_parse_failed",
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+
+    def query_rewrite_node(self, state: RAGState) -> RAGState:
+        """Optionally rewrite the retrieval query while preserving the original user question."""
+        cfg = self.optional_nodes_config
+        state["context_relevance_should_rewrite"] = False
+        if not cfg.enable_query_rewriter:
+            state["retrieval_query"] = state.get("retrieval_query") or state["query"]
+            return state
+
+        t0 = time.perf_counter()
+        system = load_query_rewriter_system_prompt()
+        user_tmpl = load_query_rewriter_user_prompt_template()
+        user = user_tmpl.format(
+            question=state["query"],
+            retrieval_query=state.get("retrieval_query") or state["query"],
+            rewrite_iteration=state.get("rewrite_iteration", 0),
+            context_relevance_score=state.get("context_relevance_score"),
+            context_relevance_reason=state.get("context_relevance_reason") or "",
+        )
+        try:
+            decision = self._invoke_json_model(
+                node_name="query_rewrite",
+                system_prompt=system,
+                user_prompt=user,
+                model_type=QueryRewriteDecision,
+            )
+        except Exception as exc:
+            state["query_rewrite_fallback"] = True
+            state["retrieval_query"] = state["query"]
+            state.setdefault("latency_ms", {})["query_rewrite"] = (time.perf_counter() - t0) * 1000
+            inc_rag_fallback("query_rewrite_fallback")
+            logger.warning(
+                "rag.query_rewrite_fallback",
+                extra={
+                    "event": "rag.query_rewrite_fallback",
+                    "query_hash": state["query_hash"],
+                    "error_type": type(exc).__name__,
+                    "prompt_version": settings.rag_config.prompt_version,
+                },
+            )
+            return state
+
+        current_retrieval_query = state.get("retrieval_query") or state["query"]
+        if decision.action == "clarify" and cfg.enable_query_clarification:
+            question = decision.clarification_question or (
+                "Уточните, пожалуйста, клинический вопрос для поиска в рекомендациях."
+            )
+            state["requires_clarification"] = True
+            state["clarification_question"] = question
+            state["answer"] = question
+            state["answer_word_count"] = len(question.split())
+        elif decision.action == "rewrite":
+            rewritten = decision.rewritten_query.strip()
+            if rewritten and rewritten != current_retrieval_query:
+                state["retrieval_query"] = rewritten
+                state["rewritten_queries"] = [*state.get("rewritten_queries", []), rewritten]
+                state["rewrite_iteration"] = int(state.get("rewrite_iteration", 0)) + 1
+                state["query_rewritten"] = True
+        elif decision.action == "clarify":
+            fallback_query = decision.rewritten_query.strip()
+            if fallback_query and fallback_query != current_retrieval_query:
+                state["retrieval_query"] = fallback_query
+                state["rewritten_queries"] = [*state.get("rewritten_queries", []), fallback_query]
+                state["rewrite_iteration"] = int(state.get("rewrite_iteration", 0)) + 1
+                state["query_rewritten"] = True
+
+        dt_ms = (time.perf_counter() - t0) * 1000
+        state.setdefault("latency_ms", {})["query_rewrite"] = dt_ms
+        observe_rag_node("query_rewrite", dt_ms)
+        record_span(
+            "query_rewrite",
+            metadata={
+                "query_hash": state["query_hash"],
+                "latency_ms": round(dt_ms, 2),
+                "action": decision.action,
+                "query_rewritten": state["query_rewritten"],
+                "requires_clarification": state["requires_clarification"],
+                "rewrite_iteration": state["rewrite_iteration"],
+                "prompt_version": settings.rag_config.prompt_version,
+            },
+        )
+        logger.info(
+            "rag.query_rewrite",
+            extra={
+                "event": "rag.query_rewrite",
+                "query_hash": state["query_hash"],
+                "action": decision.action,
+                "query_rewritten": state["query_rewritten"],
+                "requires_clarification": state["requires_clarification"],
+                "rewrite_iteration": state["rewrite_iteration"],
+                "latency_ms": round(dt_ms, 2),
+                "prompt_version": settings.rag_config.prompt_version,
+            },
+        )
+        return state
+
     def retrieve_node(self, state: RAGState) -> RAGState:
         """Call Qdrant and store ranked candidates plus retrieval scores; record Qdrant latency.
 
@@ -228,9 +436,10 @@ class RAGPipeline:
         """
         qh = state["query_hash"]
         k = self._retrieval_k_for_mode()
+        retrieval_query = state.get("retrieval_query") or state["query"]
         t0 = time.perf_counter()
         try:
-            retrieved = self.qdrant_manager.retrieve(state["query"])
+            retrieved = self.qdrant_manager.retrieve(retrieval_query)
         except Exception as exc:
             dt_ms = (time.perf_counter() - t0) * 1000
             state["ranked_docs"] = []
@@ -252,6 +461,7 @@ class RAGPipeline:
                     "latency_ms": round(dt_ms, 2),
                     "retrieval_failed": True,
                     "error_type": state["error_type"],
+                    "query_rewritten": state.get("query_rewritten", False),
                     "prompt_version": settings.rag_config.prompt_version,
                 },
             )
@@ -264,6 +474,7 @@ class RAGPipeline:
                     "k": k,
                     "latency_ms": round(dt_ms, 2),
                     "error_type": state["error_type"],
+                    "query_rewritten": state.get("query_rewritten", False),
                     "prompt_version": settings.rag_config.prompt_version,
                 },
             )
@@ -285,6 +496,7 @@ class RAGPipeline:
                 "latency_ms": round(dt_ms, 2),
                 "n_docs": len(ranked),
                 "search_mode": str(self.qdrant_manager.search_mode),
+                "query_rewritten": state.get("query_rewritten", False),
                 "prompt_version": settings.rag_config.prompt_version,
             },
         )
@@ -298,6 +510,7 @@ class RAGPipeline:
                 "k": k,
                 "latency_ms": round(dt_ms, 2),
                 "n_docs": len(ranked),
+                "query_rewritten": state.get("query_rewritten", False),
                 "prompt_version": settings.rag_config.prompt_version,
             },
         )
@@ -311,7 +524,7 @@ class RAGPipeline:
         if state.get("retrieval_failed"):
             return state
 
-        query = state["query"]
+        query = state.get("retrieval_query") or state["query"]
         ranked = state.get("ranked_docs") or []
         qh = state["query_hash"]
 
@@ -496,6 +709,108 @@ class RAGPipeline:
         )
         return state
 
+    def context_relevance_node(self, state: RAGState) -> RAGState:
+        """Optionally grade whether the assembled context supports answering the query."""
+        cfg = self.optional_nodes_config
+        state["context_relevance_should_rewrite"] = False
+        if not cfg.enable_context_relevance_grader:
+            return state
+        if state.get("retrieval_failed") or not state.get("context"):
+            return state
+
+        t0 = time.perf_counter()
+        system = load_context_relevance_system_prompt()
+        user_tmpl = load_context_relevance_user_prompt_template()
+        user = user_tmpl.format(
+            question=state["query"],
+            retrieval_query=state.get("retrieval_query") or state["query"],
+            context=state["context"],
+        )
+        try:
+            grade = self._invoke_json_model(
+                node_name="context_relevance",
+                system_prompt=system,
+                user_prompt=user,
+                model_type=ContextRelevanceGrade,
+            )
+        except Exception as exc:
+            dt_ms = (time.perf_counter() - t0) * 1000
+            state["context_relevance_fallback"] = True
+            state["context_relevance_score"] = None
+            state["context_relevance_reason"] = f"fallback: {type(exc).__name__}"
+            state.setdefault("latency_ms", {})["context_relevance"] = dt_ms
+            observe_rag_node("context_relevance", dt_ms)
+            inc_rag_fallback("context_relevance_fallback")
+            logger.warning(
+                "rag.context_relevance_fallback",
+                extra={
+                    "event": "rag.context_relevance_fallback",
+                    "query_hash": state["query_hash"],
+                    "error_type": type(exc).__name__,
+                    "prompt_version": settings.rag_config.prompt_version,
+                },
+            )
+            return state
+
+        supported_refs = [
+            ref for ref in grade.supported_doc_refs if ref in _doc_refs(state.get("context", ""))
+        ]
+        state["context_relevance_score"] = grade.score
+        state["context_relevance_reason"] = grade.reason
+        state["context_relevance_supported_doc_refs"] = supported_refs
+        is_relevant = (
+            grade.is_relevant
+            and grade.score >= cfg.context_relevance_min_score
+            and len(supported_refs) >= cfg.context_relevance_min_supported_docs
+        )
+
+        if not is_relevant:
+            can_rewrite = (
+                cfg.enable_query_rewriter
+                and state.get("rewrite_iteration", 0) < cfg.max_query_rewrite_iterations
+            )
+            if can_rewrite:
+                state["ranked_docs"] = []
+                state["sources"] = []
+                state["context"] = ""
+                state["context_chars"] = 0
+                state["context_relevance_should_rewrite"] = True
+            else:
+                state["context_relevance_failed"] = True
+                if state.get("rewrite_iteration", 0) >= cfg.max_query_rewrite_iterations:
+                    state["max_query_rewrite_iterations_reached"] = True
+
+        dt_ms = (time.perf_counter() - t0) * 1000
+        state.setdefault("latency_ms", {})["context_relevance"] = dt_ms
+        observe_rag_node("context_relevance", dt_ms)
+        if state["context_relevance_failed"]:
+            inc_rag_fallback("context_relevance_failed")
+        record_span(
+            "context_relevance",
+            metadata={
+                "query_hash": state["query_hash"],
+                "latency_ms": round(dt_ms, 2),
+                "score": state["context_relevance_score"],
+                "is_relevant": is_relevant,
+                "should_rewrite": state["context_relevance_should_rewrite"],
+                "supported_doc_refs": supported_refs,
+                "prompt_version": settings.rag_config.prompt_version,
+            },
+        )
+        logger.info(
+            "rag.context_relevance",
+            extra={
+                "event": "rag.context_relevance",
+                "query_hash": state["query_hash"],
+                "score": state["context_relevance_score"],
+                "is_relevant": is_relevant,
+                "should_rewrite": state["context_relevance_should_rewrite"],
+                "latency_ms": round(dt_ms, 2),
+                "prompt_version": settings.rag_config.prompt_version,
+            },
+        )
+        return state
+
     def generate_node(self, state: RAGState) -> RAGState:
         """Render system+user messages from prompt templates; invoke LLM; log token-ish latency.
 
@@ -607,31 +922,189 @@ class RAGPipeline:
         )
         return state
 
-    def _build_graph(self):
-        """Wire LangGraph nodes in retrieval order and return a compiled graph."""
-        workflow = StateGraph(RAGState)
+    def answer_format_node(self, state: RAGState) -> RAGState:
+        """Optionally normalize the generated answer while preserving citations."""
+        cfg = self.optional_nodes_config
+        if not cfg.enable_answer_formatter:
+            return state
+        if (
+            state.get("retrieval_failed")
+            or state.get("requires_clarification")
+            or not state.get("answer")
+        ):
+            return state
 
-        node_handlers: dict[str, Callable[[RAGState], RAGState]] = {
+        raw_answer = state["answer"]
+        state["raw_answer"] = raw_answer
+        t0 = time.perf_counter()
+        system = load_answer_formatter_system_prompt()
+        user_tmpl = load_answer_formatter_user_prompt_template()
+        user = user_tmpl.format(
+            answer=raw_answer,
+            context=state.get("context", ""),
+            sources=", ".join(source.get("doc_ref", "") for source in state.get("sources", [])),
+        )
+        try:
+            result = self._invoke_json_model(
+                node_name="answer_format",
+                system_prompt=system,
+                user_prompt=user,
+                model_type=AnswerFormatterResult,
+            )
+            formatted = result.formatted_answer.strip()
+            allowed_refs = _doc_refs(raw_answer) | {
+                source.get("doc_ref", "") for source in state.get("sources", [])
+            }
+            formatted_refs = _doc_refs(formatted)
+            if not formatted or not formatted_refs.issubset(allowed_refs):
+                raise ValueError("formatted answer contains unknown citations or is empty")
+            state["answer"] = formatted
+            state["answer_formatted"] = True
+        except Exception as exc:
+            state["answer"] = raw_answer
+            state["answer_format_fallback"] = True
+            inc_rag_fallback("answer_format_fallback")
+            logger.warning(
+                "rag.answer_format_fallback",
+                extra={
+                    "event": "rag.answer_format_fallback",
+                    "query_hash": state["query_hash"],
+                    "error_type": type(exc).__name__,
+                    "prompt_version": settings.rag_config.prompt_version,
+                },
+            )
+
+        dt_ms = (time.perf_counter() - t0) * 1000
+        state.setdefault("latency_ms", {})["answer_format"] = dt_ms
+        state["answer_word_count"] = len(state["answer"].split())
+        observe_rag_node("answer_format", dt_ms)
+        record_span(
+            "answer_format",
+            metadata={
+                "query_hash": state["query_hash"],
+                "latency_ms": round(dt_ms, 2),
+                "answer_formatted": state["answer_formatted"],
+                "answer_format_fallback": state["answer_format_fallback"],
+                "prompt_version": settings.rag_config.prompt_version,
+            },
+        )
+        logger.info(
+            "rag.answer_format",
+            extra={
+                "event": "rag.answer_format",
+                "query_hash": state["query_hash"],
+                "answer_formatted": state["answer_formatted"],
+                "answer_format_fallback": state["answer_format_fallback"],
+                "latency_ms": round(dt_ms, 2),
+                "prompt_version": settings.rag_config.prompt_version,
+            },
+        )
+        return state
+
+    @staticmethod
+    def _query_rewrite_route(state: RAGState) -> Literal["retrieve", "end"]:
+        """Route to retrieval unless the rewriter produced a clarification stop-state."""
+        return "end" if state.get("requires_clarification") else "retrieve"
+
+    @staticmethod
+    def _context_relevance_route(state: RAGState) -> Literal["query_rewrite", "generate"]:
+        """Route back to query rewriting when the relevance grader requests another search."""
+        return "query_rewrite" if state.get("context_relevance_should_rewrite") else "generate"
+
+    def _node_handlers(self) -> dict[str, Callable[[RAGState], RAGState]]:
+        """Return all graph node handlers keyed by stable node names."""
+        return {
+            "query_rewrite": self.query_rewrite_node,
             "retrieve": self.retrieve_node,
             "rerank": self.reranker_node,
             "context": self.context_node,
+            "context_relevance": self.context_relevance_node,
             "generate": self.generate_node,
+            "answer_format": self.answer_format_node,
         }
-        if not self._node_order:
+
+    def _build_linear_graph(self, node_order: tuple[str, ...]):
+        """Wire a simple linear graph for tests and explicit extension points."""
+        workflow = StateGraph(RAGState)
+        node_handlers = self._node_handlers()
+        if not node_order:
             raise ValueError("node_order must include at least one node")
-        unknown_nodes = [name for name in self._node_order if name not in node_handlers]
+        unknown_nodes = [name for name in node_order if name not in node_handlers]
         if unknown_nodes:
             raise ValueError(f"Unknown node(s) in node_order: {unknown_nodes}")
 
-        for node_name in self._node_order:
+        for node_name in node_order:
             workflow.add_node(node_name, node_handlers[node_name])
 
-        workflow.add_edge(START, self._node_order[0])
-        for src, dst in zip(self._node_order, self._node_order[1:], strict=False):
+        workflow.add_edge(START, node_order[0])
+        for src, dst in pairwise(node_order):
             workflow.add_edge(src, dst)
-        workflow.add_edge(self._node_order[-1], END)
-
+        workflow.add_edge(node_order[-1], END)
         return workflow.compile()
+
+    def _build_default_graph(self):
+        """Wire the feature-flagged default graph with optional conditional nodes."""
+        workflow = StateGraph(RAGState)
+        cfg = self.optional_nodes_config
+
+        if cfg.enable_query_rewriter or cfg.enable_context_relevance_grader:
+            workflow.add_node("query_rewrite", self.query_rewrite_node)
+        workflow.add_node("retrieve", self.retrieve_node)
+        workflow.add_node("rerank", self.reranker_node)
+        workflow.add_node("context", self.context_node)
+        if cfg.enable_context_relevance_grader:
+            workflow.add_node("context_relevance", self.context_relevance_node)
+        workflow.add_node("generate", self.generate_node)
+        if cfg.enable_answer_formatter:
+            workflow.add_node("answer_format", self.answer_format_node)
+
+        if cfg.enable_query_rewriter:
+            workflow.add_edge(START, "query_rewrite")
+            workflow.add_conditional_edges(
+                "query_rewrite",
+                self._query_rewrite_route,
+                {"retrieve": "retrieve", "end": END},
+            )
+        else:
+            workflow.add_edge(START, "retrieve")
+
+        workflow.add_edge("retrieve", "rerank")
+        workflow.add_edge("rerank", "context")
+        if cfg.enable_context_relevance_grader:
+            workflow.add_edge("context", "context_relevance")
+            workflow.add_conditional_edges(
+                "context_relevance",
+                self._context_relevance_route,
+                {"query_rewrite": "query_rewrite", "generate": "generate"},
+            )
+        else:
+            workflow.add_edge("context", "generate")
+        if cfg.enable_answer_formatter:
+            workflow.add_edge("generate", "answer_format")
+            workflow.add_edge("answer_format", END)
+        else:
+            workflow.add_edge("generate", END)
+        return workflow.compile()
+
+    def _build_graph(self):
+        """Wire LangGraph nodes and return a compiled graph."""
+        if self._node_order is not None:
+            return self._build_linear_graph(self._node_order)
+        return self._build_default_graph()
+
+    def run_retriever_only(self, query: str) -> RAGState:
+        """Run retrieval-oriented nodes without answer generation or formatting."""
+        state = self.build_initial_state(query)
+        state = self.query_rewrite_node(state)
+        while not state.get("requires_clarification"):
+            state = self.retrieve_node(state)
+            state = self.reranker_node(state)
+            state = self.context_node(state)
+            state = self.context_relevance_node(state)
+            if not state.get("context_relevance_should_rewrite"):
+                break
+            state = self.query_rewrite_node(state)
+        return state
 
     def run(self, query: str) -> RAGState:
         """Execute the pipeline for one user query and return the final :class:`RAGState`."""

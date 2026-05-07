@@ -32,6 +32,19 @@ def _base_state(**overrides: object) -> dict:
     state = {
         "query": "q",
         "query_hash": "hash1",
+        "retrieval_query": "q",
+        "rewritten_queries": [],
+        "query_rewritten": False,
+        "query_rewrite_fallback": False,
+        "requires_clarification": False,
+        "clarification_question": None,
+        "context_relevance_score": None,
+        "context_relevance_failed": False,
+        "context_relevance_fallback": False,
+        "max_query_rewrite_iterations_reached": False,
+        "raw_answer": None,
+        "answer_formatted": False,
+        "answer_format_fallback": False,
         "ranked_docs": [],
         "rerank_fallback": False,
         "retrieval_failed": False,
@@ -107,6 +120,42 @@ def test_run_maps_generate_fallback_and_context_truncated_flags() -> None:
     assert response.flags.context_truncated is True
 
 
+def test_run_maps_optional_fields_and_flags() -> None:
+    pipeline = MagicMock()
+    pipeline.run.return_value = _base_state(
+        retrieval_query="rewritten",
+        rewritten_queries=["rewritten"],
+        query_rewritten=True,
+        query_rewrite_fallback=True,
+        requires_clarification=True,
+        clarification_question="Уточните?",
+        context_relevance_score=0.2,
+        context_relevance_failed=True,
+        context_relevance_fallback=True,
+        max_query_rewrite_iterations_reached=True,
+        raw_answer="raw",
+        answer_formatted=True,
+        answer_format_fallback=True,
+    )
+    service = RAGService(pipeline=pipeline)
+
+    response = service.run(RAGRequest(query="query"))
+
+    assert response.retrieval_query == "rewritten"
+    assert response.rewritten_queries == ["rewritten"]
+    assert response.clarification_question == "Уточните?"
+    assert response.context_relevance_score == 0.2
+    assert response.raw_answer == "raw"
+    assert response.flags.query_rewritten is True
+    assert response.flags.query_rewrite_fallback is True
+    assert response.flags.requires_clarification is True
+    assert response.flags.context_relevance_failed is True
+    assert response.flags.context_relevance_fallback is True
+    assert response.flags.max_query_rewrite_iterations_reached is True
+    assert response.flags.answer_formatted is True
+    assert response.flags.answer_format_fallback is True
+
+
 def test_run_handles_empty_context_and_empty_docs() -> None:
     pipeline = MagicMock()
     pipeline.run.return_value = _base_state(
@@ -147,19 +196,16 @@ def test_run_keeps_none_final_score() -> None:
     assert response.sources[0].score is None
 
 
-def test_retrieve_uses_retrieve_and_rerank_nodes() -> None:
+def test_retrieve_uses_retriever_only_helper() -> None:
     pipeline = MagicMock()
-    pipeline.build_initial_state.return_value = _base_state(query="query", query_hash="hash-r")
     doc = Document(page_content="a", metadata={"filename": "1.pdf", "section_id": "sec-1"})
-    pipeline.retrieve_node.return_value = _base_state(
+    pipeline.run_retriever_only.return_value = _base_state(
         query="query",
         query_hash="hash-r",
-        ranked_docs=[_ranked_doc(doc, rank=1, retrieval_score=0.4, final_score=0.4)],
-        answer="",
-    )
-    pipeline.reranker_node.return_value = _base_state(
-        query="query",
-        query_hash="hash-r",
+        retrieval_query="query rewritten",
+        rewritten_queries=["query rewritten"],
+        query_rewritten=True,
+        context_relevance_score=0.9,
         ranked_docs=[
             _ranked_doc(
                 doc,
@@ -175,8 +221,10 @@ def test_retrieve_uses_retrieve_and_rerank_nodes() -> None:
 
     response = service.retrieve(RAGRequest(query="query"))
 
-    pipeline.build_initial_state.assert_called_once_with("query")
-    pipeline.retrieve_node.assert_called_once()
-    pipeline.reranker_node.assert_called_once()
+    pipeline.run_retriever_only.assert_called_once_with("query")
     assert response.sources[0].score == 0.8
     assert response.query_hash == "hash-r"
+    assert response.retrieval_query == "query rewritten"
+    assert response.rewritten_queries == ["query rewritten"]
+    assert response.flags.query_rewritten is True
+    assert response.context_relevance_score == 0.9

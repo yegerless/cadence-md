@@ -42,9 +42,7 @@ class RAGService:
         return self._state_to_response(state, langfuse_trace_id=trace.trace_id)
 
     def retrieve(self, request: RAGRequest) -> RAGRetrieveResponse:
-        state = self.pipeline.build_initial_state(request.query)
-        state = self.pipeline.retrieve_node(state)
-        state = self.pipeline.reranker_node(state)
+        state = self.pipeline.run_retriever_only(request.query)
         return self._state_to_retrieve_response(state)
 
     def _state_to_sources(self, state: dict[str, Any]) -> list[RAGSource]:
@@ -77,6 +75,16 @@ class RAGService:
             retrieval_failed=bool(state.get("retrieval_failed", False)),
             generate_fallback=bool(state.get("generate_fallback", False)),
             context_truncated=bool(state.get("context_truncated", False)),
+            query_rewritten=bool(state.get("query_rewritten", False)),
+            query_rewrite_fallback=bool(state.get("query_rewrite_fallback", False)),
+            requires_clarification=bool(state.get("requires_clarification", False)),
+            context_relevance_failed=bool(state.get("context_relevance_failed", False)),
+            context_relevance_fallback=bool(state.get("context_relevance_fallback", False)),
+            max_query_rewrite_iterations_reached=bool(
+                state.get("max_query_rewrite_iterations_reached", False)
+            ),
+            answer_formatted=bool(state.get("answer_formatted", False)),
+            answer_format_fallback=bool(state.get("answer_format_fallback", False)),
         )
 
     def _state_to_latency(self, state: dict[str, Any]) -> RAGLatency:
@@ -107,6 +115,11 @@ class RAGService:
             error_type=state.get("error_type"),
             error_message=state.get("error_message"),
             langfuse_trace_id=langfuse_trace_id,
+            retrieval_query=state.get("retrieval_query"),
+            rewritten_queries=list(state.get("rewritten_queries") or []),
+            clarification_question=state.get("clarification_question"),
+            raw_answer=state.get("raw_answer"),
+            context_relevance_score=state.get("context_relevance_score"),
         )
 
     def _state_to_retrieve_response(self, state: dict[str, Any]) -> RAGRetrieveResponse:
@@ -118,4 +131,8 @@ class RAGService:
             latency=self._state_to_latency(state),
             error_type=state.get("error_type"),
             error_message=state.get("error_message"),
+            retrieval_query=state.get("retrieval_query"),
+            rewritten_queries=list(state.get("rewritten_queries") or []),
+            clarification_question=state.get("clarification_question"),
+            context_relevance_score=state.get("context_relevance_score"),
         )

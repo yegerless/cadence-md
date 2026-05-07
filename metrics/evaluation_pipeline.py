@@ -111,6 +111,7 @@ class RAGEvaluationPipeline:
         gigachat_llm: GigaChat,
         gigachat_embeddings: GigaChatEmbeddings,
         ragas_metrics: list | None = None,
+        rag_optional_nodes_config: dict[str, Any] | None = None,
     ):
         """
         Initialize the evaluation pipeline for RAG
@@ -120,10 +121,12 @@ class RAGEvaluationPipeline:
             gigachat_llm: GigaChat LLM (used for evaluation by api calls inside RAGAS)
             gigachat_embeddings: GigaChat embeddings (used for evaluation by api calls inside RAGAS)
             ragas_metrics: List of RAGAS metrics to evaluate
+            rag_optional_nodes_config: Effective optional RAG node settings for artifacts
         Returns:
             Evaluation pipeline for RAG with RAGAS metrics
         """
         self.rag_service = rag_service
+        self.rag_optional_nodes_config = rag_optional_nodes_config
 
         # Initialize evaluation LLM and embeddings for ragas metrics
         self.evaluation_llm = LangchainLLMWrapper(gigachat_llm)
@@ -677,6 +680,7 @@ class RAGEvaluationPipeline:
             ragas_metric_names=[metric.name for metric in self.ragas_metrics],
             enable_text_matcher_metrics=enable_text_matcher_metrics,
             workers=workers,
+            rag_optional_nodes_config=getattr(self, "rag_optional_nodes_config", None),
         )
         write_json(run_dir / "run_manifest.json", manifest)
 
@@ -795,6 +799,7 @@ class RAGEvaluationPipeline:
             k=k,
             ragas_metric_names=[metric.name for metric in self.ragas_metrics],
             enable_text_matcher_metrics=enable_text_matcher_metrics,
+            rag_optional_nodes_config=getattr(self, "rag_optional_nodes_config", None),
         )
         write_json(run_dir / "run_manifest.json", manifest)
         cases_file = run_dir / "cases.jsonl"

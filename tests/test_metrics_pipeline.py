@@ -258,12 +258,18 @@ def test_metrics_parser_accepts_valid_full_args(tmp_path: Path) -> None:
             "--k",
             "7",
             "--enable-text-matcher-metrics",
+            "--disable-rag-query-rewriter",
+            "--disable-rag-context-relevance-grader",
+            "--disable-rag-answer-formatter",
         ]
     )
     assert args.command == "metrics-eval-full"
     assert args.sample_size == 10
     assert args.k == 7
     assert args.enable_text_matcher_metrics is True
+    assert args.disable_rag_query_rewriter is True
+    assert args.disable_rag_context_relevance_grader is True
+    assert args.disable_rag_answer_formatter is True
 
 
 def test_metrics_parser_accepts_retriever_workers(tmp_path: Path) -> None:
@@ -277,11 +283,15 @@ def test_metrics_parser_accepts_retriever_workers(tmp_path: Path) -> None:
             str(tmp_path),
             "--workers",
             "4",
+            "--disable-rag-query-rewriter",
+            "--disable-rag-context-relevance-grader",
         ]
     )
 
     assert args.command == "metrics-eval-retriever"
     assert args.workers == 4
+    assert args.disable_rag_query_rewriter is True
+    assert args.disable_rag_context_relevance_grader is True
 
 
 def test_metrics_parser_full_uses_default_k(tmp_path: Path) -> None:

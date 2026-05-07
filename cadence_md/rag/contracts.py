@@ -37,6 +37,14 @@ class RAGFlags(BaseModel):
     retrieval_failed: bool = False
     generate_fallback: bool = False
     context_truncated: bool = False
+    query_rewritten: bool = False
+    query_rewrite_fallback: bool = False
+    requires_clarification: bool = False
+    context_relevance_failed: bool = False
+    context_relevance_fallback: bool = False
+    max_query_rewrite_iterations_reached: bool = False
+    answer_formatted: bool = False
+    answer_format_fallback: bool = False
 
 
 class RAGLatency(BaseModel):
@@ -62,6 +70,11 @@ class RAGResponse(BaseModel):
     error_type: str | None = None
     error_message: str | None = None
     langfuse_trace_id: str | None = None
+    retrieval_query: str | None = None
+    rewritten_queries: list[str] = Field(default_factory=list)
+    clarification_question: str | None = None
+    raw_answer: str | None = None
+    context_relevance_score: float | None = None
 
 
 class RAGRetrieveResponse(BaseModel):
@@ -74,3 +87,7 @@ class RAGRetrieveResponse(BaseModel):
     latency: RAGLatency = Field(default_factory=RAGLatency)
     error_type: str | None = None
     error_message: str | None = None
+    retrieval_query: str | None = None
+    rewritten_queries: list[str] = Field(default_factory=list)
+    clarification_question: str | None = None
+    context_relevance_score: float | None = None

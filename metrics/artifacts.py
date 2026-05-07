@@ -106,6 +106,7 @@ def create_run_manifest(
     ragas_metric_names: list[str],
     enable_text_matcher_metrics: bool = False,
     workers: int | None = None,
+    rag_optional_nodes_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Build manifest payload for a validation run
@@ -122,6 +123,7 @@ def create_run_manifest(
         ragas_metric_names: List of RAGAS metric names to evaluate
         enable_text_matcher_metrics: Whether to enable text matcher metrics
         workers: Number of parallel retriever workers, when applicable
+        rag_optional_nodes_config: Effective optional RAG node settings, when overridden
     Returns:
         Dictionary containing the manifest payload for a validation run
     """
@@ -141,6 +143,7 @@ def create_run_manifest(
             "hybrid_top_k": rag_cfg.retrieval.hybrid_top_k,
         },
         "qdrant_collection": rag_cfg.qdrant_config.collection_name,
+        "optional_nodes": rag_optional_nodes_config or rag_cfg.optional_nodes.model_dump(),
     }
     if mode == "full":
         rag_config["llm_model"] = rag_cfg.llm.model_name

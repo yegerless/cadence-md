@@ -23,6 +23,40 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _add_rag_optional_node_flags(
+    parser: argparse.ArgumentParser, *, include_formatter: bool
+) -> None:
+    """Add optional RAG graph override flags to a metrics subcommand."""
+    parser.add_argument(
+        "--disable-rag-query-rewriter",
+        action="store_true",
+        help="Disable optional RAG query rewriting for this metrics run",
+    )
+    parser.add_argument(
+        "--disable-rag-context-relevance-grader",
+        action="store_true",
+        help="Disable optional RAG context relevance grading for this metrics run",
+    )
+    if include_formatter:
+        parser.add_argument(
+            "--disable-rag-answer-formatter",
+            action="store_true",
+            help="Disable optional RAG answer formatting for this full metrics run",
+        )
+
+
+def _rag_optional_node_overrides(args: argparse.Namespace) -> dict[str, bool]:
+    """Translate optional CLI disable flags into partial RAGOptionalNodesConfig updates."""
+    overrides: dict[str, bool] = {}
+    if getattr(args, "disable_rag_query_rewriter", False):
+        overrides["enable_query_rewriter"] = False
+    if getattr(args, "disable_rag_context_relevance_grader", False):
+        overrides["enable_context_relevance_grader"] = False
+    if getattr(args, "disable_rag_answer_formatter", False):
+        overrides["enable_answer_formatter"] = False
+    return overrides
+
+
 def build_project_cli_parser() -> argparse.ArgumentParser:
     """Argument parser for the project CLI (tests and programmatic use)."""
     parser = argparse.ArgumentParser(
@@ -113,6 +147,7 @@ def build_project_cli_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also compute prefixed retrieval metrics using text matcher",
     )
+    _add_rag_optional_node_flags(metrics_full, include_formatter=True)
 
     # command metrics-eval-retriever
     metrics_ret = subparsers.add_parser(
@@ -154,6 +189,7 @@ def build_project_cli_parser() -> argparse.ArgumentParser:
         default=1,
         help="Parallel worker threads for retriever cases",
     )
+    _add_rag_optional_node_flags(metrics_ret, include_formatter=False)
 
     # command parse-pdf
     parse_pdf = subparsers.add_parser(
@@ -241,7 +277,9 @@ def main() -> None:
     elif args.command in ("metrics-eval-full", "metrics-eval-retriever"):
         from metrics.main import build_evaluation_pipeline  # noqa: PLC0415
 
-        evaluation_pipeline = build_evaluation_pipeline()
+        evaluation_pipeline = build_evaluation_pipeline(
+            optional_nodes_overrides=_rag_optional_node_overrides(args)
+        )
         if args.command == "metrics-eval-full":
             evaluation_pipeline.run_full_evaluation(
                 dataset_file=args.dataset_file,

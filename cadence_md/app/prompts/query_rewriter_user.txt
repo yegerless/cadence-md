@@ -1,0 +1,19 @@
+Исходный вопрос пользователя:
+{question}
+
+Текущий поисковый запрос:
+{retrieval_query}
+
+Итерация переформулировки:
+{rewrite_iteration}
+
+Предыдущая оценка релевантности контекста:
+score={context_relevance_score}
+reason={context_relevance_reason}
+
+Выбери действие:
+- keep, если текущий поисковый запрос достаточно точный.
+- rewrite, если запрос можно улучшить для поиска в клинических рекомендациях.
+- clarify, если без уточнения нельзя понять клинический смысл вопроса.
+
+Верни только JSON с полями action, rewritten_query, clarification_question, reason.

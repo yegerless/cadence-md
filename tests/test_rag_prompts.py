@@ -62,3 +62,41 @@ def test_prompt_loaders_use_expected_filenames(
 
     assert rag_prompts.load_rag_system_prompt() == "sys"
     assert rag_prompts.load_rag_user_prompt_template() == "usr"
+
+
+def test_optional_node_prompt_loaders_use_expected_filenames(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ensure optional RAG node prompt filenames stay stable for operators."""
+    d = tmp_path / "prompts"
+    d.mkdir()
+    files = {
+        "query_rewriter_system.txt": "qrs",
+        "query_rewriter_user.txt": "question={question} retrieval={retrieval_query} "
+        "iteration={rewrite_iteration} score={context_relevance_score} "
+        "reason={context_relevance_reason}",
+        "context_relevance_system.txt": "crs",
+        "context_relevance_user.txt": "question={question} retrieval={retrieval_query} "
+        "context={context}",
+        "answer_formatter_system.txt": "afs",
+        "answer_formatter_user.txt": "answer={answer} context={context} sources={sources}",
+    }
+    for filename, text in files.items():
+        (d / filename).write_text(text, encoding="utf-8")
+    monkeypatch.setattr(rag_prompts, "_PROMPTS_DIR", d)
+
+    assert rag_prompts.load_query_rewriter_system_prompt() == "qrs"
+    assert "{retrieval_query}" in rag_prompts.load_query_rewriter_user_prompt_template()
+    assert rag_prompts.load_context_relevance_system_prompt() == "crs"
+    assert "{context}" in rag_prompts.load_context_relevance_user_prompt_template()
+    assert rag_prompts.load_answer_formatter_system_prompt() == "afs"
+    assert "{sources}" in rag_prompts.load_answer_formatter_user_prompt_template()
+
+
+def test_optional_node_prompt_files_have_expected_placeholders() -> None:
+    assert "{question}" in rag_prompts.load_query_rewriter_user_prompt_template()
+    assert "{retrieval_query}" in rag_prompts.load_query_rewriter_user_prompt_template()
+    assert "{context}" in rag_prompts.load_context_relevance_user_prompt_template()
+    assert "{answer}" in rag_prompts.load_answer_formatter_user_prompt_template()
+    assert "{sources}" in rag_prompts.load_answer_formatter_user_prompt_template()

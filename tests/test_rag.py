@@ -27,7 +27,7 @@ from cadence_md.app.rag import (
     _source_record,
 )
 from cadence_md.app.reranker import RerankerAPIError, RerankerWrapper
-from cadence_md.app.settings import settings
+from cadence_md.app.settings import RAGOptionalNodesConfig, settings
 
 
 def _minimal_qdrant_manager() -> QdrantManager:
@@ -39,11 +39,37 @@ def _minimal_qdrant_manager() -> QdrantManager:
     return mgr
 
 
+def _optional_nodes_disabled() -> RAGOptionalNodesConfig:
+    """Return config that preserves the historical linear pipeline behavior."""
+    return RAGOptionalNodesConfig(
+        enable_query_rewriter=False,
+        enable_context_relevance_grader=False,
+        enable_answer_formatter=False,
+    )
+
+
 def _make_state(**overrides: Any) -> RAGState:
     """Build a fresh ``RAGState`` with all fields populated to schema defaults."""
     base: RAGState = {
         "query": "q",
         "query_hash": "h",
+        "retrieval_query": "q",
+        "rewritten_queries": [],
+        "rewrite_iteration": 0,
+        "query_rewritten": False,
+        "query_rewrite_fallback": False,
+        "requires_clarification": False,
+        "clarification_question": None,
+        "context_relevance_score": None,
+        "context_relevance_reason": None,
+        "context_relevance_supported_doc_refs": [],
+        "context_relevance_failed": False,
+        "context_relevance_fallback": False,
+        "context_relevance_should_rewrite": False,
+        "max_query_rewrite_iterations_reached": False,
+        "raw_answer": None,
+        "answer_formatted": False,
+        "answer_format_fallback": False,
         "ranked_docs": [],
         "rerank_fallback": False,
         "retrieval_failed": False,
@@ -179,9 +205,9 @@ def test_retrieve_node_calls_qdrant_and_sets_latency() -> None:
     qm.retrieve = MagicMock(return_value=[(d, 0.42)])
     pipe = RAGPipeline(llm, qm, reranker=reranker)  # type: ignore[arg-type]
 
-    state = _make_state(query="q1", query_hash="ab")
+    state = _make_state(query="q1", retrieval_query="rewritten q1", query_hash="ab")
     out = pipe.retrieve_node(state)
-    qm.retrieve.assert_called_once_with("q1")
+    qm.retrieve.assert_called_once_with("rewritten q1")
     assert [rd["doc"] for rd in out["ranked_docs"]] == [d]
     assert [rd["retrieval_score"] for rd in out["ranked_docs"]] == [0.42]
     assert "qdrant" in out["latency_ms"]
@@ -420,7 +446,12 @@ def test_run_invokes_full_pipeline_with_mocks() -> None:
     doc = Document(page_content="chunk", metadata={"filename": "g.pdf", "section_title": "S"})
     qm.retrieve = MagicMock(return_value=[(doc, 0.9)])
     reranker.rerank.return_value = [(doc, 0.9)]
-    pipe = RAGPipeline(llm, qm, reranker=reranker)  # type: ignore[arg-type]
+    pipe = RAGPipeline(
+        llm,
+        qm,
+        reranker=reranker,  # type: ignore[arg-type]
+        optional_nodes_config=_optional_nodes_disabled(),
+    )
 
     out = pipe.run("Симптомы?")
     assert out["query"] == "Симптомы?"
@@ -440,6 +471,14 @@ def test_build_initial_state_has_schema_defaults() -> None:
     state = RAGPipeline.build_initial_state("Симптомы?")
     assert state["query"] == "Симптомы?"
     assert state["query_hash"] == _query_hash("Симптомы?")
+    assert state["retrieval_query"] == "Симптомы?"
+    assert state["rewritten_queries"] == []
+    assert state["rewrite_iteration"] == 0
+    assert state["query_rewritten"] is False
+    assert state["requires_clarification"] is False
+    assert state["context_relevance_score"] is None
+    assert state["raw_answer"] is None
+    assert state["answer_formatted"] is False
     assert state["ranked_docs"] == []
     assert state["sources"] == []
     assert state["context"] == ""
@@ -447,6 +486,185 @@ def test_build_initial_state_has_schema_defaults() -> None:
     assert state["latency_ms"] == {}
     assert state["retrieval_failed"] is False
     assert state["generate_fallback"] is False
+
+
+def test_query_rewrite_node_keep_and_rewrite() -> None:
+    llm = MagicMock()
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    pipe = RAGPipeline(llm, qm, reranker=reranker)  # type: ignore[arg-type]
+
+    llm.invoke_messages.return_value = (
+        '{"action":"keep","rewritten_query":"","clarification_question":null,"reason":"ok"}'
+    )
+    kept = pipe.query_rewrite_node(_make_state(query="q", retrieval_query="q"))
+    assert kept["retrieval_query"] == "q"
+    assert kept["query_rewritten"] is False
+
+    llm.invoke_messages.return_value = (
+        '{"action":"rewrite","rewritten_query":"точный медицинский запрос",'
+        '"clarification_question":null,"reason":"better"}'
+    )
+    rewritten = pipe.query_rewrite_node(_make_state(query="q", retrieval_query="q"))
+    assert rewritten["query"] == "q"
+    assert rewritten["retrieval_query"] == "точный медицинский запрос"
+    assert rewritten["rewritten_queries"] == ["точный медицинский запрос"]
+    assert rewritten["rewrite_iteration"] == 1
+    assert rewritten["query_rewritten"] is True
+
+
+def test_query_rewrite_node_clarification_stop_state() -> None:
+    llm = MagicMock()
+    llm.invoke_messages.return_value = (
+        '{"action":"clarify","rewritten_query":"","clarification_question":'
+        '"Уточните диагноз?","reason":"ambiguous"}'
+    )
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    pipe = RAGPipeline(
+        llm,
+        qm,
+        reranker=reranker,  # type: ignore[arg-type]
+        optional_nodes_config=RAGOptionalNodesConfig(enable_query_clarification=True),
+    )
+
+    out = pipe.query_rewrite_node(_make_state(query="Что делать?"))
+    assert out["requires_clarification"] is True
+    assert out["clarification_question"] == "Уточните диагноз?"
+    assert out["answer"] == "Уточните диагноз?"
+    assert out["answer_word_count"] > 0
+
+
+def test_query_rewrite_node_fallback_on_invalid_json() -> None:
+    llm = MagicMock()
+    llm.invoke_messages.return_value = "not json"
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    pipe = RAGPipeline(llm, qm, reranker=reranker)  # type: ignore[arg-type]
+
+    out = pipe.query_rewrite_node(_make_state(query="original", retrieval_query="previous"))
+    assert out["query_rewrite_fallback"] is True
+    assert out["retrieval_query"] == "original"
+
+
+def test_reranker_uses_retrieval_query() -> None:
+    llm = MagicMock()
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    doc = Document(page_content="a", metadata={"filename": "1.pdf"})
+    reranker.rerank.return_value = [(doc, 0.8)]
+    pipe = RAGPipeline(llm, qm, reranker=reranker)  # type: ignore[arg-type]
+
+    pipe.reranker_node(_state_with_retrieved([doc], [0.5], query="original", retrieval_query="rw"))
+
+    reranker.rerank.assert_called_once()
+    assert reranker.rerank.call_args[0][0] == "rw"
+
+
+def test_context_relevance_routes_generate_or_rewrite() -> None:
+    llm = MagicMock()
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    pipe = RAGPipeline(llm, qm, reranker=reranker)  # type: ignore[arg-type]
+
+    llm.invoke_messages.return_value = (
+        '{"is_relevant":true,"score":0.9,"supported_doc_refs":["[Doc 1]"],"reason":"hit"}'
+    )
+    relevant = pipe.context_relevance_node(
+        _make_state(context="[Doc 1] Filename: x.pdf\n\nctx", context_chars=10)
+    )
+    assert relevant["context_relevance_should_rewrite"] is False
+    assert relevant["context_relevance_score"] == 0.9
+
+    llm.invoke_messages.return_value = (
+        '{"is_relevant":false,"score":0.1,"supported_doc_refs":[],"reason":"miss"}'
+    )
+    doc = Document(page_content="ctx", metadata={"filename": "x.pdf"})
+    retry = pipe.context_relevance_node(
+        _state_with_retrieved(
+            [doc],
+            [0.1],
+            context="[Doc 1] Filename: x.pdf\n\nctx",
+            context_chars=10,
+        )
+    )
+    assert retry["context_relevance_should_rewrite"] is True
+    assert retry["ranked_docs"] == []
+    assert retry["context"] == ""
+
+
+def test_context_relevance_max_rewrite_iterations_reached() -> None:
+    llm = MagicMock()
+    llm.invoke_messages.return_value = (
+        '{"is_relevant":false,"score":0.1,"supported_doc_refs":[],"reason":"miss"}'
+    )
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    pipe = RAGPipeline(
+        llm,
+        qm,
+        reranker=reranker,  # type: ignore[arg-type]
+        optional_nodes_config=RAGOptionalNodesConfig(max_query_rewrite_iterations=1),
+    )
+
+    out = pipe.context_relevance_node(
+        _make_state(context="[Doc 1] Filename: x.pdf\n\nctx", context_chars=10, rewrite_iteration=1)
+    )
+    assert out["context_relevance_failed"] is True
+    assert out["max_query_rewrite_iterations_reached"] is True
+    assert out["context_relevance_should_rewrite"] is False
+
+
+def test_answer_formatter_success_and_unknown_citation_fallback() -> None:
+    llm = MagicMock()
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    pipe = RAGPipeline(llm, qm, reranker=reranker)  # type: ignore[arg-type]
+    state = _make_state(
+        answer="Ответ [Doc 1].",
+        context="[Doc 1] Filename: x.pdf\n\nctx",
+        sources=[{"doc_ref": "[Doc 1]"}],
+    )
+
+    llm.invoke_messages.return_value = (
+        '{"formatted_answer":"Краткий вывод:\\nОтвет [Doc 1].\\nЧто важно:\\n- Пункт [Doc 1].'
+        "\\nПрактические ориентиры:\\n- Нет.\\nОграничения ответа:\\n- Только контекст.\\n"
+        'Источники: [Doc 1]","reason":"formatted"}'
+    )
+    formatted = pipe.answer_format_node(state)
+    assert formatted["raw_answer"] == "Ответ [Doc 1]."
+    assert formatted["answer_formatted"] is True
+    assert "Что важно:" in formatted["answer"]
+
+    llm.invoke_messages.return_value = (
+        '{"formatted_answer":"Краткий вывод:\\nНовый факт [Doc 2].","reason":"bad"}'
+    )
+    fallback = pipe.answer_format_node(
+        _make_state(answer="Ответ [Doc 1].", sources=[{"doc_ref": "[Doc 1]"}])
+    )
+    assert fallback["answer"] == "Ответ [Doc 1]."
+    assert fallback["answer_format_fallback"] is True
+
+
+def test_disabled_optional_nodes_keep_previous_default_order() -> None:
+    llm = MagicMock()
+    llm.invoke_messages.return_value = "Ответ [Doc 1]."
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    doc = Document(page_content="chunk", metadata={"filename": "g.pdf"})
+    qm.retrieve = MagicMock(return_value=[(doc, 0.9)])
+    reranker.rerank.return_value = [(doc, 0.9)]
+    pipe = RAGPipeline(
+        llm,
+        qm,
+        reranker=reranker,  # type: ignore[arg-type]
+        optional_nodes_config=_optional_nodes_disabled(),
+    )
+
+    out = pipe.run("Вопрос?")
+    assert out["answer"] == "Ответ [Doc 1]."
+    llm.invoke_messages.assert_called_once()
+    qm.retrieve.assert_called_once_with("Вопрос?")
 
 
 def test_run_supports_configured_node_order() -> None:
