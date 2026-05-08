@@ -289,6 +289,24 @@ def test_retrieve_uses_retriever_only_helper() -> None:
     assert response.context_relevance_score == 0.9
 
 
+def test_retrieve_does_not_require_output_guardrail_state_fields() -> None:
+    pipeline = MagicMock()
+    pipeline.run_retriever_only.return_value = {
+        "query": "query",
+        "query_hash": "hash-r",
+        "ranked_docs": [],
+        "latency_ms": {"qdrant": 1.0},
+    }
+    service = RAGService(pipeline=pipeline)
+
+    response = service.retrieve(RAGRequest(query="query"))
+
+    assert response.sources == []
+    assert response.latency.output_guardrails is None
+    assert response.flags.output_guardrail_failed is False
+    assert not hasattr(response, "output_guardrail_score")
+
+
 def test_run_passes_clarification_controls_to_pipeline() -> None:
     pipeline = MagicMock()
     pipeline.run.return_value = _base_state()

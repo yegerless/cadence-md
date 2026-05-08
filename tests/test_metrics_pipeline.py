@@ -393,6 +393,7 @@ def test_metrics_help_contains_new_flags_and_omits_old_flags(
         assert "--enable-query-clarification" in help_text
         assert "--disable-query-clarification" in help_text
         assert "--max-query-rewrite-iterations" in help_text
+        assert "--max-output-guardrail-iterations" not in help_text
         assert "--disable-rag-query-rewriter" not in help_text
         assert "--disable-rag-context-relevance-grader" not in help_text
         assert "--disable-rag-answer-formatter" not in help_text
@@ -423,6 +424,7 @@ def test_rag_optional_node_overrides_collects_explicit_values(tmp_path: Path) ->
         "enable_query_clarification": True,
         "max_query_rewrite_iterations": 0,
     }
+    assert "max_output_guardrail_iterations" not in _rag_optional_node_overrides(args)
 
 
 def test_rag_optional_nodes_config_helper_does_not_mutate_settings() -> None:

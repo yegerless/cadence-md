@@ -138,6 +138,7 @@ def _response(
             context_relevance=0.75,
             llm=3.0,
             answer_format=0.25,
+            output_guardrails=0.4,
         ),
         flags=flags or RAGFlags(context_truncated=False),
         langfuse_trace_id="trace-1",
@@ -207,6 +208,7 @@ async def test_run_rag_request_happy_path(
         assert response.latency_ms_json["query_rewrite"] == 0.5
         assert response.latency_ms_json["context_relevance"] == 0.75
         assert response.latency_ms_json["answer_format"] == 0.25
+        assert response.latency_ms_json["output_guardrails"] == 0.4
         assert response.langfuse_trace_id == "trace-1"
         assert row is not None
         assert row.celery_task_id == "task-1"

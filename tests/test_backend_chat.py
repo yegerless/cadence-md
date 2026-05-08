@@ -968,9 +968,14 @@ async def test_get_succeeded_returns_answer(chat_app_bundle: ChatBundle) -> None
                     "query_rewrite": 2.0,
                     "context_relevance": 3.0,
                     "answer_format": 4.0,
+                    "output_guardrails": 5.0,
                     "llm": 1.0,
                 },
-                flags={"context_truncated": False},
+                flags={
+                    "context_truncated": False,
+                    "output_guardrail_passed": True,
+                    "output_guardrail_failed": False,
+                },
             )
             await repo.mark_succeeded(rid)
             await session.commit()
@@ -989,6 +994,9 @@ async def test_get_succeeded_returns_answer(chat_app_bundle: ChatBundle) -> None
         assert data["answer"]["latency_ms"]["query_rewrite"] == 2.0
         assert data["answer"]["latency_ms"]["context_relevance"] == 3.0
         assert data["answer"]["latency_ms"]["answer_format"] == 4.0
+        assert data["answer"]["latency_ms"]["output_guardrails"] == 5.0
+        assert data["answer"]["flags"]["output_guardrail_passed"] is True
+        assert data["answer"]["flags"]["output_guardrail_failed"] is False
 
 
 @pytest.mark.asyncio
