@@ -1,129 +1,95 @@
 # CADENCE-MD Frontend
 
-React SPA для медицинского RAG-сервиса CADENCE-MD.
+React + Vite SPA для медицинского RAG-сервиса CADENCE-MD.
+
+Frontend работает с versioned backend API под `/api/v1` и покрывает MVP
+workflow:
+
+- `/login` и `/register` для JWT-аутентификации.
+- `/chat` для асинхронных RAG-запросов, polling, cancel, retry, отправки
+  уточнения, отображения ответа, источников и скачивания PDF-источников.
+- `/profile` для профиля авторизованного пользователя.
+
+## Стек
+
+- React 19 + TypeScript
+- Vite dev server и same-origin API proxy
+- React Router
+- TanStack Query
+- Vitest, Testing Library, Happy DOM, MSW
 
 ## Команды
+
+Команды из `frontend/`:
 
 ```bash
 npm install
 npm run dev
-npm run build
 npm test
+npm run lint
+npm run build
+npm run preview
 ```
 
-`npm test` включает smoke-покрытие навигации по маршрутам (`/login`,
-`/register`, `/chat`, `/profile`) и mocked chat lifecycle статусов (`queued`,
-`running`, `succeeded`, `failed`, `cancelled`).
+Команды из корня репозитория:
 
-Приложение использует `VITE_API_BASE_URL` для API-запросов. Для локальной
-разработки рекомендуется оставить значение пустым, чтобы запросы к `/api/v1/...`
-шли через Vite proxy и не требовали CORS в браузере. Укажите
-`VITE_API_PROXY_TARGET=http://127.0.0.1:8000` для запуска с backend на хосте или
-`http://backend:8000` в Docker Compose.
+```bash
+npm --prefix frontend test
+npm --prefix frontend run lint
+npm --prefix frontend run build
+```
+
+## Настройка API
+
+Приложение использует `VITE_API_BASE_URL` для API-запросов.
+
+Для локальной разработки через Vite proxy оставьте `VITE_API_BASE_URL` пустым и
+укажите backend в `VITE_API_PROXY_TARGET`:
+
+```bash
+VITE_API_BASE_URL= VITE_API_PROXY_TARGET=http://127.0.0.1:8000 npm run dev
+```
+
+В Docker Compose `VITE_API_PROXY_TARGET` по умолчанию равен
+`http://backend:8000`. Так браузер работает с same-origin `/api/v1/...`, а
+backend не требует CORS middleware для локальной разработки.
+
+## Docker Compose
+
+Dev compose stack содержит сервис `frontend`:
+
+```bash
+docker compose --env-file ../.env.dev -f ../docker-compose-dev.yml up frontend
+```
+
+Из корня репозитория:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml up frontend
+docker compose --env-file .env.dev -f docker-compose-dev.yml watch frontend
+```
+
+Compose watch синхронизирует `./frontend` в `/app` и rebuild-ит контейнер при
+изменениях `frontend/package*.json`.
 
 ## Политика хранения токенов
 
-В MVP хранится только короткоживущий JWT access token в `sessionStorage`.
-Backend не предоставляет refresh-token endpoint, поэтому при истечении токена
-или любом ответе `401` frontend очищает auth state и переводит пользователя на
-`/login` для повторной авторизации.
+MVP хранит только короткоживущий JWT access token в `sessionStorage`. Backend не
+предоставляет refresh-token endpoint, поэтому истечение токена или любой API
+`401` очищает client auth state и переводит пользователя на `/login`.
 
-Компромисс: `sessionStorage` сохраняет сессию при refresh страницы и не
-отправляется автоматически браузером как cookie, что снижает CSRF-риск. При этом
-токен доступен JavaScript, поэтому основной риск — XSS. Frontend не логирует
-значения токенов и не рендерит недоверенный HTML.
+`sessionStorage` сохраняет сессию при refresh страницы и не отправляется
+автоматически как cookie. При этом токен доступен JavaScript, поэтому основной
+риск — XSS. Frontend не логирует token values и не рендерит недоверенный HTML.
 
-## Smoke-проверки
+## Тесты и smoke-проверки
 
-- Выполните login или register, обновите страницу и убедитесь, что `/chat`
-  остаётся доступным в рамках текущей браузерной сессии.
-- Нажмите logout и убедитесь, что в `sessionStorage` больше нет access token, а
-  `/chat` редиректит на `/login`.
-- Смоделируйте `401` от API и проверьте, что auth state очищается, а
-  пользователь переводится на `/login`.
-- Отправьте вопрос в чат, проверьте статусы queued/running и терминальные
-  состояния: answer, failed, cancelled и retry.
+`npm test` запускает Vitest smoke coverage для:
 
-# React + TypeScript + Vite
+- навигации по `/login`, `/register`, `/chat`, `/profile`;
+- сохранения auth state, logout и автоматической очистки после API `401`;
+- mocked chat lifecycle статусов: `queued`, `running`, `awaiting_clarification`,
+  `succeeded`, `failed`, `cancelled`;
+- отправки/отмены уточнения, retry, отображения ответа и источников.
 
-Этот шаблон предоставляет минимальную настройку для React в Vite с HMR и
-базовыми правилами ESLint.
-
-Сейчас доступны два официальных плагина:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react),
-  использует [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc),
-  использует [SWC](https://swc.rs/)
-
-## React Compiler
-
-React Compiler в этом шаблоне не включён из-за влияния на производительность
-dev/build. Для подключения см.
-[документацию](https://react.dev/learn/react-compiler/installation).
-
-## Расширение конфигурации ESLint
-
-Если вы разрабатываете production-приложение, рекомендуется обновить
-конфигурацию и включить type-aware правила:
-
-```js
-export default defineConfig([
-  globalIgnores(["dist"]),
-  {
-    files: ["**/*.{ts,tsx}"],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ["./tsconfig.node.json", "./tsconfig.app.json"],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-]);
-```
-
-Также можно установить
-[eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x)
-и
-[eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom)
-для дополнительных React-правил:
-
-```js
-// eslint.config.js
-import reactX from "eslint-plugin-react-x";
-import reactDom from "eslint-plugin-react-dom";
-
-export default defineConfig([
-  globalIgnores(["dist"]),
-  {
-    files: ["**/*.{ts,tsx}"],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs["recommended-typescript"],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ["./tsconfig.node.json", "./tsconfig.app.json"],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-]);
-```
+Полный локальный dev flow описан в [`../docs/setup_ru.md`](../docs/setup_ru.md).

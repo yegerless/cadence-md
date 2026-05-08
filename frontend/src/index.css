@@ -59,7 +59,9 @@ a {
 .auth-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(340px, 480px);
-  gap: 4rem;
+  width: min(1120px, 100%);
+  margin-inline: auto;
+  gap: clamp(1rem, 2.2vw, 1.75rem);
   min-height: 100vh;
   padding: 5vw;
   align-items: center;
@@ -679,6 +681,12 @@ a {
   .chat-layout,
   .profile-grid {
     grid-template-columns: 1fr;
+  }
+
+  .auth-layout {
+    max-width: 760px;
+    gap: 1.25rem;
+    padding: clamp(1.25rem, 4vw, 2rem);
   }
 
   .sidebar {

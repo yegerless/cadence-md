@@ -132,6 +132,15 @@ services:
       - backend-network
     volumes:
       - rag-corpus:/app/data:ro
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./cadence_md
+          target: /app/cadence_md
+        - action: rebuild
+          path: ./pyproject.toml
+        - action: rebuild
+          path: ./poetry.lock
     depends_on:
       migrations:
         condition: service_completed_successfully
@@ -205,6 +214,15 @@ services:
       - backend-network
     volumes:
       - rag-corpus:/app/data:ro
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./cadence_md
+          target: /app/cadence_md
+        - action: rebuild
+          path: ./pyproject.toml
+        - action: rebuild
+          path: ./poetry.lock
     depends_on:
       migrations:
         condition: service_completed_successfully
@@ -241,6 +259,19 @@ services:
       - 127.0.0.1:${FRONTEND_PORT:-5173}:5173
     networks:
       - backend-network
+    develop:
+      watch:
+        - action: sync
+          path: ./frontend
+          target: /app
+          ignore:
+            - node_modules/
+            - dist/
+            - .vite/
+        - action: rebuild
+          path: ./frontend/package.json
+        - action: rebuild
+          path: ./frontend/package-lock.json
     depends_on:
       backend:
         condition: service_healthy
