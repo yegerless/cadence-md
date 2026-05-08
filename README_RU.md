@@ -17,12 +17,13 @@ chat-запросы через FastAPI backend и Celery worker, а для по�
   Qdrant.
 - LangGraph RAG pipeline с optional query rewriting, context relevance grading,
   query clarification, answer formatting и контролируемыми fallback-сценариями.
-- FastAPI backend с JWT auth, async chat lifecycle, health checks, Prometheus
-  metrics и optional Langfuse tracing.
+- FastAPI backend с JWT auth, per-user историей чатов, async chat lifecycle,
+  health checks, Prometheus metrics и optional Langfuse tracing.
 - Celery/Redis worker для асинхронной генерации RAG-ответов.
-- React + Vite frontend для login, registration, chat, profile, уточнений,
-  отображения источников и авторизованного скачивания PDF.
-- Metrics pipeline для full RAG evaluation и retriever-only evaluation.
+- React + Vite frontend для login, registration, истории чатов, profile,
+  уточнений, отображения источников и авторизованного скачивания PDF.
+- Metrics pipeline для full RAG evaluation и retriever-only evaluation; batch
+  validation не использует пользовательскую историю чатов.
 
 ## Стек
 

@@ -6,8 +6,9 @@ Frontend работает с versioned backend API под `/api/v1` и покр�
 workflow:
 
 - `/login` и `/register` для JWT-аутентификации.
-- `/chat` для асинхронных RAG-запросов, polling, cancel, retry, отправки
-  уточнения, отображения ответа, источников и скачивания PDF-источников.
+- `/chat` для сохранённой истории чатов, list/open/create/delete диалогов,
+  асинхронных RAG-запросов, polling, cancel, retry, отправки уточнения,
+  отображения ответа, источников и скачивания PDF-источников.
 - `/profile` для профиля авторизованного пользователя.
 
 ## Стек
@@ -88,6 +89,8 @@ MVP хранит только короткоживущий JWT access token в `
 
 - навигации по `/login`, `/register`, `/chat`, `/profile`;
 - сохранения auth state, logout и автоматической очистки после API `401`;
+- загрузки истории чатов, открытия существующих диалогов, создания новых чатов и
+  soft delete из UI;
 - mocked chat lifecycle статусов: `queued`, `running`, `awaiting_clarification`,
   `succeeded`, `failed`, `cancelled`;
 - отправки/отмены уточнения, retry, отображения ответа и источников.

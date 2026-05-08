@@ -136,6 +136,20 @@ docker compose --env-file .env.dev -f docker-compose-dev.yml up --build
 в `awaiting_clarification`; frontend показывает форму уточнения и продолжает тот
 же запрос через `POST /api/v1/chat/messages/{request_id}/clarification`.
 
+Чаты сохраняются отдельно для каждого пользователя. Клиенты могут использовать
+`POST /api/v1/chat/conversations` для создания чата,
+`GET /api/v1/chat/conversations` для списка активных чатов,
+`GET /api/v1/chat/conversations/{chat_id}/messages` для восстановления истории
+сообщений и `DELETE /api/v1/chat/conversations/{chat_id}` для soft delete.
+Передача `chat_id` в `POST /api/v1/chat/messages` привязывает RAG-запрос к этому
+чату; если `chat_id` не передан, backend создаёт новый чат. Soft delete скрывает
+чат из UI и active chat API, но физически не удаляет `rag_requests` и
+`rag_responses`.
+
+RAG validation отделён от пользовательской истории чатов: metrics pipeline
+прогоняет QA cases через `RAGService.run` / `RAGService.retrieve` с отключённым
+уточнением для batch evaluation.
+
 Интерактивного пользовательского RAG CLI нет.
 
 ## 6. Частичные Compose-команды

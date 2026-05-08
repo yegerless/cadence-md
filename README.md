@@ -16,12 +16,14 @@ validation.
 - Clinical guideline retrieval over a DVC-tracked PDF corpus stored in Qdrant.
 - LangGraph RAG pipeline with optional query rewriting, context relevance
   grading, query clarification, answer formatting, and structured fallbacks.
-- FastAPI backend with JWT auth, async chat request lifecycle, health checks,
-  Prometheus metrics, and optional Langfuse tracing.
+- FastAPI backend with JWT auth, persisted per-user chat history, async chat
+  request lifecycle, health checks, Prometheus metrics, and optional Langfuse
+  tracing.
 - Celery/Redis RAG worker for asynchronous answer generation.
-- React + Vite frontend for login, registration, chat, profile, clarification
-  handling, source rendering, and authenticated PDF downloads.
-- Metrics pipeline for full RAG evaluation and retriever-only evaluation.
+- React + Vite frontend for login, registration, chat history, profile,
+  clarification handling, source rendering, and authenticated PDF downloads.
+- Metrics pipeline for full RAG evaluation and retriever-only evaluation; batch
+  validation does not use user chat history.
 
 ## Stack
 

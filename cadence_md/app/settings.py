@@ -118,10 +118,10 @@ class RAGOptionalNodesConfig(BaseModel):
     """Feature flags and thresholds for optional LangGraph RAG nodes."""
 
     enable_query_rewriter: bool = True
-    enable_query_clarification: bool = False
+    enable_query_clarification: bool = True
     enable_context_relevance_grader: bool = True
     enable_answer_formatter: bool = True
-    max_query_rewrite_iterations: int = Field(default=1, ge=0)
+    max_query_rewrite_iterations: int = Field(default=2, ge=0)
     context_relevance_min_score: float = Field(default=0.6, ge=0.0, le=1.0)
     context_relevance_min_supported_docs: int = Field(default=1, ge=0)
 

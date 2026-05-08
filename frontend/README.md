@@ -6,9 +6,9 @@ The frontend talks to the versioned backend API under `/api/v1` and covers the
 MVP clinical workflow:
 
 - `/login` and `/register` for JWT authentication.
-- `/chat` for asynchronous RAG requests, polling, cancellation, retry,
-  clarification submission, answer rendering, source rendering, and PDF source
-  download.
+- `/chat` for persisted chat history, conversation list/open/create/delete,
+  asynchronous RAG requests, polling, cancellation, retry, clarification
+  submission, answer rendering, source rendering, and PDF source download.
 - `/profile` for the authenticated user profile.
 
 ## Stack
@@ -89,6 +89,8 @@ risk. The frontend does not log token values and does not render untrusted HTML.
 
 - route navigation across `/login`, `/register`, `/chat`, and `/profile`;
 - auth persistence, logout, and automatic cleanup after API `401`;
+- chat history loading, opening existing conversations, creating new chats, and
+  soft deletion from the UI;
 - mocked chat lifecycle statuses: `queued`, `running`, `awaiting_clarification`,
   `succeeded`, `failed`, and `cancelled`;
 - clarification submit/cancel, retry, answer rendering, and source rendering.

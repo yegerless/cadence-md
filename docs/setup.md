@@ -139,6 +139,20 @@ request moves to `awaiting_clarification`; the frontend shows the clarification
 form and resumes the same request through
 `POST /api/v1/chat/messages/{request_id}/clarification`.
 
+Chat conversations are persisted per user. Clients can use
+`POST /api/v1/chat/conversations` to create a chat,
+`GET /api/v1/chat/conversations` to list active chats,
+`GET /api/v1/chat/conversations/{chat_id}/messages` to restore message history,
+and `DELETE /api/v1/chat/conversations/{chat_id}` to soft-delete a chat. Sending
+`chat_id` with `POST /api/v1/chat/messages` binds a RAG request to that chat; if
+it is omitted, the backend creates a new chat. Soft delete hides the chat from
+the UI and active chat APIs without physically deleting `rag_requests` or
+`rag_responses`.
+
+RAG validation stays separate from user chat history: the metrics pipeline runs
+QA cases through `RAGService.run` / `RAGService.retrieve` with clarification
+disabled for batch evaluation.
+
 There is no interactive user-facing RAG CLI.
 
 ## 6. Partial Compose Commands
