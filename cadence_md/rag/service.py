@@ -10,8 +10,10 @@ from cadence_md.observability.langfuse import (
     LangfuseTracer,
     active_trace,
     get_langfuse_tracer,
+    record_trace_summary,
 )
 from cadence_md.observability.privacy import query_hash_only
+from cadence_md.observability.settings import observability_settings
 from cadence_md.rag.contracts import (
     RAGFlags,
     RAGLatency,
@@ -43,7 +45,9 @@ class RAGService:
                 clarification_answer=request.clarification_answer,
                 allow_clarification=request.allow_clarification,
             )
-        return self._state_to_response(state, langfuse_trace_id=trace.trace_id)
+            response = self._state_to_response(state, langfuse_trace_id=trace.trace_id)
+            record_trace_summary(**self._trace_summary(response))
+        return response
 
     def retrieve(self, request: RAGRequest) -> RAGRetrieveResponse:
         state = self.pipeline.run_retriever_only(
@@ -132,6 +136,36 @@ class RAGService:
             raw_answer=state.get("raw_answer"),
             context_relevance_score=state.get("context_relevance_score"),
         )
+
+    def _trace_summary(self, response: RAGResponse) -> dict[str, Any]:
+        """Build redacted trace-level output and metadata for Langfuse."""
+        trace_output = (
+            response.answer
+            if observability_settings.LANGFUSE_TRACE_QUERY_MODE == "full"
+            else "[redacted rag answer]"
+        )
+        metadata = {
+            "query_hash": response.query_hash,
+            "latency_ms": response.latency.model_dump(exclude_none=True),
+            "flags": response.flags.model_dump(),
+            "source_count": len(response.sources),
+            "sources": [
+                source.model_dump(exclude={"content"}, exclude_none=True)
+                for source in response.sources
+            ],
+            "context_chars": response.context_chars,
+            "answer_word_count": response.answer_word_count,
+            "retrieval_query": response.retrieval_query,
+            "rewritten_queries": response.rewritten_queries,
+            "context_relevance_score": response.context_relevance_score,
+            "error_type": response.error_type,
+            "error_message": response.error_message,
+            "requires_clarification": response.flags.requires_clarification,
+        }
+        return {
+            "output_data": trace_output,
+            "metadata": {key: value for key, value in metadata.items() if value is not None},
+        }
 
     def _state_to_retrieve_response(self, state: dict[str, Any]) -> RAGRetrieveResponse:
         return RAGRetrieveResponse(

@@ -71,6 +71,8 @@ NO_CONTEXT_ANSWER = (
 )
 
 _DOC_REF_RE = re.compile(r"\[Doc \d+\]")
+_TRACE_TEXT_LIMIT = 2_000
+_TRACE_DOC_CONTENT_LIMIT = 800
 
 
 class QueryRewriteDecision(BaseModel):
@@ -101,6 +103,30 @@ class AnswerFormatterResult(BaseModel):
 def _query_hash(query: str) -> str:
     """First 16 hex chars of SHA-256 for log correlation (not a secrecy mechanism)."""
     return hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
+
+
+def _truncate_trace_text(text: str, *, limit: int = _TRACE_TEXT_LIMIT) -> str:
+    """Bound text stored in third-party tracing payloads."""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}... [truncated {len(text) - limit} chars]"
+
+
+def _trace_text(text: str, label: str, *, limit: int = _TRACE_TEXT_LIMIT) -> str:
+    """Apply the configured Langfuse text privacy policy to arbitrary RAG text."""
+    if observability_settings.LANGFUSE_TRACE_QUERY_MODE == "full":
+        return _truncate_trace_text(text, limit=limit)
+    text_hash = _query_hash(text or "")
+    if observability_settings.LANGFUSE_TRACE_QUERY_MODE == "hash":
+        return text_hash
+    return f"[redacted {label}: {text_hash}]"
+
+
+def _trace_query_text(query: str) -> str:
+    """Apply the medical-query redaction policy and bound trace payload size."""
+    return _truncate_trace_text(
+        redact_medical_query(query, observability_settings.LANGFUSE_TRACE_QUERY_MODE)
+    )
 
 
 def _query_with_clarification(query: str, clarification_answer: str | None) -> str:
@@ -151,6 +177,51 @@ def _source_record(i: int, doc: Document) -> dict[str, Any]:
         "section_title": meta.get("section_title"),
         "section_id": meta.get("section_id"),
     }
+
+
+def _trace_ranked_doc(rd: RankedDocument) -> dict[str, Any]:
+    """Return a compact, privacy-aware document summary for Langfuse."""
+    doc = rd["doc"]
+    meta = doc.metadata or {}
+    payload = {
+        "rank": rd["rank"],
+        "doc_ref": f"[Doc {rd['rank']}]",
+        "filename": meta.get("filename"),
+        "document_title": meta.get("document_title"),
+        "section_title": meta.get("section_title"),
+        "section_id": rd["section_id"],
+        "chunk_id": rd["chunk_id"],
+        "retrieval_score": rd["retrieval_score"],
+        "rerank_score": rd["rerank_score"],
+        "final_score": rd["final_score"],
+        "content_chars": len(doc.page_content or ""),
+    }
+    content = doc.page_content or ""
+    if content:
+        payload["content"] = _trace_text(
+            content,
+            "document content",
+            limit=_TRACE_DOC_CONTENT_LIMIT,
+        )
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _trace_ranked_docs(ranked_docs: list[RankedDocument]) -> list[dict[str, Any]]:
+    """Return ordered document summaries for node input/output payloads."""
+    return [_trace_ranked_doc(rd) for rd in ranked_docs]
+
+
+def _trace_context_payload(state: RAGState) -> dict[str, Any]:
+    """Return a privacy-aware summary of the assembled context."""
+    context = state.get("context", "")
+    payload: dict[str, Any] = {
+        "context_chars": state.get("context_chars", len(context)),
+        "doc_refs": sorted(_doc_refs(context)),
+        "source_count": len(state.get("sources", [])),
+    }
+    if context:
+        payload["context"] = _trace_text(context, "rag context")
+    return payload
 
 
 def _parse_json_model[JsonModelT: BaseModel](
@@ -371,6 +442,16 @@ class RAGPipeline:
             context_relevance_score=state.get("context_relevance_score"),
             context_relevance_reason=state.get("context_relevance_reason") or "",
         )
+        trace_input = {
+            "query": _trace_query_text(state["query"]),
+            "effective_question": _trace_query_text(effective_question),
+            "retrieval_query": _trace_query_text(
+                state.get("retrieval_query") or effective_question
+            ),
+            "rewrite_iteration": state.get("rewrite_iteration", 0),
+            "context_relevance_score": state.get("context_relevance_score"),
+            "context_relevance_reason": state.get("context_relevance_reason"),
+        }
         try:
             decision = self._invoke_json_model(
                 node_name="query_rewrite",
@@ -385,6 +466,22 @@ class RAGPipeline:
             state.setdefault("latency_ms", {})["query_rewrite"] = dt_ms
             observe_rag_node("query_rewrite", dt_ms)
             inc_rag_fallback("query_rewrite_fallback")
+            record_span(
+                "query_rewrite",
+                input_data=trace_input,
+                output_data={
+                    "retrieval_query": _trace_query_text(state["retrieval_query"]),
+                    "query_rewrite_fallback": True,
+                    "error_type": type(exc).__name__,
+                },
+                metadata={
+                    "query_hash": state["query_hash"],
+                    "latency_ms": round(dt_ms, 2),
+                    "node": "query_rewrite",
+                    "query_rewrite_fallback": True,
+                    "prompt_version": settings.rag_config.prompt_version,
+                },
+            )
             logger.warning(
                 "rag.query_rewrite_fallback",
                 extra={
@@ -433,6 +530,22 @@ class RAGPipeline:
         observe_rag_node("query_rewrite", dt_ms)
         record_span(
             "query_rewrite",
+            input_data=trace_input,
+            output_data={
+                "action": decision.action,
+                "retrieval_query": _trace_query_text(
+                    state.get("retrieval_query") or effective_question
+                ),
+                "query_rewritten": state["query_rewritten"],
+                "requires_clarification": state["requires_clarification"],
+                "clarification_question": (
+                    _trace_text(state["clarification_question"], "clarification question")
+                    if state.get("clarification_question")
+                    else None
+                ),
+                "rewrite_iteration": state["rewrite_iteration"],
+                "reason": decision.reason,
+            },
             metadata={
                 "query_hash": state["query_hash"],
                 "latency_ms": round(dt_ms, 2),
@@ -470,6 +583,12 @@ class RAGPipeline:
         qh = state["query_hash"]
         k = self._retrieval_k_for_mode()
         retrieval_query = state.get("retrieval_query") or state["query"]
+        trace_input = {
+            "retrieval_query": _trace_query_text(retrieval_query),
+            "search_mode": str(self.qdrant_manager.search_mode),
+            "k": k,
+            "query_rewritten": state.get("query_rewritten", False),
+        }
         t0 = time.perf_counter()
         try:
             retrieved = self.qdrant_manager.retrieve(retrieval_query)
@@ -489,6 +608,12 @@ class RAGPipeline:
             inc_rag_fallback("retrieval_failed")
             record_span(
                 "retrieve",
+                input_data=trace_input,
+                output_data={
+                    "retrieval_failed": True,
+                    "error_type": state["error_type"],
+                    "n_docs": 0,
+                },
                 metadata={
                     "query_hash": qh,
                     "latency_ms": round(dt_ms, 2),
@@ -524,6 +649,11 @@ class RAGPipeline:
         observe_rag_node("qdrant", dt_ms)
         record_span(
             "retrieve",
+            input_data=trace_input,
+            output_data={
+                "n_docs": len(ranked),
+                "documents": _trace_ranked_docs(ranked),
+            },
             metadata={
                 "query_hash": qh,
                 "latency_ms": round(dt_ms, 2),
@@ -568,6 +698,11 @@ class RAGPipeline:
         docs = [rd["doc"] for rd in ranked]
         retrieval_score_by_id = {id(rd["doc"]): rd["retrieval_score"] for rd in ranked}
         texts = [_rerank_document_text(d) for d in docs]
+        trace_input = {
+            "retrieval_query": _trace_query_text(query),
+            "n_docs": len(ranked),
+            "documents": _trace_ranked_docs(ranked),
+        }
         t0 = time.perf_counter()
         try:
             pairs = self.reranker.rerank(query, docs, document_texts=texts)
@@ -621,6 +756,12 @@ class RAGPipeline:
         observe_rag_node("rerank", dt_ms)
         record_span(
             "rerank",
+            input_data=trace_input,
+            output_data={
+                "n_docs": len(state["ranked_docs"]),
+                "rerank_fallback": state["rerank_fallback"],
+                "documents": _trace_ranked_docs(state["ranked_docs"]),
+            },
             metadata={
                 "query_hash": qh,
                 "latency_ms": round(dt_ms, 2),
@@ -659,6 +800,11 @@ class RAGPipeline:
         separator = "\n\n---\n\n"
 
         ranked = state.get("ranked_docs") or []
+        trace_input = {
+            "max_context_chars": budget,
+            "n_candidate_docs": len(ranked),
+            "documents": _trace_ranked_docs(ranked),
+        }
         context_parts: list[str] = []
         sources: list[dict[str, Any]] = []
         included_docs: list[RankedDocument] = []
@@ -718,6 +864,12 @@ class RAGPipeline:
             inc_rag_fallback("context_truncated")
         record_span(
             "context",
+            input_data=trace_input,
+            output_data={
+                **_trace_context_payload(state),
+                "sources": state.get("sources", []),
+                "context_truncated": truncated,
+            },
             metadata={
                 "query_hash": state["query_hash"],
                 "latency_ms": round(dt_ms, 2),
@@ -763,6 +915,14 @@ class RAGPipeline:
             retrieval_query=state.get("retrieval_query") or effective_question,
             context=state["context"],
         )
+        trace_input = {
+            "query": _trace_query_text(state["query"]),
+            "effective_question": _trace_query_text(effective_question),
+            "retrieval_query": _trace_query_text(
+                state.get("retrieval_query") or effective_question
+            ),
+            **_trace_context_payload(state),
+        }
         try:
             grade = self._invoke_json_model(
                 node_name="context_relevance",
@@ -778,6 +938,22 @@ class RAGPipeline:
             state.setdefault("latency_ms", {})["context_relevance"] = dt_ms
             observe_rag_node("context_relevance", dt_ms)
             inc_rag_fallback("context_relevance_fallback")
+            record_span(
+                "context_relevance",
+                input_data=trace_input,
+                output_data={
+                    "context_relevance_fallback": True,
+                    "error_type": type(exc).__name__,
+                    "score": None,
+                },
+                metadata={
+                    "query_hash": state["query_hash"],
+                    "latency_ms": round(dt_ms, 2),
+                    "node": "context_relevance",
+                    "context_relevance_fallback": True,
+                    "prompt_version": settings.rag_config.prompt_version,
+                },
+            )
             logger.warning(
                 "rag.context_relevance_fallback",
                 extra={
@@ -827,6 +1003,15 @@ class RAGPipeline:
             inc_rag_fallback("context_relevance_failed")
         record_span(
             "context_relevance",
+            input_data=trace_input,
+            output_data={
+                "score": state["context_relevance_score"],
+                "reason": state["context_relevance_reason"],
+                "is_relevant": is_relevant,
+                "should_rewrite": state["context_relevance_should_rewrite"],
+                "supported_doc_refs": supported_refs,
+                "context_relevance_failed": state["context_relevance_failed"],
+            },
             metadata={
                 "query_hash": state["query_hash"],
                 "latency_ms": round(dt_ms, 2),
@@ -870,6 +1055,14 @@ class RAGPipeline:
             observe_rag_node("llm", 0.0)
             record_span(
                 "generate",
+                input_data={
+                    "query": _trace_query_text(state["query"]),
+                    **_trace_context_payload(state),
+                },
+                output_data={
+                    "answer": _trace_text(state["answer"], "rag answer"),
+                    "skipped": "no_context",
+                },
                 metadata={
                     "query_hash": state["query_hash"],
                     "latency_ms": 0.0,
@@ -949,7 +1142,20 @@ class RAGPipeline:
             output_data=trace_output,
             metadata=generation_metadata,
         )
-        record_span("generate", metadata=generation_metadata)
+        record_span(
+            "generate",
+            input_data={
+                "query": trace_query,
+                **_trace_context_payload(state),
+                "source_count": len(state.get("sources", [])),
+            },
+            output_data={
+                "answer": trace_output,
+                "answer_word_count": state["answer_word_count"],
+                "generate_fallback": state["generate_fallback"],
+            },
+            metadata=generation_metadata,
+        )
         logger.info(
             "rag.generate",
             extra={
@@ -990,6 +1196,11 @@ class RAGPipeline:
             context=state.get("context", ""),
             sources=", ".join(source.get("doc_ref", "") for source in state.get("sources", [])),
         )
+        trace_input = {
+            "answer": _trace_text(raw_answer, "rag answer"),
+            "sources": state.get("sources", []),
+            **_trace_context_payload(state),
+        }
         try:
             result = self._invoke_json_model(
                 node_name="answer_format",
@@ -1029,6 +1240,13 @@ class RAGPipeline:
         observe_rag_node("answer_format", dt_ms)
         record_span(
             "answer_format",
+            input_data=trace_input,
+            output_data={
+                "answer": _trace_text(state["answer"], "rag answer"),
+                "raw_answer_changed": state["answer"] != raw_answer,
+                "answer_formatted": state["answer_formatted"],
+                "answer_format_fallback": state["answer_format_fallback"],
+            },
             metadata={
                 "query_hash": state["query_hash"],
                 "latency_ms": round(dt_ms, 2),

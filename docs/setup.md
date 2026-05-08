@@ -62,18 +62,18 @@ secrets.
 
 Important groups in `.env.example`:
 
-| Group         | Variables                                                                                                                                 |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Backend/API   | `BACKEND_HOST`, `BACKEND_PORT`, `JWT_*`, `AUTH_*`, `CHAT_RATE_LIMIT_USER`, `GLOBAL_RAG_QUEUE_MAX`, `HEALTH_CHECK_TIMEOUT_SECONDS`         |
-| Postgres      | `POSTGRES_*`, `DATABASE_URL`                                                                                                              |
-| Redis/Celery  | `REDIS_*`, `CELERY_*`                                                                                                                     |
-| Qdrant        | `QDRANT_BASE_URL`, `QDRANT__SERVICE__API_KEY`, `QDRANT_HTTPS`                                                                             |
-| Inference     | `MODEL_INFERENCE_BASE_URL`, `MODEL_INFERENCE_API_KEY`                                                                                     |
-| Observability | `LOG_*`, `PROMETHEUS_*`, `WORKER_METRICS_PORT`, `GRAFANA_*`                                                                               |
-| Langfuse      | `LANGFUSE_ENABLED`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`, `LANGFUSE_TRACE_QUERY_MODE`, `LANGFUSE_PROMPT_VERSION` |
-| Corpus/DVC    | `S3_KEY_ID`, `S3_KEY`, `RAG_CORPUS_DIR`, `RAG_CONFIG__QDRANT_CONFIG__DATA_DIR`                                                            |
-| QA generation | `GIGACHAT_API_KEY`, `GIGACHAT_MIN_INTERVAL_SEC`                                                                                           |
-| Frontend      | `FRONTEND_PORT`, `VITE_API_BASE_URL`, `VITE_API_PROXY_TARGET`                                                                             |
+| Group         | Variables                                                                                                                                                      |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Backend/API   | `BACKEND_HOST`, `BACKEND_PORT`, `JWT_*`, `AUTH_*`, `CHAT_RATE_LIMIT_USER`, `GLOBAL_RAG_QUEUE_MAX`, `HEALTH_CHECK_TIMEOUT_SECONDS`                              |
+| Postgres      | `POSTGRES_*`, `DATABASE_URL`                                                                                                                                   |
+| Redis/Celery  | `REDIS_*`, `CELERY_*`                                                                                                                                          |
+| Qdrant        | `QDRANT_BASE_URL`, `QDRANT__SERVICE__API_KEY`, `QDRANT_HTTPS`                                                                                                  |
+| Inference     | `MODEL_INFERENCE_BASE_URL`, `MODEL_INFERENCE_API_KEY`                                                                                                          |
+| Observability | `LOG_*`, `PROMETHEUS_*`, `WORKER_METRICS_PORT`, `GRAFANA_*`                                                                                                    |
+| Langfuse      | `LANGFUSE_ENABLED`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`, `LANGFUSE_HOST`, `LANGFUSE_TRACE_QUERY_MODE`, `LANGFUSE_PROMPT_VERSION` |
+| Corpus/DVC    | `S3_KEY_ID`, `S3_KEY`, `RAG_CORPUS_DIR`, `RAG_CONFIG__QDRANT_CONFIG__DATA_DIR`                                                                                 |
+| QA generation | `GIGACHAT_API_KEY`, `GIGACHAT_MIN_INTERVAL_SEC`                                                                                                                |
+| Frontend      | `FRONTEND_PORT`, `VITE_API_BASE_URL`, `VITE_API_PROXY_TARGET`                                                                                                  |
 
 Langfuse is disabled by default. If you enable it, keep real keys only in
 `.env.dev`. Medical query text is redacted unless
@@ -81,9 +81,10 @@ Langfuse is disabled by default. If you enable it, keep real keys only in
 debugging.
 
 Note that `.env.example` uses `GRAFANA_PORT=3000` and
-`LANGFUSE_HOST=http://localhost:3000`. If you run Langfuse locally on the host
-and Grafana through compose at the same time, use different ports or update
-`LANGFUSE_HOST`.
+`LANGFUSE_BASE_URL=http://localhost:3000`. If you run Langfuse locally on the
+host and Grafana through compose at the same time, use different ports or update
+`LANGFUSE_BASE_URL`. For Langfuse Cloud, use a full URL with scheme, for example
+`https://cloud.langfuse.com`.
 
 ## 4. Configure And Download The DVC Corpus
 

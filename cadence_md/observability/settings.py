@@ -22,6 +22,7 @@ class ObservabilitySettings(BaseSettings):
     LANGFUSE_ENABLED: bool = False
     LANGFUSE_PUBLIC_KEY: str | None = None
     LANGFUSE_SECRET_KEY: str | None = None
+    LANGFUSE_BASE_URL: str | None = None
     LANGFUSE_HOST: str | None = None
     LANGFUSE_TRACE_QUERY_MODE: Literal["redacted", "hash", "full"] = "redacted"
     LANGFUSE_PROMPT_VERSION: str | None = None
