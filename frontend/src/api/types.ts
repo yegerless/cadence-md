@@ -38,9 +38,28 @@ export type RAGRequestStatus =
   | 'failed'
   | 'cancelled'
 
+export type CreateChatConversationRequest = {
+  title?: string | null
+}
+
+export type ChatConversationResponse = {
+  id: string
+  title: string | null
+  created_at: string
+  updated_at: string
+  last_message_at: string | null
+}
+
+export type ChatConversationListResponse = {
+  items: ChatConversationResponse[]
+  limit: number
+  offset: number
+}
+
 export type CreateRAGRequest = {
   query: string
   conversation_id?: string | null
+  chat_id?: string | null
   idempotency_key?: string | null
   metadata?: Record<string, string>
 }
@@ -82,8 +101,18 @@ export type SubmitClarificationRequest = {
 export type RAGRequestStatusResponse = {
   request_id: string
   status: RAGRequestStatus
+  chat_id: string | null
   original_request_id: string | null
   answer: RAGAnswerResponse | null
   error: string | null
   clarification: ClarificationResponse | null
+}
+
+export type ChatTurnResponse = {
+  query: string
+  request: RAGRequestStatusResponse
+}
+
+export type ChatMessageHistoryResponse = {
+  items: ChatTurnResponse[]
 }

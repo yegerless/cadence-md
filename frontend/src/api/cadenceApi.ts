@@ -1,5 +1,9 @@
 import { apiBlobRequest, apiRequest } from './client'
 import type {
+  ChatConversationListResponse,
+  ChatConversationResponse,
+  ChatMessageHistoryResponse,
+  CreateChatConversationRequest,
   CreateRAGRequest,
   LoginRequest,
   RAGRequestStatusResponse,
@@ -27,6 +31,44 @@ export function register(payload: RegisterRequest): Promise<TokenResponse> {
 
 export function getCurrentUser(): Promise<UserProfileResponse> {
   return apiRequest<UserProfileResponse>('/api/v1/users/me')
+}
+
+export function createChatConversation(
+  payload: CreateChatConversationRequest,
+): Promise<ChatConversationResponse> {
+  return apiRequest<ChatConversationResponse>('/api/v1/chat/conversations', {
+    method: 'POST',
+    body: payload,
+  })
+}
+
+export function listChatConversations(params: { limit?: number, offset?: number } = {}):
+Promise<ChatConversationListResponse> {
+  const search = new URLSearchParams()
+  if (params.limit !== undefined) {
+    search.set('limit', String(params.limit))
+  }
+  if (params.offset !== undefined) {
+    search.set('offset', String(params.offset))
+  }
+  const queryString = search.toString()
+  return apiRequest<ChatConversationListResponse>(
+    `/api/v1/chat/conversations${queryString ? `?${queryString}` : ''}`,
+  )
+}
+
+export function getChatConversation(chatId: string): Promise<ChatConversationResponse> {
+  return apiRequest<ChatConversationResponse>(`/api/v1/chat/conversations/${chatId}`)
+}
+
+export function getChatConversationMessages(chatId: string): Promise<ChatMessageHistoryResponse> {
+  return apiRequest<ChatMessageHistoryResponse>(`/api/v1/chat/conversations/${chatId}/messages`)
+}
+
+export function deleteChatConversation(chatId: string): Promise<void> {
+  return apiRequest<void>(`/api/v1/chat/conversations/${chatId}`, {
+    method: 'DELETE',
+  })
 }
 
 export function createChatMessage(

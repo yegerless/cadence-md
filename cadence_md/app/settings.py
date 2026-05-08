@@ -49,7 +49,7 @@ class QdrantConfig(BaseModel):
 
     data_dir: Path = Path("data/main_specialities/")
     collection_name: str = "clinical_recs"
-    rebuild_collection: bool = True
+    rebuild_collection: bool = False
     vector_size: int = 1024  # For BGE-m3 and Qwen3-Embedding-0.6b
     # vector_size: int = 2560  # For Qwen3-Embedding-4b
     distance: qdrant_models.Distance = qdrant_models.Distance.COSINE

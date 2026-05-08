@@ -4,7 +4,7 @@ import type { ErrorResponse } from './types'
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8000'
 
 type RequestOptions = {
-  method?: 'GET' | 'POST'
+  method?: 'DELETE' | 'GET' | 'POST'
   body?: unknown
   auth?: boolean
   headers?: HeadersInit
@@ -71,7 +71,16 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     throw new ApiError(response.status, await parseErrorResponse(response))
   }
 
-  return (await response.json()) as T
+  if (response.status === 204) {
+    return undefined as T
+  }
+
+  const text = await response.text()
+  if (!text) {
+    return undefined as T
+  }
+
+  return JSON.parse(text) as T
 }
 
 export async function apiBlobRequest(path: string, options: RequestOptions = {}): Promise<Blob> {
