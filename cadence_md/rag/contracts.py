@@ -47,6 +47,10 @@ class RAGFlags(BaseModel):
     max_query_rewrite_iterations_reached: bool = False
     answer_formatted: bool = False
     answer_format_fallback: bool = False
+    output_guardrail_passed: bool = False
+    output_guardrail_failed: bool = False
+    output_guardrail_fallback: bool = False
+    max_output_guardrail_iterations_reached: bool = False
 
 
 class RAGLatency(BaseModel):
@@ -58,6 +62,7 @@ class RAGLatency(BaseModel):
     context_relevance: float | None = None
     llm: float | None = None
     answer_format: float | None = None
+    output_guardrails: float | None = None
     total_ms: float | None = None
 
 
@@ -80,6 +85,9 @@ class RAGResponse(BaseModel):
     clarification_question: str | None = None
     raw_answer: str | None = None
     context_relevance_score: float | None = None
+    output_guardrail_score: float | None = None
+    output_guardrail_reason: str | None = None
+    output_guardrail_unsupported_claims: list[str] = Field(default_factory=list)
 
 
 class RAGRetrieveResponse(BaseModel):

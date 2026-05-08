@@ -13,6 +13,7 @@ RAG_GRAPH_PROFILE_FIELDS = (
     "enable_query_rewriter",
     "enable_context_relevance_grader",
     "enable_answer_formatter",
+    "enable_output_guardrails",
     "enable_query_clarification",
     "max_query_rewrite_iterations",
 )
@@ -225,6 +226,12 @@ def build_rag_graph_profile(
             effective_optional_nodes.append("answer_formatter")
         else:
             inactive_configured_nodes.append("answer_formatter")
+
+    if bool(configured["enable_output_guardrails"]):
+        if mode == "full":
+            effective_optional_nodes.append("output_guardrails")
+        else:
+            inactive_configured_nodes.append("output_guardrails")
 
     return {
         "mode": mode,

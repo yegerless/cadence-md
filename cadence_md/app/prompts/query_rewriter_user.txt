@@ -11,9 +11,15 @@
 score={context_relevance_score}
 reason={context_relevance_reason}
 
+Предыдущая оценка финального ответа output guardrails:
+score={output_guardrail_score}
+reason={output_guardrail_reason}
+unsupported_claims={output_guardrail_unsupported_claims}
+
 Выбери действие:
 - keep, если текущий поисковый запрос достаточно точный.
-- rewrite, если запрос можно улучшить для поиска в клинических рекомендациях.
+- rewrite, если запрос можно улучшить для поиска в клинических рекомендациях, особенно если
+  предыдущий финальный ответ не был подтвержден найденным контекстом.
 - clarify, если без уточнения нельзя понять клинический смысл вопроса.
 
 Верни только JSON с полями action, rewritten_query, clarification_question, reason.

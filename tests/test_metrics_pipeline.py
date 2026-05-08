@@ -280,6 +280,7 @@ def test_metrics_parser_accepts_valid_full_args(tmp_path: Path) -> None:
             "--disable-query-rewriter",
             "--enable-context-relevance-grader",
             "--disable-answer-formatter",
+            "--enable-output-guardrails",
             "--enable-query-clarification",
             "--max-query-rewrite-iterations",
             "2",
@@ -292,6 +293,7 @@ def test_metrics_parser_accepts_valid_full_args(tmp_path: Path) -> None:
     assert args.enable_query_rewriter is False
     assert args.enable_context_relevance_grader is True
     assert args.enable_answer_formatter is False
+    assert args.enable_output_guardrails is True
     assert args.enable_query_clarification is True
     assert args.max_query_rewrite_iterations == 2
 
@@ -310,6 +312,7 @@ def test_metrics_parser_accepts_retriever_workers(tmp_path: Path) -> None:
             "--enable-query-rewriter",
             "--disable-context-relevance-grader",
             "--enable-answer-formatter",
+            "--disable-output-guardrails",
         ]
     )
 
@@ -318,6 +321,7 @@ def test_metrics_parser_accepts_retriever_workers(tmp_path: Path) -> None:
     assert args.enable_query_rewriter is True
     assert args.enable_context_relevance_grader is False
     assert args.enable_answer_formatter is True
+    assert args.enable_output_guardrails is False
 
 
 def test_metrics_parser_full_uses_default_k(tmp_path: Path) -> None:
@@ -335,6 +339,7 @@ def test_metrics_parser_full_uses_default_k(tmp_path: Path) -> None:
     assert args.enable_query_rewriter is None
     assert args.enable_context_relevance_grader is None
     assert args.enable_answer_formatter is None
+    assert args.enable_output_guardrails is None
     assert args.enable_query_clarification is None
     assert args.max_query_rewrite_iterations is None
 
@@ -383,6 +388,8 @@ def test_metrics_help_contains_new_flags_and_omits_old_flags(
         assert "--disable-context-relevance-grader" in help_text
         assert "--enable-answer-formatter" in help_text
         assert "--disable-answer-formatter" in help_text
+        assert "--enable-output-guardrails" in help_text
+        assert "--disable-output-guardrails" in help_text
         assert "--enable-query-clarification" in help_text
         assert "--disable-query-clarification" in help_text
         assert "--max-query-rewrite-iterations" in help_text
@@ -401,6 +408,7 @@ def test_rag_optional_node_overrides_collects_explicit_values(tmp_path: Path) ->
             "--disable-query-rewriter",
             "--enable-context-relevance-grader",
             "--disable-answer-formatter",
+            "--disable-output-guardrails",
             "--enable-query-clarification",
             "--max-query-rewrite-iterations",
             "0",
@@ -411,6 +419,7 @@ def test_rag_optional_node_overrides_collects_explicit_values(tmp_path: Path) ->
         "enable_query_rewriter": False,
         "enable_context_relevance_grader": True,
         "enable_answer_formatter": False,
+        "enable_output_guardrails": False,
         "enable_query_clarification": True,
         "max_query_rewrite_iterations": 0,
     }
@@ -421,6 +430,7 @@ def test_rag_optional_nodes_config_helper_does_not_mutate_settings() -> None:
         {
             "enable_query_rewriter": False,
             "enable_query_clarification": True,
+            "enable_output_guardrails": False,
             "max_query_rewrite_iterations": 3,
         }
     )
@@ -428,10 +438,11 @@ def test_rag_optional_nodes_config_helper_does_not_mutate_settings() -> None:
 
     assert cfg.enable_query_rewriter is False
     assert cfg.enable_query_clarification is True
+    assert cfg.enable_output_guardrails is False
     assert cfg.max_query_rewrite_iterations == 3
     assert default_cfg.enable_query_rewriter is True
-    assert default_cfg.enable_query_clarification is False
-    assert default_cfg.max_query_rewrite_iterations == 1
+    assert default_cfg.enable_query_clarification is True
+    assert default_cfg.max_query_rewrite_iterations == 2
 
 
 def test_commands_main_passes_optional_node_overrides(
@@ -546,9 +557,10 @@ def test_run_full_evaluation_writes_run_artifacts(
     assert (run_dir / "ragas_scores.parquet").exists()
     assert (run_dir / "summary_metrics.json").exists()
     manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["rag_graph_profile"]["configured"]["enable_query_clarification"] is False
-    assert manifest["rag_graph_profile"]["configured"]["max_query_rewrite_iterations"] == 1
+    assert manifest["rag_graph_profile"]["configured"]["enable_query_clarification"] is True
+    assert manifest["rag_graph_profile"]["configured"]["max_query_rewrite_iterations"] == 2
     assert "answer_formatter" in manifest["rag_graph_profile"]["effective_optional_nodes"]
+    assert "output_guardrails" in manifest["rag_graph_profile"]["effective_optional_nodes"]
     report_file = run_dir / "report.md"
     assert report_file.exists()
     report_text = report_file.read_text(encoding="utf-8")
@@ -825,6 +837,7 @@ def test_run_retriever_evaluation_writes_artifacts(tmp_path: Path) -> None:
     assert manifest["run_parameters"]["workers"] == 3
     assert manifest["rag_graph_profile"]["mode"] == "retriever"
     assert "answer_formatter" in manifest["rag_graph_profile"]["inactive_configured_nodes"]
+    assert "output_guardrails" in manifest["rag_graph_profile"]["inactive_configured_nodes"]
     assert captured["workers"] == 3
     assert (run_dir / "run_manifest.json").exists()
     assert (run_dir / "retrieval_cases.jsonl").exists()

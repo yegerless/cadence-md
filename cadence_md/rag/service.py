@@ -97,6 +97,12 @@ class RAGService:
             ),
             answer_formatted=bool(state.get("answer_formatted", False)),
             answer_format_fallback=bool(state.get("answer_format_fallback", False)),
+            output_guardrail_passed=bool(state.get("output_guardrail_passed", False)),
+            output_guardrail_failed=bool(state.get("output_guardrail_failed", False)),
+            output_guardrail_fallback=bool(state.get("output_guardrail_fallback", False)),
+            max_output_guardrail_iterations_reached=bool(
+                state.get("max_output_guardrail_iterations_reached", False)
+            ),
         )
 
     def _state_to_latency(self, state: dict[str, Any]) -> RAGLatency:
@@ -109,6 +115,7 @@ class RAGService:
             context_relevance=latency.get("context_relevance"),
             llm=latency.get("llm"),
             answer_format=latency.get("answer_format"),
+            output_guardrails=latency.get("output_guardrails"),
             total_ms=total_ms,
         )
 
@@ -135,6 +142,11 @@ class RAGService:
             clarification_question=state.get("clarification_question"),
             raw_answer=state.get("raw_answer"),
             context_relevance_score=state.get("context_relevance_score"),
+            output_guardrail_score=state.get("output_guardrail_score"),
+            output_guardrail_reason=state.get("output_guardrail_reason"),
+            output_guardrail_unsupported_claims=list(
+                state.get("output_guardrail_unsupported_claims") or []
+            ),
         )
 
     def _trace_summary(self, response: RAGResponse) -> dict[str, Any]:
@@ -158,6 +170,9 @@ class RAGService:
             "retrieval_query": response.retrieval_query,
             "rewritten_queries": response.rewritten_queries,
             "context_relevance_score": response.context_relevance_score,
+            "output_guardrail_score": response.output_guardrail_score,
+            "output_guardrail_reason": response.output_guardrail_reason,
+            "output_guardrail_unsupported_claims": response.output_guardrail_unsupported_claims,
             "error_type": response.error_type,
             "error_message": response.error_message,
             "requires_clarification": response.flags.requires_clarification,

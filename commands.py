@@ -82,6 +82,13 @@ def _add_rag_optional_node_flags(parser: argparse.ArgumentParser) -> None:
     )
     _add_enable_disable_flag(
         parser,
+        dest="enable_output_guardrails",
+        enable_flag="--enable-output-guardrails",
+        disable_flag="--disable-output-guardrails",
+        help_label="output guardrails",
+    )
+    _add_enable_disable_flag(
+        parser,
         dest="enable_query_clarification",
         enable_flag="--enable-query-clarification",
         disable_flag="--disable-query-clarification",
@@ -102,6 +109,7 @@ def _rag_optional_node_overrides(args: argparse.Namespace) -> dict[str, bool | i
         "enable_query_rewriter",
         "enable_context_relevance_grader",
         "enable_answer_formatter",
+        "enable_output_guardrails",
         "enable_query_clarification",
         "max_query_rewrite_iterations",
     ):

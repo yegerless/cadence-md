@@ -67,6 +67,20 @@ def load_answer_formatter_user_prompt_template() -> str:
     return (_PROMPTS_DIR / "answer_formatter_user.txt").read_text(encoding="utf-8").strip()
 
 
+def load_output_guardrails_system_prompt() -> str:
+    """Load the system prompt for optional output guardrails."""
+    return (_PROMPTS_DIR / "output_guardrails_system.txt").read_text(encoding="utf-8").strip()
+
+
+def load_output_guardrails_user_prompt_template() -> str:
+    """Return output guardrails user prompt template.
+
+    Placeholders: ``{question}``, ``{retrieval_query}``, ``{context}``, ``{answer}``,
+    ``{sources}``.
+    """
+    return (_PROMPTS_DIR / "output_guardrails_user.txt").read_text(encoding="utf-8").strip()
+
+
 def format_rag_system_prompt() -> str:
     """Return the system prompt with ``prompt_version`` filled in.
 

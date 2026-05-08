@@ -112,6 +112,7 @@ def _render_rag_graph_profile_section(*, manifest: dict[str, Any]) -> list[str]:
         f"- Query rewriter: `{configured['enable_query_rewriter']}`\n",
         f"- Context relevance grader: `{configured['enable_context_relevance_grader']}`\n",
         f"- Answer formatter: `{configured['enable_answer_formatter']}`\n",
+        f"- Output guardrails: `{configured['enable_output_guardrails']}`\n",
         f"- Query clarification: `{configured['enable_query_clarification']}`\n",
         f"- Max query rewrite iterations: `{configured['max_query_rewrite_iterations']}`\n",
         f"- Effective optional nodes: {effective_nodes_text}\n",

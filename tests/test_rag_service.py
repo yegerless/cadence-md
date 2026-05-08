@@ -47,6 +47,13 @@ def _base_state(**overrides: object) -> dict:
         "raw_answer": None,
         "answer_formatted": False,
         "answer_format_fallback": False,
+        "output_guardrail_passed": False,
+        "output_guardrail_failed": False,
+        "output_guardrail_fallback": False,
+        "max_output_guardrail_iterations_reached": False,
+        "output_guardrail_score": None,
+        "output_guardrail_reason": None,
+        "output_guardrail_unsupported_claims": [],
         "ranked_docs": [],
         "rerank_fallback": False,
         "retrieval_failed": False,
@@ -108,6 +115,7 @@ def test_run_maps_optional_node_latency_fields() -> None:
             "context_relevance": 5.0,
             "llm": 55.0,
             "answer_format": 4.0,
+            "output_guardrails": 2.0,
         }
     )
     service = RAGService(pipeline=pipeline)
@@ -120,7 +128,8 @@ def test_run_maps_optional_node_latency_fields() -> None:
     assert response.latency.context_relevance == 5.0
     assert response.latency.llm == 55.0
     assert response.latency.answer_format == 4.0
-    assert response.latency.total_ms == 86.0
+    assert response.latency.output_guardrails == 2.0
+    assert response.latency.total_ms == 88.0
 
 
 def test_run_preserves_flags_and_errors_on_retrieval_failed() -> None:
@@ -168,6 +177,13 @@ def test_run_maps_optional_fields_and_flags() -> None:
         raw_answer="raw",
         answer_formatted=True,
         answer_format_fallback=True,
+        output_guardrail_passed=True,
+        output_guardrail_failed=True,
+        output_guardrail_fallback=True,
+        max_output_guardrail_iterations_reached=True,
+        output_guardrail_score=0.42,
+        output_guardrail_reason="unsupported",
+        output_guardrail_unsupported_claims=["claim"],
     )
     service = RAGService(pipeline=pipeline)
 
@@ -178,6 +194,9 @@ def test_run_maps_optional_fields_and_flags() -> None:
     assert response.clarification_question == "Уточните?"
     assert response.context_relevance_score == 0.2
     assert response.raw_answer == "raw"
+    assert response.output_guardrail_score == 0.42
+    assert response.output_guardrail_reason == "unsupported"
+    assert response.output_guardrail_unsupported_claims == ["claim"]
     assert response.flags.query_rewritten is True
     assert response.flags.query_rewrite_fallback is True
     assert response.flags.requires_clarification is True
@@ -186,6 +205,10 @@ def test_run_maps_optional_fields_and_flags() -> None:
     assert response.flags.max_query_rewrite_iterations_reached is True
     assert response.flags.answer_formatted is True
     assert response.flags.answer_format_fallback is True
+    assert response.flags.output_guardrail_passed is True
+    assert response.flags.output_guardrail_failed is True
+    assert response.flags.output_guardrail_fallback is True
+    assert response.flags.max_output_guardrail_iterations_reached is True
 
 
 def test_run_handles_empty_context_and_empty_docs() -> None:

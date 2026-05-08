@@ -29,6 +29,8 @@ from cadence_md.app.rag_prompts import (
     load_answer_formatter_user_prompt_template,
     load_context_relevance_system_prompt,
     load_context_relevance_user_prompt_template,
+    load_output_guardrails_system_prompt,
+    load_output_guardrails_user_prompt_template,
     load_query_rewriter_system_prompt,
     load_query_rewriter_user_prompt_template,
     load_rag_user_prompt_template,
@@ -70,6 +72,14 @@ NO_CONTEXT_ANSWER = (
     "- Поиск по корпусу не вернул релевантных фрагментов клинических рекомендаций."
 )
 
+OUTPUT_GUARDRAIL_FALLBACK_ANSWER = (
+    "Краткий вывод:\n"
+    "В базе клинических рекомендаций не найден достаточный подтвержденный контекст по вопросу.\n\n"
+    "Подробнее:\n"
+    "- Ответ невозможно сгенерировать без риска неподтвержденных выводов.\n"
+    "- Уточните диагноз, популяцию пациентов, клиническую ситуацию или раздел рекомендации."
+)
+
 _DOC_REF_RE = re.compile(r"\[Doc \d+\]")
 _TRACE_TEXT_LIMIT = 2_000
 _TRACE_DOC_CONTENT_LIMIT = 800
@@ -97,6 +107,18 @@ class AnswerFormatterResult(BaseModel):
     """Structured result returned by the optional answer formatter."""
 
     formatted_answer: str
+    reason: str = ""
+
+
+class OutputGuardrailResult(BaseModel):
+    """Structured verdict returned by the optional final answer guardrail."""
+
+    is_acceptable: bool
+    score: float = Field(ge=0.0, le=1.0)
+    grounded: bool
+    citations_valid: bool
+    format_ok: bool
+    unsupported_claims: list[str] = Field(default_factory=list)
     reason: str = ""
 
 
@@ -284,6 +306,15 @@ class RAGState(TypedDict):
     raw_answer: str | None
     answer_formatted: bool
     answer_format_fallback: bool
+    output_guardrail_iteration: int
+    output_guardrail_passed: bool
+    output_guardrail_failed: bool
+    output_guardrail_fallback: bool
+    output_guardrail_should_retry: bool
+    max_output_guardrail_iterations_reached: bool
+    output_guardrail_score: float | None
+    output_guardrail_reason: str | None
+    output_guardrail_unsupported_claims: list[str]
     ranked_docs: list[RankedDocument]
     rerank_fallback: bool
     retrieval_failed: bool
@@ -370,6 +401,15 @@ class RAGPipeline:
             "raw_answer": None,
             "answer_formatted": False,
             "answer_format_fallback": False,
+            "output_guardrail_iteration": 0,
+            "output_guardrail_passed": False,
+            "output_guardrail_failed": False,
+            "output_guardrail_fallback": False,
+            "output_guardrail_should_retry": False,
+            "max_output_guardrail_iterations_reached": False,
+            "output_guardrail_score": None,
+            "output_guardrail_reason": None,
+            "output_guardrail_unsupported_claims": [],
             "ranked_docs": [],
             "rerank_fallback": False,
             "retrieval_failed": False,
@@ -424,6 +464,7 @@ class RAGPipeline:
         """Optionally rewrite the retrieval query while preserving the original user question."""
         cfg = self.optional_nodes_config
         state["context_relevance_should_rewrite"] = False
+        state["output_guardrail_should_retry"] = False
         effective_question = _query_with_clarification(
             state["query"],
             state.get("clarification_answer"),
@@ -441,6 +482,11 @@ class RAGPipeline:
             rewrite_iteration=state.get("rewrite_iteration", 0),
             context_relevance_score=state.get("context_relevance_score"),
             context_relevance_reason=state.get("context_relevance_reason") or "",
+            output_guardrail_score=state.get("output_guardrail_score"),
+            output_guardrail_reason=state.get("output_guardrail_reason") or "",
+            output_guardrail_unsupported_claims=", ".join(
+                state.get("output_guardrail_unsupported_claims") or []
+            ),
         )
         trace_input = {
             "query": _trace_query_text(state["query"]),
@@ -451,6 +497,12 @@ class RAGPipeline:
             "rewrite_iteration": state.get("rewrite_iteration", 0),
             "context_relevance_score": state.get("context_relevance_score"),
             "context_relevance_reason": state.get("context_relevance_reason"),
+            "output_guardrail_score": state.get("output_guardrail_score"),
+            "output_guardrail_reason": state.get("output_guardrail_reason"),
+            "output_guardrail_unsupported_claims": state.get(
+                "output_guardrail_unsupported_claims",
+                [],
+            ),
         }
         try:
             decision = self._invoke_json_model(
@@ -1270,6 +1322,275 @@ class RAGPipeline:
         )
         return state
 
+    def _output_guardrail_can_retry(self, state: RAGState) -> bool:
+        """Return whether the output guardrail still has retry budget."""
+        return (
+            state.get("output_guardrail_iteration", 0)
+            < self.optional_nodes_config.max_output_guardrail_iterations
+        )
+
+    @staticmethod
+    def _clear_output_guardrail_attempt(state: RAGState) -> None:
+        """Clear generated artifacts before retrying retrieval and answer generation."""
+        state["ranked_docs"] = []
+        state["sources"] = []
+        state["context"] = ""
+        state["context_chars"] = 0
+        state["answer"] = ""
+        state["answer_word_count"] = 0
+        state["raw_answer"] = None
+        state["answer_formatted"] = False
+        state["answer_format_fallback"] = False
+
+    @staticmethod
+    def _apply_output_guardrail_fallback(state: RAGState) -> None:
+        """Replace a defective answer with the safe output-guardrail fallback."""
+        state["answer"] = OUTPUT_GUARDRAIL_FALLBACK_ANSWER
+        state["answer_word_count"] = len(state["answer"].split())
+        state["ranked_docs"] = []
+        state["sources"] = []
+        state["context"] = ""
+        state["context_chars"] = 0
+        state["raw_answer"] = None
+        state["answer_formatted"] = False
+        state["output_guardrail_should_retry"] = False
+        state["output_guardrail_fallback"] = True
+
+    def _record_output_guardrails(
+        self,
+        state: RAGState,
+        *,
+        trace_input: dict[str, Any],
+        dt_ms: float,
+        verdict: dict[str, Any],
+        error_type: str | None = None,
+        level: str = "info",
+    ) -> None:
+        """Record latency, tracing, and structured logs for the output guardrail node."""
+        state.setdefault("latency_ms", {})["output_guardrails"] = dt_ms
+        observe_rag_node("output_guardrails", dt_ms)
+        record_span(
+            "output_guardrails",
+            input_data=trace_input,
+            output_data={
+                **verdict,
+                "answer": _trace_text(state.get("answer", ""), "rag answer"),
+            },
+            metadata={
+                "query_hash": state["query_hash"],
+                "latency_ms": round(dt_ms, 2),
+                "node": "output_guardrails",
+                "score": state.get("output_guardrail_score"),
+                "passed": state.get("output_guardrail_passed", False),
+                "failed": state.get("output_guardrail_failed", False),
+                "fallback": state.get("output_guardrail_fallback", False),
+                "should_retry": state.get("output_guardrail_should_retry", False),
+                "iteration": state.get("output_guardrail_iteration", 0),
+                "max_iterations_reached": state.get(
+                    "max_output_guardrail_iterations_reached",
+                    False,
+                ),
+                "prompt_version": settings.rag_config.prompt_version,
+                **({"error_type": error_type} if error_type else {}),
+            },
+        )
+        logger_fn = logger.warning if level == "warning" else logger.info
+        logger_fn(
+            "rag.output_guardrails",
+            extra={
+                "event": "rag.output_guardrails",
+                "node": "output_guardrails",
+                "query_hash": state["query_hash"],
+                "score": state.get("output_guardrail_score"),
+                "passed": state.get("output_guardrail_passed", False),
+                "failed": state.get("output_guardrail_failed", False),
+                "fallback": state.get("output_guardrail_fallback", False),
+                "should_retry": state.get("output_guardrail_should_retry", False),
+                "iteration": state.get("output_guardrail_iteration", 0),
+                "latency_ms": round(dt_ms, 2),
+                "error_type": error_type,
+                "prompt_version": settings.rag_config.prompt_version,
+            },
+        )
+
+    def _handle_output_guardrail_rejection(
+        self,
+        state: RAGState,
+        *,
+        reason: str,
+        score: float | None,
+        unsupported_claims: list[str],
+        fallback: bool = False,
+    ) -> None:
+        """Update state for a rejected final answer and either retry or fail closed."""
+        state["output_guardrail_passed"] = False
+        state["output_guardrail_failed"] = True
+        state["output_guardrail_score"] = score
+        state["output_guardrail_reason"] = reason
+        state["output_guardrail_unsupported_claims"] = unsupported_claims
+        state["output_guardrail_fallback"] = fallback
+
+        if self._output_guardrail_can_retry(state):
+            state["output_guardrail_iteration"] = (
+                int(state.get("output_guardrail_iteration", 0)) + 1
+            )
+            state["output_guardrail_should_retry"] = True
+            self._clear_output_guardrail_attempt(state)
+            inc_rag_fallback("output_guardrails_failed")
+            if fallback:
+                inc_rag_fallback("output_guardrails_fallback")
+            return
+
+        state["max_output_guardrail_iterations_reached"] = True
+        self._apply_output_guardrail_fallback(state)
+        inc_rag_fallback("output_guardrails_failed")
+        inc_rag_fallback("output_guardrails_fallback")
+        inc_rag_fallback("output_guardrails_max_iterations")
+
+    def output_guardrails_node(self, state: RAGState) -> RAGState:
+        """Optionally verify that the final answer is grounded and citation-safe."""
+        cfg = self.optional_nodes_config
+        state["output_guardrail_should_retry"] = False
+        if not cfg.enable_output_guardrails:
+            return state
+        if (
+            state.get("requires_clarification")
+            or state.get("retrieval_failed")
+            or not state.get("answer")
+        ):
+            return state
+
+        state["output_guardrail_passed"] = False
+        state["output_guardrail_failed"] = False
+        state["output_guardrail_fallback"] = False
+        answer = state["answer"]
+        effective_question = _query_with_clarification(
+            state["query"],
+            state.get("clarification_answer"),
+        )
+        trace_input = {
+            "query": _trace_query_text(state["query"]),
+            "effective_question": _trace_query_text(effective_question),
+            "retrieval_query": _trace_query_text(
+                state.get("retrieval_query") or effective_question
+            ),
+            "answer": _trace_text(answer, "rag answer"),
+            "sources": state.get("sources", []),
+            **_trace_context_payload(state),
+        }
+
+        t0 = time.perf_counter()
+        allowed_refs = {
+            str(source.get("doc_ref"))
+            for source in state.get("sources", [])
+            if source.get("doc_ref")
+        }
+        answer_refs = _doc_refs(answer)
+        unknown_refs = sorted(answer_refs - allowed_refs)
+        if unknown_refs:
+            reason = f"unknown citations: {', '.join(unknown_refs)}"
+            self._handle_output_guardrail_rejection(
+                state,
+                reason=reason,
+                score=0.0,
+                unsupported_claims=[reason],
+            )
+            dt_ms = (time.perf_counter() - t0) * 1000
+            self._record_output_guardrails(
+                state,
+                trace_input=trace_input,
+                dt_ms=dt_ms,
+                verdict={
+                    "deterministic_citation_check_failed": True,
+                    "unknown_refs": unknown_refs,
+                    "reason": reason,
+                },
+                level="warning",
+            )
+            return state
+
+        system = load_output_guardrails_system_prompt()
+        user_tmpl = load_output_guardrails_user_prompt_template()
+        user = user_tmpl.format(
+            question=effective_question,
+            retrieval_query=state.get("retrieval_query") or effective_question,
+            context=state.get("context", ""),
+            answer=answer,
+            sources=", ".join(source.get("doc_ref", "") for source in state.get("sources", [])),
+        )
+        try:
+            result = self._invoke_json_model(
+                node_name="output_guardrails",
+                system_prompt=system,
+                user_prompt=user,
+                model_type=OutputGuardrailResult,
+            )
+        except Exception as exc:
+            reason = f"fallback: {type(exc).__name__}"
+            state["error_type"] = type(exc).__name__
+            state["error_message"] = str(exc)
+            self._handle_output_guardrail_rejection(
+                state,
+                reason=reason,
+                score=None,
+                unsupported_claims=[],
+                fallback=True,
+            )
+            dt_ms = (time.perf_counter() - t0) * 1000
+            self._record_output_guardrails(
+                state,
+                trace_input=trace_input,
+                dt_ms=dt_ms,
+                verdict={
+                    "output_guardrail_fallback": True,
+                    "reason": reason,
+                },
+                error_type=type(exc).__name__,
+                level="warning",
+            )
+            return state
+
+        state["output_guardrail_score"] = result.score
+        state["output_guardrail_reason"] = result.reason
+        state["output_guardrail_unsupported_claims"] = result.unsupported_claims
+        acceptable = (
+            result.is_acceptable
+            and result.score >= cfg.output_guardrail_min_score
+            and result.grounded
+            and result.citations_valid
+            and result.format_ok
+        )
+        if acceptable:
+            state["output_guardrail_passed"] = True
+            state["output_guardrail_failed"] = False
+            state["output_guardrail_fallback"] = False
+            state["output_guardrail_should_retry"] = False
+        else:
+            self._handle_output_guardrail_rejection(
+                state,
+                reason=result.reason,
+                score=result.score,
+                unsupported_claims=result.unsupported_claims,
+            )
+
+        dt_ms = (time.perf_counter() - t0) * 1000
+        self._record_output_guardrails(
+            state,
+            trace_input=trace_input,
+            dt_ms=dt_ms,
+            verdict={
+                "is_acceptable": result.is_acceptable,
+                "accepted": acceptable,
+                "grounded": result.grounded,
+                "citations_valid": result.citations_valid,
+                "format_ok": result.format_ok,
+                "unsupported_claims": result.unsupported_claims,
+                "reason": result.reason,
+            },
+            level="warning" if state["output_guardrail_failed"] else "info",
+        )
+        return state
+
     @staticmethod
     def _query_rewrite_route(state: RAGState) -> Literal["retrieve", "end"]:
         """Route to retrieval unless the rewriter produced a clarification stop-state."""
@@ -1279,6 +1600,11 @@ class RAGPipeline:
     def _context_relevance_route(state: RAGState) -> Literal["query_rewrite", "generate"]:
         """Route back to query rewriting when the relevance grader requests another search."""
         return "query_rewrite" if state.get("context_relevance_should_rewrite") else "generate"
+
+    @staticmethod
+    def _output_guardrails_route(state: RAGState) -> Literal["query_rewrite", "end"]:
+        """Route back to query rewriting when output guardrails request another attempt."""
+        return "query_rewrite" if state.get("output_guardrail_should_retry") else "end"
 
     def _node_handlers(self) -> dict[str, Callable[[RAGState], RAGState]]:
         """Return all graph node handlers keyed by stable node names."""
@@ -1290,6 +1616,7 @@ class RAGPipeline:
             "context_relevance": self.context_relevance_node,
             "generate": self.generate_node,
             "answer_format": self.answer_format_node,
+            "output_guardrails": self.output_guardrails_node,
         }
 
     def _build_linear_graph(self, node_order: tuple[str, ...]):
@@ -1315,8 +1642,13 @@ class RAGPipeline:
         """Wire the feature-flagged default graph with optional conditional nodes."""
         workflow = StateGraph(RAGState)
         cfg = self.optional_nodes_config
+        needs_query_rewrite_node = (
+            cfg.enable_query_rewriter
+            or cfg.enable_context_relevance_grader
+            or cfg.enable_output_guardrails
+        )
 
-        if cfg.enable_query_rewriter or cfg.enable_context_relevance_grader:
+        if needs_query_rewrite_node:
             workflow.add_node("query_rewrite", self.query_rewrite_node)
         workflow.add_node("retrieve", self.retrieve_node)
         workflow.add_node("rerank", self.reranker_node)
@@ -1326,6 +1658,8 @@ class RAGPipeline:
         workflow.add_node("generate", self.generate_node)
         if cfg.enable_answer_formatter:
             workflow.add_node("answer_format", self.answer_format_node)
+        if cfg.enable_output_guardrails:
+            workflow.add_node("output_guardrails", self.output_guardrails_node)
 
         if cfg.enable_query_rewriter:
             workflow.add_edge(START, "query_rewrite")
@@ -1336,6 +1670,8 @@ class RAGPipeline:
             )
         else:
             workflow.add_edge(START, "retrieve")
+            if needs_query_rewrite_node:
+                workflow.add_edge("query_rewrite", "retrieve")
 
         workflow.add_edge("retrieve", "rerank")
         workflow.add_edge("rerank", "context")
@@ -1350,9 +1686,18 @@ class RAGPipeline:
             workflow.add_edge("context", "generate")
         if cfg.enable_answer_formatter:
             workflow.add_edge("generate", "answer_format")
-            workflow.add_edge("answer_format", END)
+            final_answer_node = "answer_format"
         else:
-            workflow.add_edge("generate", END)
+            final_answer_node = "generate"
+        if cfg.enable_output_guardrails:
+            workflow.add_edge(final_answer_node, "output_guardrails")
+            workflow.add_conditional_edges(
+                "output_guardrails",
+                self._output_guardrails_route,
+                {"query_rewrite": "query_rewrite", "end": END},
+            )
+        else:
+            workflow.add_edge(final_answer_node, END)
         return workflow.compile()
 
     def _build_graph(self):

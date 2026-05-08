@@ -81,6 +81,9 @@ def test_optional_node_prompt_loaders_use_expected_filenames(
         "context={context}",
         "answer_formatter_system.txt": "afs",
         "answer_formatter_user.txt": "answer={answer} context={context} sources={sources}",
+        "output_guardrails_system.txt": "ogs",
+        "output_guardrails_user.txt": "question={question} retrieval={retrieval_query} "
+        "context={context} answer={answer} sources={sources}",
     }
     for filename, text in files.items():
         (d / filename).write_text(text, encoding="utf-8")
@@ -92,11 +95,24 @@ def test_optional_node_prompt_loaders_use_expected_filenames(
     assert "{context}" in rag_prompts.load_context_relevance_user_prompt_template()
     assert rag_prompts.load_answer_formatter_system_prompt() == "afs"
     assert "{sources}" in rag_prompts.load_answer_formatter_user_prompt_template()
+    assert rag_prompts.load_output_guardrails_system_prompt() == "ogs"
+    assert "{answer}" in rag_prompts.load_output_guardrails_user_prompt_template()
 
 
 def test_optional_node_prompt_files_have_expected_placeholders() -> None:
     assert "{question}" in rag_prompts.load_query_rewriter_user_prompt_template()
     assert "{retrieval_query}" in rag_prompts.load_query_rewriter_user_prompt_template()
+    assert "{output_guardrail_score}" in rag_prompts.load_query_rewriter_user_prompt_template()
+    assert "{output_guardrail_reason}" in rag_prompts.load_query_rewriter_user_prompt_template()
+    assert (
+        "{output_guardrail_unsupported_claims}"
+        in rag_prompts.load_query_rewriter_user_prompt_template()
+    )
     assert "{context}" in rag_prompts.load_context_relevance_user_prompt_template()
     assert "{answer}" in rag_prompts.load_answer_formatter_user_prompt_template()
     assert "{sources}" in rag_prompts.load_answer_formatter_user_prompt_template()
+    assert "{question}" in rag_prompts.load_output_guardrails_user_prompt_template()
+    assert "{retrieval_query}" in rag_prompts.load_output_guardrails_user_prompt_template()
+    assert "{context}" in rag_prompts.load_output_guardrails_user_prompt_template()
+    assert "{answer}" in rag_prompts.load_output_guardrails_user_prompt_template()
+    assert "{sources}" in rag_prompts.load_output_guardrails_user_prompt_template()

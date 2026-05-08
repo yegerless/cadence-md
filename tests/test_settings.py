@@ -132,11 +132,18 @@ class TestRAGConfigConstruction:
     def test_optional_nodes_defaults_and_validation(self) -> None:
         cfg = RAGOptionalNodesConfig()
         assert cfg.enable_query_rewriter is True
-        assert cfg.enable_query_clarification is False
+        assert cfg.enable_query_clarification is True
         assert cfg.enable_context_relevance_grader is True
         assert cfg.enable_answer_formatter is True
+        assert cfg.enable_output_guardrails is True
+        assert cfg.max_output_guardrail_iterations == 1
+        assert cfg.output_guardrail_min_score == 0.7
         with pytest.raises(ValidationError):
             RAGOptionalNodesConfig(context_relevance_min_score=1.5)
+        with pytest.raises(ValidationError):
+            RAGOptionalNodesConfig(max_output_guardrail_iterations=-1)
+        with pytest.raises(ValidationError):
+            RAGOptionalNodesConfig(output_guardrail_min_score=1.5)
 
 
 class TestFieldValidators:
