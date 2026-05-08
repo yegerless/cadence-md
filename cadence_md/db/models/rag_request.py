@@ -24,6 +24,7 @@ from cadence_md.db.base import Base, CreatedAtMixin
 from cadence_md.db.enums import RAGRequestStatus
 
 if TYPE_CHECKING:
+    from cadence_md.db.models.chat_conversation import ChatConversation
     from cadence_md.db.models.rag_response import RAGResponseLog
     from cadence_md.db.models.user import User
 
@@ -42,6 +43,7 @@ class RAGRequestLog(CreatedAtMixin, Base):
         Index("ix_rag_requests_status", "status"),
         Index("ix_rag_requests_created_at", "created_at"),
         Index("ix_rag_requests_query_hash", "query_hash"),
+        Index("ix_rag_requests_user_chat_created", "user_id", "chat_id", "created_at"),
         Index(
             "uq_rag_requests_user_id_idempotency_key",
             "user_id",
@@ -61,6 +63,10 @@ class RAGRequestLog(CreatedAtMixin, Base):
         nullable=False,
     )
     conversation_id: Mapped[str | None] = mapped_column(String(128))
+    chat_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("chat_conversations.id", ondelete="SET NULL"),
+    )
     query: Mapped[str] = mapped_column(Text, nullable=False)
     query_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[RAGRequestStatus] = mapped_column(
@@ -97,6 +103,7 @@ class RAGRequestLog(CreatedAtMixin, Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     user: Mapped[User] = relationship(back_populates="rag_requests")
+    chat: Mapped[ChatConversation | None] = relationship(back_populates="rag_requests")
     response: Mapped[RAGResponseLog | None] = relationship(
         back_populates="rag_request",
         cascade="all, delete-orphan",

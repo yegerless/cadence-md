@@ -1,6 +1,7 @@
 """Unit tests for async database repositories."""
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
@@ -11,8 +12,13 @@ from sqlalchemy.pool import StaticPool
 from cadence_md.backend.schemas.chat import RAGRequestStatus as APIRAGRequestStatus
 from cadence_md.db.base import Base
 from cadence_md.db.enums import RAGRequestStatus
-from cadence_md.db.models import RAGRequestLog, RAGResponseLog, User
-from cadence_md.db.repositories import DuplicateRAGResponseError, RAGLogRepository, UserRepository
+from cadence_md.db.models import ChatConversation, RAGRequestLog, RAGResponseLog, User
+from cadence_md.db.repositories import (
+    ChatConversationRepository,
+    DuplicateRAGResponseError,
+    RAGLogRepository,
+    UserRepository,
+)
 
 
 @pytest_asyncio.fixture
@@ -63,6 +69,171 @@ async def test_rag_request_status_values_match_api_enum() -> None:
     assert [status.value for status in RAGRequestStatus] == [
         status.value for status in APIRAGRequestStatus
     ]
+
+
+@pytest.mark.asyncio
+async def test_chat_conversation_repository_lists_only_own_active_chats(
+    db_session: AsyncSession,
+) -> None:
+    user_repository = UserRepository(db_session)
+    user = await user_repository.create_user(
+        email="chat-owner@example.org",
+        password_hash="hashed-password",
+    )
+    other_user = await user_repository.create_user(
+        email="other-chat-owner@example.org",
+        password_hash="hashed-password",
+    )
+    chat_repository = ChatConversationRepository(db_session)
+    older_chat = await chat_repository.create_chat(user_id=user.id, title="Older")
+    newer_chat = await chat_repository.create_chat(user_id=user.id, title="Newer")
+    other_chat = await chat_repository.create_chat(user_id=other_user.id, title="Other")
+
+    await chat_repository.touch_chat_for_user(
+        user_id=user.id,
+        chat_id=older_chat.id,
+        last_message_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    await chat_repository.touch_chat_for_user(
+        user_id=user.id,
+        chat_id=newer_chat.id,
+        last_message_at=datetime(2026, 5, 2, tzinfo=UTC),
+    )
+
+    own_chats = await chat_repository.list_active_chats_for_user(user_id=user.id)
+    assert [chat.id for chat in own_chats] == [newer_chat.id, older_chat.id]
+
+    other_chats = await chat_repository.list_active_chats_for_user(user_id=other_user.id)
+    assert [chat.id for chat in other_chats] == [other_chat.id]
+
+
+@pytest.mark.asyncio
+async def test_chat_conversation_repository_soft_delete_hides_chat_and_keeps_row(
+    db_session: AsyncSession,
+) -> None:
+    user_repository = UserRepository(db_session)
+    user = await user_repository.create_user(
+        email="delete-chat-owner@example.org",
+        password_hash="hashed-password",
+    )
+    other_user = await user_repository.create_user(
+        email="delete-other-owner@example.org",
+        password_hash="hashed-password",
+    )
+    chat_repository = ChatConversationRepository(db_session)
+    chat = await chat_repository.create_chat(user_id=user.id, title="Delete me")
+    other_chat = await chat_repository.create_chat(user_id=other_user.id, title="Not yours")
+
+    assert (
+        await chat_repository.get_active_chat_for_user(
+            user_id=user.id,
+            chat_id=other_chat.id,
+        )
+        is None
+    )
+    assert (
+        await chat_repository.soft_delete_chat_for_user(
+            user_id=user.id,
+            chat_id=other_chat.id,
+        )
+        is None
+    )
+
+    deleted_chat = await chat_repository.soft_delete_chat_for_user(
+        user_id=user.id,
+        chat_id=chat.id,
+    )
+
+    assert deleted_chat is not None
+    assert deleted_chat.deleted_at is not None
+    assert await chat_repository.get_active_chat_for_user(user_id=user.id, chat_id=chat.id) is None
+    assert await chat_repository.list_active_chats_for_user(user_id=user.id) == []
+    assert await db_session.get(ChatConversation, chat.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_chat_conversation_repository_lists_requests_and_keeps_messages_after_delete(
+    db_session: AsyncSession,
+) -> None:
+    user_repository = UserRepository(db_session)
+    user = await user_repository.create_user(
+        email="chat-messages@example.org",
+        password_hash="hashed-password",
+    )
+    other_user = await user_repository.create_user(
+        email="chat-messages-other@example.org",
+        password_hash="hashed-password",
+    )
+    chat_repository = ChatConversationRepository(db_session)
+    rag_repository = RAGLogRepository(db_session)
+    chat = await chat_repository.create_chat(user_id=user.id, title="Messages")
+    other_chat = await chat_repository.create_chat(user_id=other_user.id, title="Other")
+
+    second_request = await rag_repository.create_request(
+        user_id=user.id,
+        query="Second",
+        query_hash="hash-2",
+        chat_id=chat.id,
+    )
+    first_request = await rag_repository.create_request(
+        user_id=user.id,
+        query="First",
+        query_hash="hash-1",
+        chat_id=chat.id,
+    )
+    await rag_repository.create_request(
+        user_id=user.id,
+        query="Unrelated",
+        query_hash="hash-unrelated",
+    )
+    await rag_repository.create_request(
+        user_id=other_user.id,
+        query="Other user",
+        query_hash="hash-other",
+        chat_id=other_chat.id,
+    )
+    second_request.created_at = datetime(2026, 5, 2, tzinfo=UTC)
+    first_request.created_at = datetime(2026, 5, 1, tzinfo=UTC)
+    await db_session.flush()
+
+    requests = await chat_repository.list_requests_by_chat_for_user(
+        user_id=user.id,
+        chat_id=chat.id,
+    )
+    assert [request.id for request in requests] == [first_request.id, second_request.id]
+
+    await chat_repository.soft_delete_chat_for_user(user_id=user.id, chat_id=chat.id)
+
+    assert await db_session.get(RAGRequestLog, first_request.id) is not None
+    assert await db_session.get(RAGRequestLog, second_request.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_rag_log_repository_binds_request_to_chat_and_retry_inherits_chat_id(
+    db_session: AsyncSession,
+) -> None:
+    user = await UserRepository(db_session).create_user(
+        email="retry-chat@example.org",
+        password_hash="hashed-password",
+    )
+    chat_repository = ChatConversationRepository(db_session)
+    chat = await chat_repository.create_chat(user_id=user.id, title="Retry chat")
+    rag_repository = RAGLogRepository(db_session)
+
+    request_log = await rag_repository.create_request(
+        user_id=user.id,
+        query="Какие препараты первой линии?",
+        query_hash="hash",
+        chat_id=chat.id,
+    )
+    retry_request = await rag_repository.create_retry_request(
+        original_request_id=request_log.id,
+        idempotency_key="retry-chat-idempotency",
+    )
+
+    assert request_log.chat_id == chat.id
+    assert retry_request.chat_id == chat.id
+    assert retry_request.original_request_id == request_log.id
 
 
 @pytest.mark.asyncio

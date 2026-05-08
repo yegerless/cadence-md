@@ -58,16 +58,17 @@ a {
 
 .auth-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(340px, 480px);
-  width: min(1120px, 100%);
+  grid-template-columns: minmax(460px, 1.15fr) minmax(340px, 420px);
+  width: min(1240px, 100%);
   margin-inline: auto;
   gap: clamp(1rem, 2.2vw, 1.75rem);
   min-height: 100vh;
-  padding: 5vw;
+  padding: clamp(2rem, 4vw, 4rem);
   align-items: center;
 }
 
 .auth-hero {
+  width: 100%;
   max-width: 760px;
   padding: 3rem;
   border: 1px solid rgba(255, 255, 255, 0.7);
@@ -83,9 +84,16 @@ a {
 .page-header h1 {
   margin: 0.8rem 0 1rem;
   color: inherit;
-  font-size: clamp(2.2rem, 6vw, 5.2rem);
   line-height: 0.98;
   letter-spacing: -0.06em;
+}
+
+.auth-hero h1 {
+  font-size: clamp(2.2rem, 4.6vw, 4.6rem);
+}
+
+.page-header h1 {
+  font-size: clamp(2.2rem, 6vw, 5.2rem);
 }
 
 .auth-hero p,

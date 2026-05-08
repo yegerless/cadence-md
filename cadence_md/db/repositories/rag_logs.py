@@ -31,6 +31,7 @@ class RAGLogRepository:
         query: str,
         query_hash: str,
         conversation_id: str | None = None,
+        chat_id: uuid.UUID | None = None,
         celery_task_id: str | None = None,
         original_request_id: uuid.UUID | None = None,
         idempotency_key: str | None = None,
@@ -40,6 +41,7 @@ class RAGLogRepository:
         request_log = RAGRequestLog(
             user_id=user_id,
             conversation_id=conversation_id,
+            chat_id=chat_id,
             query=query,
             query_hash=query_hash,
             status=RAGRequestStatus.QUEUED,
@@ -71,6 +73,7 @@ class RAGLogRepository:
             query=original.query,
             query_hash=original.query_hash,
             conversation_id=original.conversation_id,
+            chat_id=original.chat_id,
             celery_task_id=celery_task_id,
             original_request_id=original.id,
             idempotency_key=idempotency_key,
