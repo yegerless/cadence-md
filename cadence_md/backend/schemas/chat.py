@@ -21,6 +21,34 @@ class RAGRequestStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class CreateChatConversationRequest(BaseModel):
+    """Payload for creating an empty chat conversation."""
+
+    title: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Optional user-visible chat title.",
+    )
+
+
+class ChatConversationResponse(BaseModel):
+    """User-owned chat conversation metadata."""
+
+    id: str
+    title: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    last_message_at: datetime | None = None
+
+
+class ChatConversationListResponse(BaseModel):
+    """Paginated chat conversation list."""
+
+    items: list[ChatConversationResponse]
+    limit: int = Field(ge=1, le=100)
+    offset: int = Field(ge=0)
+
+
 class CreateRAGRequest(BaseModel):
     """Payload for creating an asynchronous RAG request."""
 
@@ -33,6 +61,10 @@ class CreateRAGRequest(BaseModel):
     conversation_id: str | None = Field(
         default=None,
         description="Optional frontend conversation id for grouping requests.",
+    )
+    chat_id: str | None = Field(
+        default=None,
+        description="Optional persisted chat conversation id. A new chat is created when omitted.",
     )
     idempotency_key: str | None = Field(
         default=None,
@@ -97,6 +129,10 @@ class RAGRequestStatusResponse(BaseModel):
 
     request_id: str
     status: RAGRequestStatus
+    chat_id: str | None = Field(
+        default=None,
+        description="Persisted chat conversation id when the request belongs to a chat.",
+    )
     original_request_id: str | None = Field(
         default=None,
         description="Original request id when this status belongs to a retry request.",
@@ -113,3 +149,16 @@ class RAGRequestStatusResponse(BaseModel):
         default=None,
         description="Present only while the request is awaiting user clarification.",
     )
+
+
+class ChatTurnResponse(BaseModel):
+    """Single chat turn reconstructed from a persisted RAG request."""
+
+    query: str
+    request: RAGRequestStatusResponse
+
+
+class ChatMessageHistoryResponse(BaseModel):
+    """Chronological chat message history."""
+
+    items: list[ChatTurnResponse]

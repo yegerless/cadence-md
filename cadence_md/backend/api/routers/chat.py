@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 from fastapi.responses import FileResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,11 @@ from cadence_md.backend.mappers.rag_status import rag_request_to_status_response
 from cadence_md.backend.query_hash import compute_query_hash
 from cadence_md.backend.request_context import get_route_settings
 from cadence_md.backend.schemas.chat import (
+    ChatConversationListResponse,
+    ChatConversationResponse,
+    ChatMessageHistoryResponse,
+    ChatTurnResponse,
+    CreateChatConversationRequest,
     CreateRAGRequest,
     RAGRequestStatusResponse,
     SubmitClarificationRequest,
@@ -33,7 +38,8 @@ from cadence_md.backend.schemas.limits import (
 from cadence_md.backend.services.rag_enqueue import RAGEnqueueService, make_rag_task_id
 from cadence_md.backend.settings import BackendSettings
 from cadence_md.db.enums import RAGRequestStatus as DbRAGRequestStatus
-from cadence_md.db.models import User
+from cadence_md.db.models import ChatConversation, User
+from cadence_md.db.repositories.chat_conversations import ChatConversationRepository
 from cadence_md.db.repositories.rag_logs import RAGLogRepository
 from cadence_md.db.session import get_async_session
 
@@ -70,6 +76,46 @@ def _effective_idempotency_key(
             message="Idempotency-Key header and body idempotency_key must match when both are set.",
         )
     return header_key or body_key
+
+
+def _chat_to_response(chat: ChatConversation) -> ChatConversationResponse:
+    """Map chat metadata to the public API shape."""
+    return ChatConversationResponse(
+        id=str(chat.id),
+        title=chat.title,
+        created_at=chat.created_at,
+        updated_at=chat.updated_at,
+        last_message_at=chat.last_message_at,
+    )
+
+
+async def _get_active_chat_or_404(
+    repo: ChatConversationRepository,
+    *,
+    user_id: uuid.UUID,
+    chat_id: uuid.UUID,
+) -> ChatConversation:
+    """Return an active user-owned chat or hide its existence."""
+    chat = await repo.get_active_chat_for_user(user_id=user_id, chat_id=chat_id)
+    if chat is None:
+        raise ApiError(
+            status_code=404,
+            code="not_found",
+            message="Chat conversation not found.",
+        )
+    return chat
+
+
+def _parse_chat_id_or_404(chat_id: str) -> uuid.UUID:
+    """Parse a client-provided chat id without exposing malformed identifiers."""
+    try:
+        return uuid.UUID(chat_id)
+    except ValueError as exc:
+        raise ApiError(
+            status_code=404,
+            code="not_found",
+            message="Chat conversation not found.",
+        ) from exc
 
 
 async def _ensure_queue_capacity(session: AsyncSession, settings: BackendSettings) -> None:
@@ -173,6 +219,118 @@ def _download_filename(source: dict[str, object], source_file: Path) -> str:
 
 
 @router.post(
+    "/conversations",
+    response_model=ChatConversationResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={404: {"model": ErrorResponse, "description": "Chat conversation was not found."}},
+    summary="Create a chat conversation",
+    description="Creates an empty persisted chat conversation for the current user.",
+)
+async def create_chat_conversation(
+    body: CreateChatConversationRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+) -> ChatConversationResponse:
+    """Create an empty user-owned chat conversation."""
+    repo = ChatConversationRepository(session)
+    chat = await repo.create_chat(user_id=user.id, title=body.title)
+    await session.commit()
+    return _chat_to_response(chat)
+
+
+@router.get(
+    "/conversations",
+    response_model=ChatConversationListResponse,
+    summary="List chat conversations",
+    description="Returns active chat conversations owned by the current user.",
+)
+async def list_chat_conversations(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> ChatConversationListResponse:
+    """List active chats for the current user."""
+    repo = ChatConversationRepository(session)
+    chats = await repo.list_active_chats_for_user(user_id=user.id, limit=limit, offset=offset)
+    return ChatConversationListResponse(
+        items=[_chat_to_response(chat) for chat in chats],
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/conversations/{chat_id}",
+    response_model=ChatConversationResponse,
+    responses={404: {"model": ErrorResponse, "description": "Chat conversation was not found."}},
+    summary="Get a chat conversation",
+    description="Returns active chat metadata when it belongs to the current user.",
+)
+async def get_chat_conversation(
+    chat_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+) -> ChatConversationResponse:
+    """Return a single active user-owned chat conversation."""
+    repo = ChatConversationRepository(session)
+    chat = await _get_active_chat_or_404(repo, user_id=user.id, chat_id=chat_id)
+    return _chat_to_response(chat)
+
+
+@router.get(
+    "/conversations/{chat_id}/messages",
+    response_model=ChatMessageHistoryResponse,
+    responses={404: {"model": ErrorResponse, "description": "Chat conversation was not found."}},
+    summary="Get chat conversation messages",
+    description="Returns chronological RAG turns for an active user-owned chat.",
+)
+async def get_chat_conversation_messages(
+    chat_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+) -> ChatMessageHistoryResponse:
+    """Return persisted turns for an active chat in chronological order."""
+    chat_repo = ChatConversationRepository(session)
+    await _get_active_chat_or_404(chat_repo, user_id=user.id, chat_id=chat_id)
+    rag_repo = RAGLogRepository(session)
+    requests = await chat_repo.list_requests_by_chat_for_user(user_id=user.id, chat_id=chat_id)
+    return ChatMessageHistoryResponse(
+        items=[
+            ChatTurnResponse(
+                query=request_log.query,
+                request=await rag_request_to_status_response(rag_repo, request_log),
+            )
+            for request_log in requests
+        ]
+    )
+
+
+@router.delete(
+    "/conversations/{chat_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={404: {"model": ErrorResponse, "description": "Chat conversation was not found."}},
+    summary="Soft delete a chat conversation",
+    description="Marks a chat conversation as deleted without deleting its RAG requests.",
+)
+async def delete_chat_conversation(
+    chat_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+) -> None:
+    """Soft-delete a user-owned chat conversation."""
+    repo = ChatConversationRepository(session)
+    chat = await repo.soft_delete_chat_for_user(user_id=user.id, chat_id=chat_id)
+    if chat is None:
+        raise ApiError(
+            status_code=404,
+            code="not_found",
+            message="Chat conversation not found.",
+        )
+    await session.commit()
+
+
+@router.post(
     "/messages",
     response_model=RAGRequestStatusResponse,
     status_code=status.HTTP_202_ACCEPTED,
@@ -199,6 +357,7 @@ async def create_rag_message(
     """Create a queued RAG request for worker processing."""
     effective_key = _effective_idempotency_key(body, idempotency_header)
     repo = RAGLogRepository(session)
+    chat_repo = ChatConversationRepository(session)
 
     if effective_key:
         existing = await repo.get_request_by_idempotency_key(
@@ -208,18 +367,34 @@ async def create_rag_message(
         if existing is not None:
             return await rag_request_to_status_response(repo, existing)
 
+    chat_id = None
+    if body.chat_id is not None:
+        parsed_chat_id = _parse_chat_id_or_404(body.chat_id)
+        chat = await _get_active_chat_or_404(chat_repo, user_id=user.id, chat_id=parsed_chat_id)
+        chat_id = chat.id
+
     await _ensure_queue_capacity(session, settings)
 
     qh = compute_query_hash(body.query)
     try:
+        if chat_id is None:
+            chat = await chat_repo.create_chat(user_id=user.id)
+            chat_id = chat.id
+
         request_log = await repo.create_request(
             user_id=user.id,
             query=body.query,
             query_hash=qh,
+            chat_id=chat_id,
             conversation_id=body.conversation_id,
             idempotency_key=effective_key,
         )
         request_log.celery_task_id = make_rag_task_id(request_log.id)
+        await chat_repo.touch_chat_for_user(
+            user_id=user.id,
+            chat_id=chat_id,
+            last_message_at=request_log.created_at,
+        )
         await session.flush()
         await session.commit()
     except IntegrityError:

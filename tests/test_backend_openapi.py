@@ -19,6 +19,9 @@ def test_openapi_contains_versioned_contract_paths() -> None:
         "/api/v1/auth/register",
         "/api/v1/auth/login",
         "/api/v1/users/me",
+        "/api/v1/chat/conversations",
+        "/api/v1/chat/conversations/{chat_id}",
+        "/api/v1/chat/conversations/{chat_id}/messages",
         "/api/v1/chat/messages",
         "/api/v1/chat/messages/{request_id}",
         "/api/v1/chat/messages/{request_id}/sources/{rank}/download",
@@ -42,6 +45,11 @@ def test_openapi_contains_auth_chat_health_and_error_schemas() -> None:
         "LoginRequest",
         "TokenResponse",
         "UserProfileResponse",
+        "CreateChatConversationRequest",
+        "ChatConversationResponse",
+        "ChatConversationListResponse",
+        "ChatTurnResponse",
+        "ChatMessageHistoryResponse",
         "CreateRAGRequest",
         "ClarificationResponse",
         "RAGRequestStatus",
@@ -75,6 +83,14 @@ def test_create_rag_request_exposes_query_length_limit() -> None:
 
     assert create_request["properties"]["query"]["maxLength"] == MAX_QUERY_LENGTH
     assert create_request["properties"]["query"]["minLength"] == 1
+    assert "chat_id" in create_request["properties"]
+
+
+def test_rag_request_status_exposes_chat_id() -> None:
+    schema = _openapi_schema()
+    status_response = schema["components"]["schemas"]["RAGRequestStatusResponse"]
+
+    assert "chat_id" in status_response["properties"]
 
 
 def test_rag_answer_response_exposes_langfuse_trace_id() -> None:

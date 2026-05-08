@@ -7,6 +7,7 @@ import subprocess
 import sys
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ from cadence_md.backend.services.rag_enqueue import (
 from cadence_md.backend.settings import BackendSettings
 from cadence_md.db.base import Base
 from cadence_md.db.enums import RAGRequestStatus
+from cadence_md.db.repositories.chat_conversations import ChatConversationRepository
 from cadence_md.db.repositories.rag_logs import RAGLogRepository
 from cadence_md.db.session import get_async_session
 
@@ -98,6 +100,256 @@ async def _register(client: AsyncClient, email: str, password: str = "secure-pas
     )
     assert reg.status_code == 201, reg.text
     return reg.json()["access_token"]
+
+
+@pytest.mark.asyncio
+async def test_create_chat_message_auto_creates_conversation(
+    chat_app_bundle: ChatBundle,
+) -> None:
+    app, _settings, session_factory = chat_app_bundle
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _register(client, "auto-chat@example.org")
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Первый вопрос без chat_id"},
+        )
+        assert created.status_code == 202
+        payload = created.json()
+        chat_id = uuid.UUID(payload["chat_id"])
+        request_id = uuid.UUID(payload["request_id"])
+
+        listed = await client.get(
+            "/api/v1/chat/conversations",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert listed.status_code == 200
+    assert [item["id"] for item in listed.json()["items"]] == [str(chat_id)]
+    async with session_factory() as session:
+        rag_row = await RAGLogRepository(session).get_request(request_id)
+        assert rag_row is not None
+        chat = await ChatConversationRepository(session).get_active_chat_for_user(
+            user_id=rag_row.user_id,
+            chat_id=chat_id,
+        )
+        assert rag_row.chat_id == chat_id
+        assert chat is not None
+        assert chat.last_message_at is not None
+
+
+@pytest.mark.asyncio
+async def test_create_chat_conversation_and_add_message(
+    chat_app_bundle: ChatBundle,
+) -> None:
+    app, _settings, _sf = chat_app_bundle
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _register(client, "existing-chat@example.org")
+        chat = await client.post(
+            "/api/v1/chat/conversations",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"title": "Кардиология"},
+        )
+        assert chat.status_code == 201
+        chat_id = chat.json()["id"]
+
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Вопрос в существующий чат", "chat_id": chat_id},
+        )
+        messages = await client.get(
+            f"/api/v1/chat/conversations/{chat_id}/messages",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert created.status_code == 202
+    assert created.json()["chat_id"] == chat_id
+    assert messages.status_code == 200
+    history = messages.json()["items"]
+    assert len(history) == 1
+    assert history[0]["query"] == "Вопрос в существующий чат"
+    assert history[0]["request"]["chat_id"] == chat_id
+    assert history[0]["request"]["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_create_chat_message_rejects_foreign_and_deleted_chat_id(
+    chat_app_bundle: ChatBundle,
+) -> None:
+    app, _settings, _sf = chat_app_bundle
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token_a = await _register(client, "chat-owner@example.org")
+        token_b = await _register(client, "chat-attacker@example.org")
+        chat = await client.post(
+            "/api/v1/chat/conversations",
+            headers={"Authorization": f"Bearer {token_a}"},
+            json={"title": "Private"},
+        )
+        chat_id = chat.json()["id"]
+
+        foreign = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token_b}"},
+            json={"query": "Попытка в чужой чат", "chat_id": chat_id},
+        )
+        deleted = await client.delete(
+            f"/api/v1/chat/conversations/{chat_id}",
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+        after_delete = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token_a}"},
+            json={"query": "Попытка в удаленный чат", "chat_id": chat_id},
+        )
+
+    assert foreign.status_code == 404
+    assert foreign.json()["code"] == "not_found"
+    assert deleted.status_code == 204
+    assert after_delete.status_code == 404
+    assert after_delete.json()["code"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_soft_deleted_conversation_is_hidden_but_request_polling_survives(
+    chat_app_bundle: ChatBundle,
+) -> None:
+    app, _settings, _sf = chat_app_bundle
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _register(client, "delete-policy@example.org")
+        created = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"query": "Запрос перед удалением"},
+        )
+        payload = created.json()
+        chat_id = payload["chat_id"]
+        request_id = payload["request_id"]
+
+        deleted = await client.delete(
+            f"/api/v1/chat/conversations/{chat_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        deleted_again = await client.delete(
+            f"/api/v1/chat/conversations/{chat_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        listed = await client.get(
+            "/api/v1/chat/conversations",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        opened = await client.get(
+            f"/api/v1/chat/conversations/{chat_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        history = await client.get(
+            f"/api/v1/chat/conversations/{chat_id}/messages",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        poll = await client.get(
+            f"/api/v1/chat/messages/{request_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert deleted.status_code == 204
+    assert deleted_again.status_code == 204
+    assert listed.status_code == 200
+    assert listed.json()["items"] == []
+    assert opened.status_code == 404
+    assert history.status_code == 404
+    assert poll.status_code == 200
+    assert poll.json()["request_id"] == request_id
+    assert poll.json()["chat_id"] == chat_id
+
+
+@pytest.mark.asyncio
+async def test_conversation_messages_are_chronological_and_private(
+    chat_app_bundle: ChatBundle,
+) -> None:
+    app, _settings, session_factory = chat_app_bundle
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token_a = await _register(client, "history-owner@example.org")
+        token_b = await _register(client, "history-other@example.org")
+        chat = await client.post(
+            "/api/v1/chat/conversations",
+            headers={"Authorization": f"Bearer {token_a}"},
+            json={"title": "History"},
+        )
+        chat_id = chat.json()["id"]
+        first = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token_a}"},
+            json={"query": "Первый failed", "chat_id": chat_id},
+        )
+        second = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token_a}"},
+            json={"query": "Второй succeeded", "chat_id": chat_id},
+        )
+        third = await client.post(
+            "/api/v1/chat/messages",
+            headers={"Authorization": f"Bearer {token_a}"},
+            json={"query": "Третий clarification", "chat_id": chat_id},
+        )
+        first_id = uuid.UUID(first.json()["request_id"])
+        second_id = uuid.UUID(second.json()["request_id"])
+        third_id = uuid.UUID(third.json()["request_id"])
+
+        async with session_factory() as session:
+            repo = RAGLogRepository(session)
+            first_row = await repo.get_request(first_id)
+            second_row = await repo.get_request(second_id)
+            third_row = await repo.get_request(third_id)
+            assert first_row is not None
+            assert second_row is not None
+            assert third_row is not None
+            first_row.created_at = datetime(2026, 5, 1, tzinfo=UTC)
+            second_row.created_at = datetime(2026, 5, 2, tzinfo=UTC)
+            third_row.created_at = datetime(2026, 5, 3, tzinfo=UTC)
+            await repo.create_response(
+                rag_request_id=first_id,
+                answer="",
+                error_message="Ошибка RAG.",
+            )
+            await repo.mark_failed(first_id)
+            await repo.create_response(
+                rag_request_id=second_id,
+                answer="Готовый ответ.",
+                sources=[{"rank": 1, "doc_ref": "[Doc 1]", "filename": "g.pdf"}],
+            )
+            await repo.mark_succeeded(second_id)
+            await repo.mark_running(third_id, celery_task_id="task-clarification")
+            await repo.mark_awaiting_clarification(third_id, question="Уточните возраст?")
+            await session.commit()
+
+        history = await client.get(
+            f"/api/v1/chat/conversations/{chat_id}/messages",
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+        leaked = await client.get(
+            f"/api/v1/chat/conversations/{chat_id}/messages",
+            headers={"Authorization": f"Bearer {token_b}"},
+        )
+
+    assert history.status_code == 200
+    turns = history.json()["items"]
+    assert [turn["query"] for turn in turns] == [
+        "Первый failed",
+        "Второй succeeded",
+        "Третий clarification",
+    ]
+    assert turns[0]["request"]["status"] == "failed"
+    assert turns[0]["request"]["error"] == "Ошибка RAG."
+    assert turns[1]["request"]["status"] == "succeeded"
+    assert turns[1]["request"]["answer"]["answer"] == "Готовый ответ."
+    assert turns[2]["request"]["status"] == "awaiting_clarification"
+    assert turns[2]["request"]["clarification"]["question"] == "Уточните возраст?"
+    assert leaked.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -496,6 +748,7 @@ async def test_retry_after_failed_creates_new_request(chat_app_bundle: ChatBundl
             json={"query": "Повтор после ошибки"},
         )
         orig_id = uuid.UUID(created.json()["request_id"])
+        chat_id = created.json()["chat_id"]
 
         async with session_factory() as session:
             repo = RAGLogRepository(session)
@@ -512,7 +765,13 @@ async def test_retry_after_failed_creates_new_request(chat_app_bundle: ChatBundl
         assert new_id != orig_id
         assert body["original_request_id"] == str(orig_id)
         assert body["status"] == "queued"
+        assert body["chat_id"] == chat_id
         assert enqueue_calls[-1] == new_id
+
+    async with session_factory() as session:
+        row = await RAGLogRepository(session).get_request(new_id)
+        assert row is not None
+        assert str(row.chat_id) == chat_id
 
 
 @pytest.mark.asyncio

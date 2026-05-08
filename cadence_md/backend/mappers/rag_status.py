@@ -62,6 +62,7 @@ async def rag_request_to_status_response(
     return RAGRequestStatusResponse(
         request_id=str(request_log.id),
         status=ApiRAGRequestStatus(request_log.status.value),
+        chat_id=str(request_log.chat_id) if request_log.chat_id else None,
         original_request_id=original_request_id,
         answer=answer,
         error=error,
