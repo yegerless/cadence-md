@@ -551,6 +551,54 @@ def test_query_rewrite_node_keep_and_rewrite() -> None:
     assert rewritten["query_rewritten"] is True
 
 
+def test_query_rewrite_node_uses_empty_output_guardrail_placeholders_before_guardrail() -> None:
+    llm = MagicMock()
+    llm.invoke_messages.return_value = (
+        '{"action":"keep","rewritten_query":"","clarification_question":null,"reason":"ok"}'
+    )
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    pipe = RAGPipeline(llm, qm, reranker=reranker)  # type: ignore[arg-type]
+
+    pipe.query_rewrite_node(_make_state(query="q", retrieval_query="q"))
+
+    messages = llm.invoke_messages.call_args[0][0]
+    user_prompt = messages[1].content
+    assert (
+        "Предыдущая оценка финального ответа output guardrails:\n"
+        "score=\n"
+        "reason=\n"
+        "unsupported_claims=\n"
+    ) in user_prompt
+
+
+def test_disabled_query_rewrite_preserves_retrieval_query_for_guardrail_retry() -> None:
+    llm = MagicMock()
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    pipe = RAGPipeline(
+        llm,
+        qm,
+        reranker=reranker,  # type: ignore[arg-type]
+        optional_nodes_config=RAGOptionalNodesConfig(
+            enable_query_rewriter=False,
+            enable_output_guardrails=True,
+        ),
+    )
+
+    out = pipe.query_rewrite_node(
+        _make_state(
+            query="original",
+            retrieval_query="current retrieval query",
+            output_guardrail_should_retry=True,
+        )
+    )
+
+    llm.invoke_messages.assert_not_called()
+    assert out["retrieval_query"] == "current retrieval query"
+    assert out["output_guardrail_should_retry"] is False
+
+
 def test_query_rewrite_node_clarification_stop_state() -> None:
     llm = MagicMock()
     llm.invoke_messages.return_value = (
@@ -965,3 +1013,66 @@ def test_run_supports_configured_node_order() -> None:
     out = pipe.run("Вопрос?")
     assert out["answer"] == "ok"
     reranker.rerank.assert_not_called()
+
+
+def test_run_supports_configured_node_order_with_output_guardrails() -> None:
+    llm = MagicMock()
+    llm.invoke_messages.side_effect = [
+        "Ответ [Doc 1].",
+        (
+            '{"is_acceptable":true,"score":0.95,"grounded":true,"citations_valid":true,'
+            '"format_ok":true,"unsupported_claims":[],"reason":"ok"}'
+        ),
+    ]
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    doc = Document(page_content="chunk", metadata={"filename": "g.pdf"})
+    qm.retrieve = MagicMock(return_value=[(doc, 0.9)])
+    pipe = RAGPipeline(
+        llm,
+        qm,
+        reranker=reranker,  # type: ignore[arg-type]
+        node_order=("retrieve", "context", "generate", "output_guardrails"),
+    )
+
+    out = pipe.run("Вопрос?")
+
+    assert out["answer"] == "Ответ [Doc 1]."
+    assert out["output_guardrail_passed"] is True
+    assert "output_guardrails" in out["latency_ms"]
+    reranker.rerank.assert_not_called()
+
+
+def test_run_retriever_only_does_not_call_generation_formatter_or_output_guardrails() -> None:
+    llm = MagicMock()
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    doc = Document(page_content="chunk", metadata={"filename": "g.pdf"})
+    qm.retrieve = MagicMock(return_value=[(doc, 0.9)])
+    reranker.rerank.return_value = [(doc, 0.9)]
+    pipe = RAGPipeline(
+        llm,
+        qm,
+        reranker=reranker,  # type: ignore[arg-type]
+        optional_nodes_config=RAGOptionalNodesConfig(
+            enable_query_rewriter=False,
+            enable_context_relevance_grader=False,
+            enable_answer_formatter=True,
+            enable_output_guardrails=True,
+        ),
+    )
+    pipe.generate_node = MagicMock(wraps=pipe.generate_node)  # type: ignore[method-assign]
+    pipe.answer_format_node = MagicMock(wraps=pipe.answer_format_node)  # type: ignore[method-assign]
+    pipe.output_guardrails_node = MagicMock(  # type: ignore[method-assign]
+        wraps=pipe.output_guardrails_node
+    )
+
+    out = pipe.run_retriever_only("Вопрос?")
+
+    assert out["answer"] == ""
+    assert "llm" not in out["latency_ms"]
+    assert "answer_format" not in out["latency_ms"]
+    assert "output_guardrails" not in out["latency_ms"]
+    pipe.generate_node.assert_not_called()
+    pipe.answer_format_node.assert_not_called()
+    pipe.output_guardrails_node.assert_not_called()

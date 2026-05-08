@@ -482,7 +482,11 @@ class RAGPipeline:
             rewrite_iteration=state.get("rewrite_iteration", 0),
             context_relevance_score=state.get("context_relevance_score"),
             context_relevance_reason=state.get("context_relevance_reason") or "",
-            output_guardrail_score=state.get("output_guardrail_score"),
+            output_guardrail_score=(
+                ""
+                if state.get("output_guardrail_score") is None
+                else state["output_guardrail_score"]
+            ),
             output_guardrail_reason=state.get("output_guardrail_reason") or "",
             output_guardrail_unsupported_claims=", ".join(
                 state.get("output_guardrail_unsupported_claims") or []

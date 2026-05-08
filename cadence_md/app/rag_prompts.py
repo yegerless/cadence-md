@@ -36,7 +36,9 @@ def load_query_rewriter_user_prompt_template() -> str:
     """Return query rewriter user prompt template.
 
     Placeholders: ``{question}``, ``{retrieval_query}``, ``{rewrite_iteration}``,
-    ``{context_relevance_score}``, ``{context_relevance_reason}``.
+    ``{context_relevance_score}``, ``{context_relevance_reason}``,
+    ``{output_guardrail_score}``, ``{output_guardrail_reason}``,
+    ``{output_guardrail_unsupported_claims}``.
     """
     return (_PROMPTS_DIR / "query_rewriter_user.txt").read_text(encoding="utf-8").strip()
 
