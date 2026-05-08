@@ -702,6 +702,7 @@ def test_run_full_evaluation_tracks_rag_and_ragas_failures(
     calls = {"n": 0}
 
     def rag_run(request: RAGRequest) -> RAGResponse:
+        assert request.allow_clarification is False
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("rag boom")
@@ -1096,6 +1097,7 @@ def test_run_rag_pipeline_sample_and_error_skips(
     pipeline = _pipeline_without_init()
 
     def rag_run(request: RAGRequest) -> RAGResponse:
+        assert request.allow_clarification is False
         if request.query == "q1":
             raise RuntimeError("fail case")
         return _response(
@@ -1122,6 +1124,7 @@ def test_run_retriever_pipeline_scores_and_errors() -> None:
     calls = {"n": 0}
 
     def retrieve(request: RAGRequest) -> RAGRetrieveResponse:
+        assert request.allow_clarification is False
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("retrieve fail")
@@ -1148,6 +1151,7 @@ def test_run_retriever_pipeline_parallel_preserves_case_order() -> None:
     pipeline = _pipeline_without_init()
 
     def retrieve(request: RAGRequest) -> RAGRetrieveResponse:
+        assert request.allow_clarification is False
         if request.query == "q0":
             time.sleep(0.03)
         return _retrieve_response(
@@ -1213,6 +1217,7 @@ def test_run_full_evaluation_uses_ranked_docs_aligned_scores(
     captured: dict[str, list[float]] = {}
 
     def rag_run(request: RAGRequest) -> RAGResponse:
+        assert request.allow_clarification is False
         return _response(
             request.query,
             f"ans-{request.query}",

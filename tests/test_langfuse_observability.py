@@ -61,6 +61,26 @@ def test_langfuse_tracer_redacts_query_by_default() -> None:
     assert trace.trace_id == "trace-1"
     assert client.calls[0]["input"] == "[redacted medical query: hash]"
     assert client.calls[0]["user_id"] == "user-1"
+    assert "Полный медицинский вопрос" not in str(client.calls[0]["metadata"])
+
+
+def test_langfuse_tracer_hash_mode_does_not_store_raw_query_in_metadata() -> None:
+    client = FakeClient()
+    tracer = SDKLangfuseTracer(
+        client=client,
+        settings=ObservabilitySettings(LANGFUSE_ENABLED=True, LANGFUSE_TRACE_QUERY_MODE="hash"),
+    )
+
+    tracer.start_trace(
+        query="Пациент с гипертензией и диабетом",
+        query_hash="hash-only",
+        rag_request_id="rag-1",
+        user_id="user-1",
+        prompt_version="v1",
+    )
+
+    assert client.calls[0]["input"] == "hash-only"
+    assert "гипертензией" not in str(client.calls[0]["metadata"])
 
 
 def test_langfuse_tracer_failure_is_best_effort() -> None:

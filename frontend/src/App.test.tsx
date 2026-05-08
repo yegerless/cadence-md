@@ -330,6 +330,8 @@ describe('chat lifecycle', () => {
     expect(screen.getByText(/уточните возраст и сопутствующие/i)).toBeInTheDocument()
     expect(screen.getByLabelText(/уточнение врача/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /отправить уточнение/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /отменить/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /повторить/i })).not.toBeInTheDocument()
   })
 
   test('submit clarification calls endpoint and resumes queued/running polling', async () => {

@@ -551,6 +551,12 @@ def test_query_rewrite_node_clarification_stop_state() -> None:
     assert out["clarification_question"] == "Уточните диагноз?"
     assert out["answer"] == "Уточните диагноз?"
     assert out["answer_word_count"] > 0
+    assert "query_rewrite" in out["latency_ms"]
+    sample = REGISTRY.get_sample_value(
+        "cadence_rag_fallbacks_total",
+        labels={"type": "clarification_required"},
+    )
+    assert sample is not None and sample >= 1
 
 
 def test_query_rewrite_node_disallows_repeated_clarification() -> None:
@@ -591,6 +597,17 @@ def test_query_rewrite_node_fallback_on_invalid_json() -> None:
     out = pipe.query_rewrite_node(_make_state(query="original", retrieval_query="previous"))
     assert out["query_rewrite_fallback"] is True
     assert out["retrieval_query"] == "original"
+    assert "query_rewrite" in out["latency_ms"]
+    duration_sample = REGISTRY.get_sample_value(
+        "cadence_rag_node_duration_seconds_count",
+        labels={"node": "query_rewrite"},
+    )
+    fallback_sample = REGISTRY.get_sample_value(
+        "cadence_rag_fallbacks_total",
+        labels={"type": "query_rewrite_fallback"},
+    )
+    assert duration_sample is not None and duration_sample >= 1
+    assert fallback_sample is not None and fallback_sample >= 1
 
 
 def test_reranker_uses_retrieval_query() -> None:
@@ -621,6 +638,7 @@ def test_context_relevance_routes_generate_or_rewrite() -> None:
     )
     assert relevant["context_relevance_should_rewrite"] is False
     assert relevant["context_relevance_score"] == 0.9
+    assert "context_relevance" in relevant["latency_ms"]
 
     llm.invoke_messages.return_value = (
         '{"is_relevant":false,"score":0.1,"supported_doc_refs":[],"reason":"miss"}'
@@ -681,6 +699,7 @@ def test_answer_formatter_success_and_unknown_citation_fallback() -> None:
     assert formatted["raw_answer"] == "Ответ [Doc 1]."
     assert formatted["answer_formatted"] is True
     assert "Что важно:" in formatted["answer"]
+    assert "answer_format" in formatted["latency_ms"]
 
     llm.invoke_messages.return_value = (
         '{"formatted_answer":"Краткий вывод:\\nНовый факт [Doc 2].","reason":"bad"}'

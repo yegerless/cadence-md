@@ -46,7 +46,11 @@ class RAGService:
         return self._state_to_response(state, langfuse_trace_id=trace.trace_id)
 
     def retrieve(self, request: RAGRequest) -> RAGRetrieveResponse:
-        state = self.pipeline.run_retriever_only(request.query)
+        state = self.pipeline.run_retriever_only(
+            request.query,
+            clarification_answer=request.clarification_answer,
+            allow_clarification=request.allow_clarification,
+        )
         return self._state_to_retrieve_response(state)
 
     def _state_to_sources(self, state: dict[str, Any]) -> list[RAGSource]:
@@ -95,9 +99,12 @@ class RAGService:
         latency: dict[str, float] = state.get("latency_ms") or {}
         total_ms = sum(latency.values()) if latency else None
         return RAGLatency(
+            query_rewrite=latency.get("query_rewrite"),
             qdrant=latency.get("qdrant"),
             rerank=latency.get("rerank"),
+            context_relevance=latency.get("context_relevance"),
             llm=latency.get("llm"),
+            answer_format=latency.get("answer_format"),
             total_ms=total_ms,
         )
 

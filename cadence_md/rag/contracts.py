@@ -52,9 +52,12 @@ class RAGFlags(BaseModel):
 class RAGLatency(BaseModel):
     """Per-stage latency telemetry in milliseconds."""
 
+    query_rewrite: float | None = None
     qdrant: float | None = None
     rerank: float | None = None
+    context_relevance: float | None = None
     llm: float | None = None
+    answer_format: float | None = None
     total_ms: float | None = None
 
 

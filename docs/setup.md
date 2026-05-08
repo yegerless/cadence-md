@@ -111,6 +111,13 @@ This compose flow is the primary way to run RAG in development: backend accepts
 chat requests and `rag-worker` processes them asynchronously. There is no
 interactive user REPL entrypoint for RAG.
 
+If the optional query clarification node needs a human answer, the worker stores
+the request as `awaiting_clarification` without creating a final response row.
+The frontend polls until that state, shows the clarification form, then resumes
+the same request through
+`POST /api/v1/chat/messages/{request_id}/clarification`.
+`awaiting_clarification` is not terminal; users can still cancel it.
+
 If you only want infrastructure dependencies, start them explicitly:
 
 ```bash
@@ -157,7 +164,12 @@ curl -fsS http://127.0.0.1:9100/metrics
 
 Backend metrics are exposed at `http://127.0.0.1:8000/metrics`; worker metrics
 are exposed at `http://127.0.0.1:9100/metrics`. Prometheus is available at
-`http://127.0.0.1:9090`; Grafana is available at `http://127.0.0.1:3000`.
+`http://127.0.0.1:9090`; Grafana is available at `http://127.0.0.1:3000`. The
+RAG graph exports node latency for `query_rewrite`, `qdrant`, `rerank`,
+`context`, `context_relevance`, `llm`, and `answer_format`, plus fallback
+counters for `query_rewrite_fallback`, `context_relevance_fallback`,
+`answer_format_fallback`, `clarification_required`, and existing retrieval /
+generation fallbacks.
 
 The React SPA lives in `frontend/` and can be started with the compose frontend
 profile:
@@ -182,7 +194,8 @@ npm test
 Frontend auth stores only the short-lived access token in `sessionStorage`; no
 refresh token is used in the MVP. Logout and any API `401` clear client auth
 state and redirect to `/login`. Smoke-check logout, automatic `401` redirect,
-chat submit/polling, cancel, retry, and source rendering after backend changes.
+chat submit/polling, clarification submit/cancel, retry, and source rendering
+after backend changes.
 
 #### 5.1 Test stack and test commands
 
@@ -232,6 +245,12 @@ dev compose file. If you enable `LANGFUSE_ENABLED=true`, keep real
 `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` only in `.env.dev`. Full medical
 query text is redacted unless `LANGFUSE_TRACE_QUERY_MODE=full` is explicitly
 configured.
+
+Metrics evaluation commands (`metrics-eval-full` and `metrics-eval-retriever`)
+run through the same RAG service contract but disable user clarification for
+batch safety. Use the optional-node `--enable-*` / `--disable-*` flags to test
+graph variants; the generated manifest records the effective profile and
+additive latency fields.
 
 The inference server is external to `docker-compose-dev.yml` and must be
 available at `MODEL_INFERENCE_BASE_URL`.

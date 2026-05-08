@@ -98,6 +98,31 @@ def test_run_maps_ranked_docs_to_sources_with_score_order() -> None:
     assert response.latency.total_ms == 74.0
 
 
+def test_run_maps_optional_node_latency_fields() -> None:
+    pipeline = MagicMock()
+    pipeline.run.return_value = _base_state(
+        latency_ms={
+            "query_rewrite": 3.0,
+            "qdrant": 12.0,
+            "rerank": 7.0,
+            "context_relevance": 5.0,
+            "llm": 55.0,
+            "answer_format": 4.0,
+        }
+    )
+    service = RAGService(pipeline=pipeline)
+
+    response = service.run(RAGRequest(query="query"))
+
+    assert response.latency.query_rewrite == 3.0
+    assert response.latency.qdrant == 12.0
+    assert response.latency.rerank == 7.0
+    assert response.latency.context_relevance == 5.0
+    assert response.latency.llm == 55.0
+    assert response.latency.answer_format == 4.0
+    assert response.latency.total_ms == 86.0
+
+
 def test_run_preserves_flags_and_errors_on_retrieval_failed() -> None:
     pipeline = MagicMock()
     pipeline.run.return_value = _base_state(
@@ -228,7 +253,11 @@ def test_retrieve_uses_retriever_only_helper() -> None:
 
     response = service.retrieve(RAGRequest(query="query"))
 
-    pipeline.run_retriever_only.assert_called_once_with("query")
+    pipeline.run_retriever_only.assert_called_once_with(
+        "query",
+        clarification_answer=None,
+        allow_clarification=True,
+    )
     assert response.sources[0].score == 0.8
     assert response.query_hash == "hash-r"
     assert response.retrieval_query == "query rewritten"
@@ -251,6 +280,26 @@ def test_run_passes_clarification_controls_to_pipeline() -> None:
     )
 
     pipeline.run.assert_called_once_with(
+        "query",
+        clarification_answer="Пациент взрослый.",
+        allow_clarification=False,
+    )
+
+
+def test_retrieve_passes_clarification_controls_to_pipeline() -> None:
+    pipeline = MagicMock()
+    pipeline.run_retriever_only.return_value = _base_state()
+    service = RAGService(pipeline=pipeline)
+
+    service.retrieve(
+        RAGRequest(
+            query="query",
+            clarification_answer="Пациент взрослый.",
+            allow_clarification=False,
+        )
+    )
+
+    pipeline.run_retriever_only.assert_called_once_with(
         "query",
         clarification_answer="Пациент взрослый.",
         allow_clarification=False,

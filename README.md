@@ -46,6 +46,13 @@ The user-facing interactive RAG CLI has been removed. Run user requests through
 the FastAPI backend (`/api/v1/chat/...`) with the `rag-worker` service, or use
 the metrics pipeline commands below for offline evaluation.
 
+Async chat requests can enter `awaiting_clarification` when the RAG graph needs
+human input before retrieval/generation can continue. Polling returns a
+`clarification` question in that state; clients resume the same request with
+`POST /api/v1/chat/messages/{request_id}/clarification` or cancel it. The status
+is intentionally non-terminal until clarification is submitted or the request is
+cancelled.
+
 ### `parse-pdf`
 
 Parses a directory of clinical guideline PDFs into a JSONL with extracted
@@ -116,6 +123,12 @@ reports under the output directory.
 | `--k`                           | `5`                                                 | K for recall@K / precision@K                   |
 | `--enable-text-matcher-metrics` | off                                                 | Also compute diagnostic `text_match_*` metrics |
 
+Optional RAG graph nodes can be overridden per metrics run with paired
+`--enable-*` / `--disable-*` flags for query rewriting, context relevance
+grading, answer formatting, and query clarification. Offline metrics runs always
+send `allow_clarification=false` to the RAG service so a batch evaluation cannot
+pause on human input; the rewriter falls back to a retrieval query instead.
+
 Example:
 
 ```bash
@@ -158,6 +171,10 @@ QA dataset and indexed Qdrant metadata. Regenerate the QA dataset and reindex
 the corpus after this change. Use `--enable-text-matcher-metrics` only for
 optional diagnostic text-overlap metrics; they are written separately as
 `text_match_*`.
+
+Run artifacts include the effective optional-node profile and additive latency
+fields when present: `query_rewrite`, `qdrant`, `rerank`, `context_relevance`,
+`llm`, `answer_format`, and `total_ms`.
 
 Example:
 
@@ -256,6 +273,15 @@ tracing is disabled by default; enable it with `LANGFUSE_ENABLED=true` and real
 `LANGFUSE_*` credentials in `.env.dev`. Medical queries are redacted from logs
 and Langfuse by default; use `LANGFUSE_TRACE_QUERY_MODE=full` only for
 explicitly approved debugging.
+
+RAG node latency is exported with `cadence_rag_node_duration_seconds{node=...}`
+for `query_rewrite`, `qdrant`, `rerank`, `context`, `context_relevance`, `llm`,
+and `answer_format`. Fallback/truncation counters use
+`cadence_rag_fallbacks_total{type=...}` including `query_rewrite_fallback`,
+`context_relevance_fallback`, `answer_format_fallback`, and
+`clarification_required`. Structured logs and Langfuse metadata should use
+`query_hash`, node names, latency, and flags, not raw medical queries or
+secrets.
 
 ## License
 

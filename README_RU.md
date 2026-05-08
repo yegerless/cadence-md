@@ -41,6 +41,12 @@ poetry run python commands.py <подкоманда> --help
 запускаются через FastAPI backend (`/api/v1/chat/...`) и `rag-worker`, а
 служебный CLI ниже используется только для data/metrics пайплайнов.
 
+Асинхронный chat-запрос может перейти в `awaiting_clarification`, если RAG-графу
+нужно уточнение врача перед retrieval/generation. Polling возвращает поле
+`clarification` с вопросом; клиент продолжает тот же запрос через
+`POST /api/v1/chat/messages/{request_id}/clarification` или отменяет его. Этот
+статус не считается terminal до отправки уточнения или отмены.
+
 ### `parse-pdf`
 
 Парсит директорию с клиническими рекомендациями в PDF и сохраняет результат в
@@ -112,6 +118,13 @@ poetry run python commands.py generate-qa --sections-file data/clinical_sections
 | `--k`                           | `5`                                                 | K для recall@K / precision@K                                 |
 | `--enable-text-matcher-metrics` | выкл.                                               | Дополнительно считать диагностические `text_match_*` метрики |
 
+Optional RAG-узлы можно переопределять для конкретного metrics-прогона парными
+флагами `--enable-*` / `--disable-*`: query rewriting, context relevance
+grading, answer formatting и query clarification. Offline metrics runs всегда
+передают в RAG service `allow_clarification=false`, чтобы batch-валидация не
+останавливалась на ожидании человека; rewriter в таком случае строит retrieval
+query без HITL.
+
 Пример:
 
 ```bash
@@ -153,6 +166,10 @@ metrics/results/<run_id>/
 оценки нужны новый QA-датасет и переиндексация корпуса в Qdrant. Флаг
 `--enable-text-matcher-metrics` включает только дополнительные диагностические
 метрики по текстовому overlap и сохраняет их отдельно как `text_match_*`.
+
+Артефакты прогона содержат effective optional-node profile и additive latency
+поля, когда они есть: `query_rewrite`, `qdrant`, `rerank`, `context_relevance`,
+`llm`, `answer_format` и `total_ms`.
 
 Пример:
 
@@ -251,6 +268,15 @@ Grafana по умолчанию доступна на `http://127.0.0.1:3000`, P
 `LANGFUSE_*` credentials только в `.env.dev`. Медицинский текст запроса по
 умолчанию редактируется в логах и Langfuse; `LANGFUSE_TRACE_QUERY_MODE=full`
 используйте только для явно разрешённой отладки.
+
+Latency RAG-узлов экспортируется как
+`cadence_rag_node_duration_seconds{node=...}` для `query_rewrite`, `qdrant`,
+`rerank`, `context`, `context_relevance`, `llm` и `answer_format`. Счётчики
+fallback/truncation идут через `cadence_rag_fallbacks_total{type=...}`, включая
+`query_rewrite_fallback`, `context_relevance_fallback`, `answer_format_fallback`
+и `clarification_required`. Structured logs и Langfuse metadata должны
+использовать `query_hash`, имя node, latency и flags, без сырого медицинского
+текста запроса и секретов.
 
 ## Лицензия
 

@@ -112,6 +112,14 @@ docker compose --env-file .env.dev -f docker-compose-dev.yml up --build
 chat-запросы, а `rag-worker` обрабатывает их асинхронно. Интерактивного
 пользовательского REPL entrypoint для RAG больше нет.
 
+Если optional query clarification node требует ответ врача, worker сохраняет
+запрос в статусе `awaiting_clarification` без создания финальной строки
+`rag_responses`. Frontend poll-ит до этого состояния, показывает форму уточнения
+и продолжает тот же запрос через
+`POST /api/v1/chat/messages/{request_id}/clarification`. Статус
+`awaiting_clarification` не terminal; пользователь всё ещё может отменить
+запрос.
+
 Если нужны только инфраструктурные зависимости, запустите их явно:
 
 ```bash
@@ -157,7 +165,12 @@ curl -fsS http://127.0.0.1:9100/metrics
 
 Метрики backend доступны на `http://127.0.0.1:8000/metrics`, метрики worker — на
 `http://127.0.0.1:9100/metrics`. Prometheus по умолчанию доступен на
-`http://127.0.0.1:9090`, Grafana — на `http://127.0.0.1:3000`.
+`http://127.0.0.1:9090`, Grafana — на `http://127.0.0.1:3000`. RAG-граф
+экспортирует latency узлов `query_rewrite`, `qdrant`, `rerank`, `context`,
+`context_relevance`, `llm` и `answer_format`, а также fallback счётчики
+`query_rewrite_fallback`, `context_relevance_fallback`,
+`answer_format_fallback`, `clarification_required` и уже существующие retrieval
+/ generation fallbacks.
 
 React SPA находится в `frontend/` и запускается через frontend profile:
 
@@ -182,7 +195,7 @@ Frontend auth хранит только короткоживущий access toke
 refresh token в MVP не используется. Logout и любой API `401` очищают клиентское
 auth state и переводят пользователя на `/login`. После изменений backend
 проверяйте logout, автоматический redirect на `401`, chat submit/polling,
-cancel, retry и отображение источников.
+отправку/отмену уточнения, retry и отображение источников.
 
 #### 5.1 Тестовый стек и команды тестов
 
@@ -233,6 +246,11 @@ compose-файла. Если включаете `LANGFUSE_ENABLED=true`, хра�
 `LANGFUSE_PUBLIC_KEY` и `LANGFUSE_SECRET_KEY` только в `.env.dev`. Полный
 медицинский текст запроса редактируется, пока явно не задан
 `LANGFUSE_TRACE_QUERY_MODE=full`.
+
+Metrics-команды (`metrics-eval-full` и `metrics-eval-retriever`) используют тот
+же RAG service contract, но отключают user clarification ради batch safety.
+Варианты графа проверяются флагами optional nodes `--enable-*` / `--disable-*`;
+manifest сохраняет effective profile и additive latency fields.
 
 Inference server остаётся внешним для `docker-compose-dev.yml` и должен быть
 доступен по `MODEL_INFERENCE_BASE_URL`.

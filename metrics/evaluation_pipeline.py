@@ -222,7 +222,9 @@ class RAGEvaluationPipeline:
         # Run the RAG pipeline for all test cases
         for idx, test_case in enumerate(tqdm(test_cases, desc="RAG inference")):
             try:
-                rag_result = self.rag_service.run(RAGRequest(query=test_case.question))
+                rag_result = self.rag_service.run(
+                    RAGRequest(query=test_case.question, allow_clarification=False)
+                )
                 retrieved_contexts, retrieved_scores, generated_answer = (
                     _response_to_test_result_inputs(rag_result)
                 )
@@ -326,7 +328,9 @@ class RAGEvaluationPipeline:
             RAG test result, or None when the case fails
         """
         try:
-            retrieve_result = self.rag_service.retrieve(RAGRequest(query=test_case.question))
+            retrieve_result = self.rag_service.retrieve(
+                RAGRequest(query=test_case.question, allow_clarification=False)
+            )
             retrieved_contexts, retrieval_scores, _ = _response_to_test_result_inputs(
                 retrieve_result
             )
@@ -822,7 +826,9 @@ class RAGEvaluationPipeline:
 
         for idx, test_case in enumerate(tqdm(test_cases, desc="RAG + RAGAS")):
             try:
-                rag_result = self.rag_service.run(RAGRequest(query=test_case.question))
+                rag_result = self.rag_service.run(
+                    RAGRequest(query=test_case.question, allow_clarification=False)
+                )
             except Exception as e:
                 logger.error("Case processing error %s (RAG): %s", idx, e)
                 rag_error = {

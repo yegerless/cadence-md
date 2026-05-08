@@ -705,7 +705,12 @@ async def test_get_succeeded_returns_answer(chat_app_bundle: ChatBundle) -> None
                         "score": 0.9,
                     }
                 ],
-                latency_ms={"generate": 1.0},
+                latency_ms={
+                    "query_rewrite": 2.0,
+                    "context_relevance": 3.0,
+                    "answer_format": 4.0,
+                    "llm": 1.0,
+                },
                 flags={"context_truncated": False},
             )
             await repo.mark_succeeded(rid)
@@ -722,6 +727,9 @@ async def test_get_succeeded_returns_answer(chat_app_bundle: ChatBundle) -> None
         assert data["answer"]["answer"] == "Краткий вывод: ответ."
         assert len(data["answer"]["sources"]) == 1
         assert data["answer"]["sources"][0]["doc_ref"] == "[Doc 1]"
+        assert data["answer"]["latency_ms"]["query_rewrite"] == 2.0
+        assert data["answer"]["latency_ms"]["context_relevance"] == 3.0
+        assert data["answer"]["latency_ms"]["answer_format"] == 4.0
 
 
 @pytest.mark.asyncio

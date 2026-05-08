@@ -131,7 +131,14 @@ def _response(
         answer=answer,
         query_hash="hash",
         sources=[RAGSource(rank=1, doc_ref="[Doc 1]", filename="guideline.pdf", score=0.9)],
-        latency=RAGLatency(qdrant=1.0, rerank=2.0, llm=3.0),
+        latency=RAGLatency(
+            query_rewrite=0.5,
+            qdrant=1.0,
+            rerank=2.0,
+            context_relevance=0.75,
+            llm=3.0,
+            answer_format=0.25,
+        ),
         flags=flags or RAGFlags(context_truncated=False),
         langfuse_trace_id="trace-1",
         clarification_question=clarification_question,
@@ -197,6 +204,9 @@ async def test_run_rag_request_happy_path(
         assert response is not None
         assert response.answer == "Ответ [Doc 1]."
         assert response.sources_json[0]["doc_ref"] == "[Doc 1]"
+        assert response.latency_ms_json["query_rewrite"] == 0.5
+        assert response.latency_ms_json["context_relevance"] == 0.75
+        assert response.latency_ms_json["answer_format"] == 0.25
         assert response.langfuse_trace_id == "trace-1"
         assert row is not None
         assert row.celery_task_id == "task-1"

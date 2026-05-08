@@ -379,16 +379,21 @@ class RAGPipeline:
                 model_type=QueryRewriteDecision,
             )
         except Exception as exc:
+            dt_ms = (time.perf_counter() - t0) * 1000
             state["query_rewrite_fallback"] = True
             state["retrieval_query"] = effective_question
-            state.setdefault("latency_ms", {})["query_rewrite"] = (time.perf_counter() - t0) * 1000
+            state.setdefault("latency_ms", {})["query_rewrite"] = dt_ms
+            observe_rag_node("query_rewrite", dt_ms)
             inc_rag_fallback("query_rewrite_fallback")
             logger.warning(
                 "rag.query_rewrite_fallback",
                 extra={
                     "event": "rag.query_rewrite_fallback",
+                    "node": "query_rewrite",
                     "query_hash": state["query_hash"],
+                    "latency_ms": round(dt_ms, 2),
                     "error_type": type(exc).__name__,
+                    "query_rewrite_fallback": True,
                     "prompt_version": settings.rag_config.prompt_version,
                 },
             )
@@ -407,6 +412,7 @@ class RAGPipeline:
             state["clarification_question"] = question
             state["answer"] = question
             state["answer_word_count"] = len(question.split())
+            inc_rag_fallback("clarification_required")
         elif decision.action == "rewrite":
             rewritten = decision.rewritten_query.strip()
             if rewritten and rewritten != current_retrieval_query:
@@ -430,6 +436,7 @@ class RAGPipeline:
             metadata={
                 "query_hash": state["query_hash"],
                 "latency_ms": round(dt_ms, 2),
+                "node": "query_rewrite",
                 "action": decision.action,
                 "query_rewritten": state["query_rewritten"],
                 "requires_clarification": state["requires_clarification"],
@@ -441,6 +448,7 @@ class RAGPipeline:
             "rag.query_rewrite",
             extra={
                 "event": "rag.query_rewrite",
+                "node": "query_rewrite",
                 "query_hash": state["query_hash"],
                 "action": decision.action,
                 "query_rewritten": state["query_rewritten"],
@@ -774,8 +782,11 @@ class RAGPipeline:
                 "rag.context_relevance_fallback",
                 extra={
                     "event": "rag.context_relevance_fallback",
+                    "node": "context_relevance",
                     "query_hash": state["query_hash"],
+                    "latency_ms": round(dt_ms, 2),
                     "error_type": type(exc).__name__,
+                    "context_relevance_fallback": True,
                     "prompt_version": settings.rag_config.prompt_version,
                 },
             )
@@ -819,6 +830,7 @@ class RAGPipeline:
             metadata={
                 "query_hash": state["query_hash"],
                 "latency_ms": round(dt_ms, 2),
+                "node": "context_relevance",
                 "score": state["context_relevance_score"],
                 "is_relevant": is_relevant,
                 "should_rewrite": state["context_relevance_should_rewrite"],
@@ -830,6 +842,7 @@ class RAGPipeline:
             "rag.context_relevance",
             extra={
                 "event": "rag.context_relevance",
+                "node": "context_relevance",
                 "query_hash": state["query_hash"],
                 "score": state["context_relevance_score"],
                 "is_relevant": is_relevant,
@@ -1001,8 +1014,11 @@ class RAGPipeline:
                 "rag.answer_format_fallback",
                 extra={
                     "event": "rag.answer_format_fallback",
+                    "node": "answer_format",
                     "query_hash": state["query_hash"],
+                    "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
                     "error_type": type(exc).__name__,
+                    "answer_format_fallback": True,
                     "prompt_version": settings.rag_config.prompt_version,
                 },
             )
@@ -1016,6 +1032,7 @@ class RAGPipeline:
             metadata={
                 "query_hash": state["query_hash"],
                 "latency_ms": round(dt_ms, 2),
+                "node": "answer_format",
                 "answer_formatted": state["answer_formatted"],
                 "answer_format_fallback": state["answer_format_fallback"],
                 "prompt_version": settings.rag_config.prompt_version,
@@ -1025,6 +1042,7 @@ class RAGPipeline:
             "rag.answer_format",
             extra={
                 "event": "rag.answer_format",
+                "node": "answer_format",
                 "query_hash": state["query_hash"],
                 "answer_formatted": state["answer_formatted"],
                 "answer_format_fallback": state["answer_format_fallback"],
@@ -1125,9 +1143,19 @@ class RAGPipeline:
             return self._build_linear_graph(self._node_order)
         return self._build_default_graph()
 
-    def run_retriever_only(self, query: str) -> RAGState:
+    def run_retriever_only(
+        self,
+        query: str,
+        *,
+        clarification_answer: str | None = None,
+        allow_clarification: bool = True,
+    ) -> RAGState:
         """Run retrieval-oriented nodes without answer generation or formatting."""
-        state = self.build_initial_state(query)
+        state = self.build_initial_state(
+            query,
+            clarification_answer=clarification_answer,
+            allow_clarification=allow_clarification,
+        )
         state = self.query_rewrite_node(state)
         while not state.get("requires_clarification"):
             state = self.retrieve_node(state)
