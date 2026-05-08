@@ -138,6 +138,12 @@ class TestRAGConfigConstruction:
         assert cfg.enable_output_guardrails is True
         assert cfg.max_output_guardrail_iterations == 1
         assert cfg.output_guardrail_min_score == 0.7
+        boundary_cfg = RAGOptionalNodesConfig(
+            max_output_guardrail_iterations=0,
+            output_guardrail_min_score=1.0,
+        )
+        assert boundary_cfg.max_output_guardrail_iterations == 0
+        assert boundary_cfg.output_guardrail_min_score == 1.0
         with pytest.raises(ValidationError):
             RAGOptionalNodesConfig(context_relevance_min_score=1.5)
         with pytest.raises(ValidationError):

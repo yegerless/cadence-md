@@ -803,6 +803,7 @@ def test_output_guardrails_accepts_grounded_answer() -> None:
     assert out["output_guardrail_should_retry"] is False
     assert out["output_guardrail_score"] == 0.92
     assert "output_guardrails" in out["latency_ms"]
+    assert pipe._output_guardrails_route(out) == "end"
 
 
 def test_output_guardrails_unknown_citation_retries_without_llm() -> None:
@@ -839,6 +840,46 @@ def test_output_guardrails_unknown_citation_retries_without_llm() -> None:
     assert pipe._output_guardrails_route(out) == "query_rewrite"
 
 
+def test_output_guardrails_retries_on_unsupported_answer() -> None:
+    llm = MagicMock()
+    llm.invoke_messages.return_value = (
+        '{"is_acceptable":false,"score":0.2,"grounded":false,"citations_valid":true,'
+        '"format_ok":true,"unsupported_claims":["claim"],"reason":"unsupported"}'
+    )
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    pipe = RAGPipeline(llm, qm, reranker=reranker)  # type: ignore[arg-type]
+    doc = Document(page_content="ctx", metadata={"filename": "x.pdf"})
+    state = _state_with_retrieved(
+        [doc],
+        [0.9],
+        answer="Ответ [Doc 1].",
+        answer_word_count=2,
+        context="[Doc 1] Filename: x.pdf\n\nctx",
+        context_chars=10,
+        sources=[{"doc_ref": "[Doc 1]"}],
+        raw_answer="Ответ [Doc 1].",
+        answer_formatted=True,
+    )
+
+    out = pipe.output_guardrails_node(state)
+
+    llm.invoke_messages.assert_called_once()
+    assert out["output_guardrail_failed"] is True
+    assert out["output_guardrail_should_retry"] is True
+    assert out["output_guardrail_iteration"] == 1
+    assert out["output_guardrail_score"] == 0.2
+    assert out["output_guardrail_reason"] == "unsupported"
+    assert out["output_guardrail_unsupported_claims"] == ["claim"]
+    assert out["ranked_docs"] == []
+    assert out["sources"] == []
+    assert out["context"] == ""
+    assert out["answer"] == ""
+    assert out["raw_answer"] is None
+    assert out["answer_formatted"] is False
+    assert pipe._output_guardrails_route(out) == "query_rewrite"
+
+
 def test_output_guardrails_rejects_and_falls_back_when_budget_exhausted() -> None:
     llm = MagicMock()
     llm.invoke_messages.return_value = (
@@ -851,13 +892,14 @@ def test_output_guardrails_rejects_and_falls_back_when_budget_exhausted() -> Non
         llm,
         qm,
         reranker=reranker,  # type: ignore[arg-type]
-        optional_nodes_config=RAGOptionalNodesConfig(max_output_guardrail_iterations=0),
+        optional_nodes_config=RAGOptionalNodesConfig(max_output_guardrail_iterations=1),
     )
     doc = Document(page_content="ctx", metadata={"filename": "x.pdf"})
     state = _state_with_retrieved(
         [doc],
         [0.9],
         answer="Ответ [Doc 1].",
+        output_guardrail_iteration=1,
         context="[Doc 1] Filename: x.pdf\n\nctx",
         context_chars=10,
         sources=[{"doc_ref": "[Doc 1]"}],
@@ -871,6 +913,7 @@ def test_output_guardrails_rejects_and_falls_back_when_budget_exhausted() -> Non
     assert out["output_guardrail_fallback"] is True
     assert out["max_output_guardrail_iterations_reached"] is True
     assert out["output_guardrail_should_retry"] is False
+    assert out["ranked_docs"] == []
     assert out["sources"] == []
     assert out["context"] == ""
     assert pipe._output_guardrails_route(out) == "end"
@@ -902,6 +945,36 @@ def test_output_guardrails_llm_exception_fail_closed() -> None:
     assert out["output_guardrail_fallback"] is True
     assert out["error_type"] == "RuntimeError"
     assert out["max_output_guardrail_iterations_reached"] is True
+
+
+def test_output_guardrails_fails_closed_on_invalid_json() -> None:
+    llm = MagicMock()
+    llm.invoke_messages.return_value = "not json"
+    reranker = MagicMock(spec=RerankerWrapper)
+    qm = _minimal_qdrant_manager()
+    pipe = RAGPipeline(
+        llm,
+        qm,
+        reranker=reranker,  # type: ignore[arg-type]
+        optional_nodes_config=RAGOptionalNodesConfig(max_output_guardrail_iterations=0),
+    )
+
+    out = pipe.output_guardrails_node(
+        _make_state(
+            answer="Потенциально дефектный ответ [Doc 1].",
+            context="[Doc 1] Filename: x.pdf\n\nctx",
+            context_chars=10,
+            sources=[{"doc_ref": "[Doc 1]"}],
+        )
+    )
+
+    llm.invoke_messages.assert_called_once()
+    assert out["answer"] == OUTPUT_GUARDRAIL_FALLBACK_ANSWER
+    assert out["answer"] != "Потенциально дефектный ответ [Doc 1]."
+    assert out["output_guardrail_failed"] is True
+    assert out["output_guardrail_fallback"] is True
+    assert out["max_output_guardrail_iterations_reached"] is True
+    assert out["error_type"] is not None
 
 
 def test_default_graph_runs_output_guardrails_after_generate_without_formatter() -> None:

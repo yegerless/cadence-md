@@ -33,6 +33,27 @@ def test_load_rag_user_prompt_template_reads_and_strips(
     assert rag_prompts.load_rag_user_prompt_template() == body
 
 
+def test_load_output_guardrails_prompts_read_utf8_and_strip(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = tmp_path / "prompts"
+    d.mkdir()
+    system_body = "Проверяй опору ответа на контекст"
+    user_body = "Вопрос: {question}\nОтвет: {answer}\nИсточники: {sources}"
+    (d / "output_guardrails_system.txt").write_text(
+        f"  \n{system_body}\n  ",
+        encoding="utf-8",
+    )
+    (d / "output_guardrails_user.txt").write_text(
+        f"  \n{user_body}\n  ",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rag_prompts, "_PROMPTS_DIR", d)
+
+    assert rag_prompts.load_output_guardrails_system_prompt() == system_body
+    assert rag_prompts.load_output_guardrails_user_prompt_template() == user_body
+
+
 def test_format_rag_system_prompt_fills_prompt_version(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

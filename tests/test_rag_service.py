@@ -209,6 +209,10 @@ def test_run_maps_optional_fields_and_flags() -> None:
     assert response.flags.output_guardrail_failed is True
     assert response.flags.output_guardrail_fallback is True
     assert response.flags.max_output_guardrail_iterations_reached is True
+    metadata = service._trace_summary(response)["metadata"]
+    assert metadata["output_guardrail_score"] == 0.42
+    assert metadata["output_guardrail_reason"] == "unsupported"
+    assert metadata["output_guardrail_unsupported_claims"] == ["claim"]
 
 
 def test_run_handles_empty_context_and_empty_docs() -> None:
@@ -227,6 +231,34 @@ def test_run_handles_empty_context_and_empty_docs() -> None:
     assert response.sources == []
     assert response.context_chars == 0
     assert response.answer == ""
+
+
+def test_run_does_not_require_output_guardrail_state_fields() -> None:
+    pipeline = MagicMock()
+    state = _base_state()
+    for key in (
+        "output_guardrail_passed",
+        "output_guardrail_failed",
+        "output_guardrail_fallback",
+        "max_output_guardrail_iterations_reached",
+        "output_guardrail_score",
+        "output_guardrail_reason",
+        "output_guardrail_unsupported_claims",
+    ):
+        state.pop(key)
+    pipeline.run.return_value = state
+    service = RAGService(pipeline=pipeline)
+
+    response = service.run(RAGRequest(query="query"))
+
+    assert response.flags.output_guardrail_passed is False
+    assert response.flags.output_guardrail_failed is False
+    assert response.flags.output_guardrail_fallback is False
+    assert response.flags.max_output_guardrail_iterations_reached is False
+    assert response.output_guardrail_score is None
+    assert response.output_guardrail_reason is None
+    assert response.output_guardrail_unsupported_claims == []
+    assert response.latency.output_guardrails is None
 
 
 def test_run_keeps_none_final_score() -> None:

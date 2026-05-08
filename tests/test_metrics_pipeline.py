@@ -492,6 +492,44 @@ def test_commands_main_passes_optional_node_overrides(
     }
 
 
+def test_commands_main_passes_only_output_guardrails_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeEvaluationPipeline:
+        def run_full_evaluation(self, **kwargs: object) -> None:
+            captured["run_kwargs"] = kwargs
+
+    def fake_build_evaluation_pipeline(
+        *,
+        optional_nodes_overrides: dict[str, bool | int],
+    ) -> FakeEvaluationPipeline:
+        captured["overrides"] = optional_nodes_overrides
+        return FakeEvaluationPipeline()
+
+    monkeypatch.setattr(
+        "metrics.main.build_evaluation_pipeline",
+        fake_build_evaluation_pipeline,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "commands.py",
+            "metrics-eval-full",
+            "--output-dir",
+            str(tmp_path),
+            "--disable-output-guardrails",
+        ],
+    )
+
+    commands_main()
+
+    assert captured["overrides"] == {"enable_output_guardrails": False}
+
+
 def test_run_full_evaluation_writes_run_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
