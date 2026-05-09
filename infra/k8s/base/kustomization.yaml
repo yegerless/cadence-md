@@ -1,0 +1,40 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: cadence-md
+
+resources:
+  - namespace.yaml
+  - configmaps/app-config.yaml
+  - configmaps/nginx-config.yaml
+  - configmaps/qdrant-config.yaml
+  - configmaps/prometheus-config.yaml
+  - configmaps/grafana-provisioning.yaml
+  - storage/rag-corpus-pvc.yaml
+  - storage/prometheus-data-pvc.yaml
+  - storage/grafana-data-pvc.yaml
+  - services/postgres-service.yaml
+  - services/postgres-headless-service.yaml
+  - services/redis-service.yaml
+  - services/redis-headless-service.yaml
+  - services/qdrant-service.yaml
+  - services/qdrant-headless-service.yaml
+  - services/backend-service.yaml
+  - services/rag-worker-service.yaml
+  - services/frontend-service.yaml
+  - services/nginx-service.yaml
+  - services/prometheus-service.yaml
+  - services/grafana-service.yaml
+  - services/flower-service.yaml
+  - workloads/postgres-statefulset.yaml
+  - workloads/redis-statefulset.yaml
+  - workloads/qdrant-statefulset.yaml
+  - workloads/dvc-pull-job.yaml
+  - workloads/migrations-job.yaml
+  - workloads/backend-deployment.yaml
+  - workloads/rag-worker-deployment.yaml
+  - workloads/frontend-deployment.yaml
+  - workloads/nginx-deployment.yaml
+  - workloads/prometheus-deployment.yaml
+  - workloads/grafana-deployment.yaml
+  - workloads/flower-deployment.yaml

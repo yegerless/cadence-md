@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flower
+  labels:
+    app.kubernetes.io/name: cadence-md
+    app.kubernetes.io/component: flower
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cadence-md
+      app.kubernetes.io/component: flower
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cadence-md
+        app.kubernetes.io/component: flower
+    spec:
+      containers:
+        - name: flower
+          image: mher/flower:latest
+          command:
+            - sh
+            - -c
+            - >
+              exec celery --broker="${CELERY_BROKER_URL}" flower
+              --address=0.0.0.0 --port=5555
+              ${FLOWER_BASIC_AUTH:+--basic-auth="${FLOWER_BASIC_AUTH}"}
+          ports:
+            - name: http
+              containerPort: 5555
+          envFrom:
+            - configMapRef:
+                name: cadence-md-config
+            - secretRef:
+                name: cadence-md-secret
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - >
+                  python -c "import base64, os, urllib.request; req =
+                  urllib.request.Request('http://localhost:5555/'); auth =
+                  os.environ.get('FLOWER_BASIC_AUTH', '');
+                  req.add_header('Authorization', 'Basic ' +
+                  base64.b64encode(auth.encode()).decode()) if auth else None;
+                  urllib.request.urlopen(req, timeout=5).read()"
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - >
+                  python -c "import base64, os, urllib.request; req =
+                  urllib.request.Request('http://localhost:5555/'); auth =
+                  os.environ.get('FLOWER_BASIC_AUTH', '');
+                  req.add_header('Authorization', 'Basic ' +
+                  base64.b64encode(auth.encode()).decode()) if auth else None;
+                  urllib.request.urlopen(req, timeout=5).read()"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3

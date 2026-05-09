@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - ingress.yaml
+
+images:
+  - name: cadence-md-backend
+    newTag: prod
+  - name: cadence-md-rag-worker
+    newTag: prod
+  - name: cadence-md-frontend
+    newTag: prod
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: cadence-md
+      app.kubernetes.io/managed-by: kustomize

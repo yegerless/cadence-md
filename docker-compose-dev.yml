@@ -1,8 +1,44 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cadence_md}
+      POSTGRES_USER: ${POSTGRES_USER:-cadence_md}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cadence_md_dev}
+    ports:
+      - 127.0.0.1:${POSTGRES_PORT:-5432}:5432
+    networks:
+      - backend-network
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - 127.0.0.1:${REDIS_PORT:-6379}:6379
+    networks:
+      - backend-network
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
   qdrant:
     image: qdrant/qdrant:v1.16.3
-    env_file:
-      - .env.dev
     ports:
       - 127.0.0.1:6333:6333
     networks:
@@ -14,15 +50,357 @@ services:
         target: /qdrant/config/config.yaml
     healthcheck:
       test: ["CMD-SHELL", "grep -q '18BD' /proc/net/tcp || kill 1"]
-      # test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      # Qdrant images do not consistently include curl/wget; keep a TCP probe for compose config
+      # portability and let backend readiness validate Qdrant schema through the API.
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
     restart: unless-stopped # TODO: set autoheal container
 
+  dvc-pull:
+    build:
+      context: .
+      dockerfile: infra/docker/rag-worker.Dockerfile
+    command:
+      - sh
+      - -c
+      - >
+        printf '[core]\n    no_scm = true\n' > .dvc/config.local && dvc pull
+        data.dvc
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${S3_KEY:-}
+    networks:
+      - backend-network
+    volumes:
+      - rag-corpus:/app/data
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    command:
+      - uvicorn
+      - cadence_md.backend.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://cadence_md:cadence_md_dev@postgres:5432/cadence_md}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      CELERY_RAG_QUEUE_NAME: ${CELERY_RAG_QUEUE_NAME:-rag}
+      CELERY_RAG_TASK_NAME: ${CELERY_RAG_TASK_NAME:-cadence_md.workers.rag_tasks.run_rag_request}
+      CELERY_TASK_SOFT_TIME_LIMIT_SECONDS: ${CELERY_TASK_SOFT_TIME_LIMIT_SECONDS:-300}
+      CELERY_TASK_TIME_LIMIT_SECONDS: ${CELERY_TASK_TIME_LIMIT_SECONDS:-360}
+      CELERY_TASK_MAX_RETRIES: ${CELERY_TASK_MAX_RETRIES:-3}
+      CELERY_TASK_RETRY_BACKOFF_SECONDS: ${CELERY_TASK_RETRY_BACKOFF_SECONDS:-5}
+      JWT_SECRET: ${JWT_SECRET:-cadence-md-dev-only-secret-change-in-production}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TOKEN_EXPIRE_SECONDS: ${JWT_ACCESS_TOKEN_EXPIRE_SECONDS:-3600}
+      AUTH_REGISTER_RATE_LIMIT_IP: ${AUTH_REGISTER_RATE_LIMIT_IP:-30/minute}
+      AUTH_LOGIN_RATE_LIMIT_IP: ${AUTH_LOGIN_RATE_LIMIT_IP:-30/minute}
+      CHAT_RATE_LIMIT_USER: ${CHAT_RATE_LIMIT_USER:-30/minute}
+      GLOBAL_RAG_QUEUE_MAX: ${GLOBAL_RAG_QUEUE_MAX:-1000}
+      HEALTH_CHECK_TIMEOUT_SECONDS: ${HEALTH_CHECK_TIMEOUT_SECONDS:-3}
+      QDRANT_BASE_URL: ${QDRANT_BASE_URL:-http://qdrant:6333}
+      QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:-dev-qdrant-api-key}
+      QDRANT_HTTPS: ${QDRANT_HTTPS:-false}
+      RAG_CONFIG__QDRANT_CONFIG__DATA_DIR: ${RAG_CONFIG__QDRANT_CONFIG__DATA_DIR:-/app/data/main_specialities}
+      RAG_CORPUS_DIR: ${RAG_CORPUS_DIR:-/app/data}
+      MODEL_INFERENCE_BASE_URL: ${MODEL_INFERENCE_BASE_URL:-http://host.docker.internal:8080/v1}
+      MODEL_INFERENCE_API_KEY: ${MODEL_INFERENCE_API_KEY:-lm-studio}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-plain}
+      LOG_REDACT_MEDICAL_QUERY: ${LOG_REDACT_MEDICAL_QUERY:-true}
+      PROMETHEUS_ENABLED: ${PROMETHEUS_ENABLED:-true}
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-${LANGFUSE_HOST:-https://cloud.langfuse.com}}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      LANGFUSE_TRACE_QUERY_MODE: ${LANGFUSE_TRACE_QUERY_MODE:-redacted}
+      LANGFUSE_PROMPT_VERSION: ${LANGFUSE_PROMPT_VERSION:-}
+    ports:
+      - 127.0.0.1:${BACKEND_PORT:-8000}:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - backend-network
+    volumes:
+      - rag-corpus:/app/data:ro
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./cadence_md
+          target: /app/cadence_md
+        - action: rebuild
+          path: ./pyproject.toml
+        - action: rebuild
+          path: ./poetry.lock
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      dvc-pull:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import urllib.request;
+          urllib.request.urlopen(''http://localhost:8000/api/v1/health/ready'',
+          timeout=5).read()"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  rag-worker:
+    build:
+      context: .
+      dockerfile: infra/docker/rag-worker.Dockerfile
+    command:
+      - sh
+      - -c
+      - >
+        rm -rf "${PROMETHEUS_MULTIPROC_DIR:-/tmp/cadence-prometheus}" && mkdir
+        -p "${PROMETHEUS_MULTIPROC_DIR:-/tmp/cadence-prometheus}" && celery -A
+        cadence_md.workers.celery_app:celery_app worker --loglevel=INFO --queues
+        ${CELERY_RAG_QUEUE_NAME:-rag}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://cadence_md:cadence_md_dev@postgres:5432/cadence_md}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      CELERY_RAG_QUEUE_NAME: ${CELERY_RAG_QUEUE_NAME:-rag}
+      CELERY_RAG_TASK_NAME: ${CELERY_RAG_TASK_NAME:-cadence_md.workers.rag_tasks.run_rag_request}
+      CELERY_TASK_SOFT_TIME_LIMIT_SECONDS: ${CELERY_TASK_SOFT_TIME_LIMIT_SECONDS:-300}
+      CELERY_TASK_TIME_LIMIT_SECONDS: ${CELERY_TASK_TIME_LIMIT_SECONDS:-360}
+      CELERY_TASK_MAX_RETRIES: ${CELERY_TASK_MAX_RETRIES:-3}
+      CELERY_TASK_RETRY_BACKOFF_SECONDS: ${CELERY_TASK_RETRY_BACKOFF_SECONDS:-5}
+      HEALTH_CHECK_TIMEOUT_SECONDS: ${HEALTH_CHECK_TIMEOUT_SECONDS:-3}
+      QDRANT_BASE_URL: ${QDRANT_BASE_URL:-http://qdrant:6333}
+      QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:-dev-qdrant-api-key}
+      QDRANT_HTTPS: ${QDRANT_HTTPS:-false}
+      RAG_CONFIG__QDRANT_CONFIG__DATA_DIR: ${RAG_CONFIG__QDRANT_CONFIG__DATA_DIR:-/app/data/main_specialities}
+      MODEL_INFERENCE_BASE_URL: ${MODEL_INFERENCE_BASE_URL:-http://host.docker.internal:8080/v1}
+      MODEL_INFERENCE_API_KEY: ${MODEL_INFERENCE_API_KEY:-lm-studio}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-plain}
+      LOG_REDACT_MEDICAL_QUERY: ${LOG_REDACT_MEDICAL_QUERY:-true}
+      PROMETHEUS_ENABLED: ${PROMETHEUS_ENABLED:-true}
+      WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9100}
+      PROMETHEUS_MULTIPROC_DIR: ${PROMETHEUS_MULTIPROC_DIR:-/tmp/cadence-prometheus}
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-${LANGFUSE_HOST:-https://cloud.langfuse.com}}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      LANGFUSE_TRACE_QUERY_MODE: ${LANGFUSE_TRACE_QUERY_MODE:-redacted}
+      LANGFUSE_PROMPT_VERSION: ${LANGFUSE_PROMPT_VERSION:-}
+    ports:
+      - 127.0.0.1:${WORKER_METRICS_PORT:-9100}:9100
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - backend-network
+    volumes:
+      - rag-corpus:/app/data:ro
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./cadence_md
+          target: /app/cadence_md
+        - action: rebuild
+          path: ./pyproject.toml
+        - action: rebuild
+          path: ./poetry.lock
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      dvc-pull:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-m",
+          "cadence_md.workers.rag_health",
+          "--timeout",
+          "5",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
+  flower:
+    image: mher/flower:latest
+    command:
+      - sh
+      - -c
+      - >
+        celery --broker="$${CELERY_BROKER_URL}" flower --address=0.0.0.0
+        --port=5555 $${FLOWER_BASIC_AUTH:+--basic-auth="$${FLOWER_BASIC_AUTH}"}
+    environment:
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      FLOWER_BASIC_AUTH: ${FLOWER_BASIC_AUTH:-}
+    ports:
+      - 127.0.0.1:${FLOWER_PORT:-5555}:5555
+    networks:
+      - backend-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      rag-worker:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import base64, os, urllib.request; req =
+          urllib.request.Request(''http://localhost:5555/''); auth =
+          os.environ.get(''FLOWER_BASIC_AUTH'', '''');
+          req.add_header(''Authorization'', ''Basic '' +
+          base64.b64encode(auth.encode()).decode()) if auth else None;
+          urllib.request.urlopen(req, timeout=5).read()"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../infra/docker/frontend.Dockerfile
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+      VITE_API_PROXY_TARGET: ${VITE_API_PROXY_TARGET:-http://backend:8000}
+    ports:
+      - 127.0.0.1:${FRONTEND_PORT:-5173}:5173
+    networks:
+      - backend-network
+    develop:
+      watch:
+        - action: sync
+          path: ./frontend
+          target: /app
+          ignore:
+            - node_modules/
+            - dist/
+            - .vite/
+        - action: rebuild
+          path: ./frontend/package.json
+        - action: rebuild
+          path: ./frontend/package-lock.json
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  migrations:
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    command:
+      - alembic
+      - upgrade
+      - head
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://cadence_md:cadence_md_dev@postgres:5432/cadence_md}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+    networks:
+      - backend-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - 127.0.0.1:${PROMETHEUS_PORT:-9090}:9090
+    networks:
+      - backend-network
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      backend:
+        condition: service_started
+      rag-worker:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:9090/-/healthy >/dev/null 2>&1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    ports:
+      - 127.0.0.1:${GRAFANA_PORT:-3000}:3000
+    networks:
+      - backend-network
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:3000/api/health >/dev/null 2>&1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
 volumes:
+  postgres-data:
+  redis-data:
   qdrant:
+  rag-corpus:
+  prometheus-data:
+  grafana-data:
 
 configs:
   qdrant_config:

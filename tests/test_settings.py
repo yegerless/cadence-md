@@ -15,6 +15,7 @@ from cadence_md.app.settings import (
     LLMConfig,
     QdrantConfig,
     RAGConfig,
+    RAGOptionalNodesConfig,
     RerankerConfig,
     RetrievalConfig,
     Settings,
@@ -41,7 +42,15 @@ class TestSettingsRequiredAndTopLevel:
         s = _settings(QDRANT__SERVICE__API_KEY="secret-from-alias")
         assert s.QDRANT_API_KEY == "secret-from-alias"
 
-    def test_top_level_defaults(self) -> None:
+    def test_top_level_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ``_env_file=None`` does not disable env vars; clear docker/local overrides.
+        for key in (
+            "QDRANT_BASE_URL",
+            "QDRANT_HTTPS",
+            "MODEL_INFERENCE_BASE_URL",
+            "MODEL_INFERENCE_API_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
         s = _settings()
         assert s.QDRANT_BASE_URL == "http://localhost:6333"
         assert s.QDRANT_HTTPS is False
@@ -59,6 +68,15 @@ class TestSettingsRequiredAndTopLevel:
         assert s.QDRANT_HTTPS is True
         assert s.MODEL_INFERENCE_BASE_URL == "http://infer.example/v1"
         assert s.MODEL_INFERENCE_API_KEY == "infer-secret"
+
+    def test_nested_rag_env_overrides_keep_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("QDRANT__SERVICE__API_KEY", "k")
+        monkeypatch.setenv("RAG_CONFIG__QDRANT_CONFIG__DATA_DIR", "/app/data/main_specialities")
+        s = Settings(_env_file=None)  # type: ignore[call-arg]
+
+        assert s.rag_config.qdrant_config.data_dir == Path("/app/data/main_specialities")
+        assert s.rag_config.qdrant_config.rebuild_collection is QdrantConfig().rebuild_collection
+        assert s.rag_config.chunking.chunk_size == ChunkConfig().chunk_size
 
     def test_extra_env_vars_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("QDRANT__SERVICE__API_KEY", "k")
@@ -83,6 +101,7 @@ class TestRAGConfigConstruction:
             embedding=EmbeddingConfig(model_name="custom-emb", use_query_instruction=False),
             reranker=RerankerConfig(model_name="custom-rank", top_k=12, use_query_instruction=True),
             qdrant_config=QdrantConfig(collection_name="other_collection", vector_size=768),
+            optional_nodes=RAGOptionalNodesConfig(enable_answer_formatter=False),
         )
         s = _settings(rag_config=rc)
         assert s.rag_config.prompt_version == "custom-v"
@@ -94,6 +113,7 @@ class TestRAGConfigConstruction:
         assert s.rag_config.reranker.top_k == 12
         assert s.rag_config.qdrant_config.collection_name == "other_collection"
         assert s.rag_config.qdrant_config.vector_size == 768
+        assert s.rag_config.optional_nodes.enable_answer_formatter is False
 
     @pytest.mark.parametrize("invalid", [0, -1, -42_000])
     def test_max_context_chars_must_be_positive(self, invalid: int) -> None:
@@ -106,7 +126,30 @@ class TestRAGConfigConstruction:
                 embedding=EmbeddingConfig(),
                 reranker=RerankerConfig(),
                 qdrant_config=QdrantConfig(),
+                optional_nodes=RAGOptionalNodesConfig(),
             )
+
+    def test_optional_nodes_defaults_and_validation(self) -> None:
+        cfg = RAGOptionalNodesConfig()
+        assert cfg.enable_query_rewriter is True
+        assert cfg.enable_query_clarification is True
+        assert cfg.enable_context_relevance_grader is True
+        assert cfg.enable_answer_formatter is True
+        assert cfg.enable_output_guardrails is True
+        assert cfg.max_output_guardrail_iterations == 1
+        assert cfg.output_guardrail_min_score == 0.7
+        boundary_cfg = RAGOptionalNodesConfig(
+            max_output_guardrail_iterations=0,
+            output_guardrail_min_score=1.0,
+        )
+        assert boundary_cfg.max_output_guardrail_iterations == 0
+        assert boundary_cfg.output_guardrail_min_score == 1.0
+        with pytest.raises(ValidationError):
+            RAGOptionalNodesConfig(context_relevance_min_score=1.5)
+        with pytest.raises(ValidationError):
+            RAGOptionalNodesConfig(max_output_guardrail_iterations=-1)
+        with pytest.raises(ValidationError):
+            RAGOptionalNodesConfig(output_guardrail_min_score=1.5)
 
 
 class TestFieldValidators:

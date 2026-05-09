@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-worker
+  labels:
+    app.kubernetes.io/name: cadence-md
+    app.kubernetes.io/component: rag-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cadence-md
+      app.kubernetes.io/component: rag-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cadence-md
+        app.kubernetes.io/component: rag-worker
+    spec:
+      containers:
+        - name: rag-worker
+          image: cadence-md-rag-worker:prod
+          command:
+            - sh
+            - -c
+            - >
+              rm -rf "${PROMETHEUS_MULTIPROC_DIR}" && mkdir -p
+              "${PROMETHEUS_MULTIPROC_DIR}" && exec celery -A
+              cadence_md.workers.celery_app:celery_app worker
+              --loglevel="${WORKER_LOG_LEVEL}" --queues
+              "${CELERY_RAG_QUEUE_NAME}"
+          ports:
+            - name: metrics
+              containerPort: 9100
+          envFrom:
+            - configMapRef:
+                name: cadence-md-config
+            - secretRef:
+                name: cadence-md-secret
+          startupProbe:
+            exec:
+              command:
+                - python
+                - -m
+                - cadence_md.workers.rag_health
+                - --timeout
+                - "5"
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 16
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -m
+                - cadence_md.workers.rag_health
+                - --timeout
+                - "5"
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -m
+                - cadence_md.workers.rag_health
+                - --timeout
+                - "5"
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: rag-corpus
+              mountPath: /app/data
+              readOnly: true
+            - name: prometheus-multiproc
+              mountPath: /tmp/cadence-prometheus
+      volumes:
+        - name: rag-corpus
+          persistentVolumeClaim:
+            claimName: rag-corpus
+        - name: prometheus-multiproc
+          emptyDir: {}

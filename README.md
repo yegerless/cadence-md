@@ -1,173 +1,178 @@
-# CADENCE-MD 🏥
+# CADENCE-MD
 
-**C**linical **A**ssistant for **D**iagnosis, **E**vidence **N**avigation &
-**C**ase **E**valuation for **M**edical **D**octors
+**Clinical Assistant for Diagnosis, Evidence Navigation & Case Evaluation for
+Medical Doctors**
 
-> AI-powered clinical decision support system for physicians
+CADENCE-MD is a RAG-based medical assistant for Russian physicians. It retrieves
+evidence from Russian Ministry of Health clinical guidelines, serves
+asynchronous chat requests through a FastAPI backend and Celery worker, and
+provides a React SPA for the clinical workflow.
 
-## Overview
+This is a research project and is not intended for direct clinical use without
+validation.
 
-CADENCE-MD is an intelligent medical assistant that helps doctors make
-evidence-based decisions by providing instant access to clinical guidelines and
-the latest medical research through advanced RAG architecture and PubMed
-integration.
+## What Is Included
 
-## Key Features
+- Clinical guideline retrieval over a DVC-tracked PDF corpus stored in Qdrant.
+- LangGraph RAG pipeline with optional query rewriting, context relevance
+  grading, query clarification, answer formatting, and structured fallbacks.
+- FastAPI backend with JWT auth, persisted per-user chat history, async chat
+  request lifecycle, health checks, Prometheus metrics, and optional Langfuse
+  tracing.
+- Celery/Redis RAG worker for asynchronous answer generation.
+- React + Vite frontend for login, registration, chat history, profile,
+  clarification handling, source rendering, and authenticated PDF downloads.
+- Metrics pipeline for full RAG evaluation and retriever-only evaluation; batch
+  validation does not use user chat history.
 
-- **Clinical Guidelines RAG**: Semantic search through medical protocols and
-  guidelines
-- **PubMed Integration**: Real-time access to latest medical research
-- **Diagnostic Support**: AI-assisted differential diagnosis and treatment
-  recommendations
-- **Physician-Centric**: Designed specifically for clinical workflow integration
+## Stack
 
-## Technology Stack
+- Python 3.13, Poetry
+- FastAPI, SQLAlchemy/Alembic, Postgres, Redis, Celery
+- LangGraph, LangChain, Qdrant
+- DVC + S3-compatible storage for the clinical guideline corpus
+- React 19, Vite, TypeScript, React Router, TanStack Query, Vitest
+- Docker Compose dev stack with backend, worker, frontend, Qdrant, Postgres,
+  Redis, migrations, Prometheus, and Grafana
+- External OpenAI-compatible inference server for embeddings, reranking, and LLM
+  generation
 
-- LLM + RAG Architecture
-- Vector Databases & Semantic Search
-- PubMed API Integration
-- Medical NLP Processing
+## Documentation
 
-## Setup project
+- Detailed development setup: [`docs/setup.md`](docs/setup.md)
+- Full CLI reference: [`docs/commands.md`](docs/commands.md)
+- Frontend notes: [`frontend/README.md`](frontend/README.md)
+- Russian README: [`README_RU.md`](README_RU.md)
 
-You can find project setup instruction in docs/setup.md
+## Quick Start
 
-## CLI commands
+Install Python dependencies:
 
-Project tasks are exposed via [`commands.py`](commands.py). Run from the
-repository root with Poetry:
+```bash
+poetry install --with dev
+```
+
+Create a local environment file and replace placeholders. Do not commit
+`.env.dev`.
+
+```bash
+cp .env.example .env.dev
+```
+
+Start the external OpenAI-compatible inference server, then validate and run the
+dev stack:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml config
+docker compose --env-file .env.dev -f docker-compose-dev.yml up --build
+```
+
+For container code sync during development:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml watch backend rag-worker frontend
+```
+
+Common local URLs:
+
+- Frontend: `http://127.0.0.1:5173`
+- Backend API docs: `http://127.0.0.1:8000/docs`
+- Health: `http://127.0.0.1:8000/api/v1/health/ready`
+- Backend metrics: `http://127.0.0.1:8000/metrics`
+- Worker metrics: `http://127.0.0.1:9100/metrics`
+- Prometheus: `http://127.0.0.1:9090`
+- Grafana: `http://127.0.0.1:3000`
+
+## CLI
+
+Project commands are exposed through [`commands.py`](commands.py):
 
 ```bash
 poetry run python commands.py --help
 poetry run python commands.py <subcommand> --help
 ```
 
-### `parse-pdf`
+Available subcommands:
 
-Parses a directory of clinical guideline PDFs into a JSONL with extracted
-sections (`ClinicalSection` records).
+- `parse-pdf`: parse clinical guideline PDFs into sections JSONL.
+- `generate-qa`: generate a synthetic QA dataset from parsed sections.
+- `metrics-eval-full`: run answer generation, RAGAS, and retrieval metrics.
+- `metrics-eval-retriever`: run retrieve + rerank evaluation without answer
+  generation.
 
-| Option          | Default | Description                            |
-| --------------- | ------- | -------------------------------------- |
-| `--pdf-dir`     | —       | Input directory containing `*.pdf`     |
-| `--output-file` | —       | Output JSONL file with parsed sections |
-| `--max-files`   | —       | Optional cap on number of input PDFs   |
+See [`docs/commands.md`](docs/commands.md) for options, examples, and artifact
+formats.
 
-Examples:
+There is no interactive user-facing RAG CLI. User requests go through the
+FastAPI chat API and are processed asynchronously by `rag-worker`.
 
-```bash
-poetry run python commands.py parse-pdf \
-  --pdf-dir data/main_specialities \
-  --output-file data/clinical_sections.jsonl
-```
+## Docker Compose
 
-```bash
-poetry run python commands.py parse-pdf \
-  --pdf-dir data/main_specialities \
-  --output-file data/clinical_sections_sample.jsonl \
-  --max-files 5
-```
-
-### `generate-qa`
-
-Builds a synthetic QA dataset from a JSONL of clinical sections (parser output).
-
-| Option               | Default                                             | Description                                                  |
-| -------------------- | --------------------------------------------------- | ------------------------------------------------------------ |
-| `--sections-file`    | `data/clinical_sections.jsonl`                      | Input sections JSONL                                         |
-| `--output-file`      | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Output QA JSONL                                              |
-| `--model`            | `GigaChat-2-Max`                                    | LLM name (e.g. `GigaChat`, `GigaChat-2-Max`, `GigaChat-pro`) |
-| `--temperature`      | `0.0`                                               | Sampling temperature                                         |
-| `--max-context`      | `10000`                                             | Max context length (characters)                              |
-| `--sections-per-pdf` | `3`                                                 | Randomly sample up to N sections from each source PDF        |
-| `--seed`             | —                                                   | Random seed for reproducible section sampling                |
-
-Example:
+Use the dev compose file from the repository root:
 
 ```bash
-poetry run python commands.py generate-qa --sections-file data/clinical_sections.jsonl
+docker compose --env-file .env.dev -f docker-compose-dev.yml up --build
 ```
 
-On success, a Markdown generation report is written next to `--output-file`:
-`{stem}_generation_report.md`, where `{stem}` is the output basename without
-extension (for example `.../qa_dataset.jsonl` →
-`.../qa_dataset_generation_report.md`). The report lists CLI parameters, a
-pipeline summary (sections loaded, invalid JSONL lines skipped, pairs generated,
-failed sections), and counts by question type and section type.
+The stack includes:
 
-Requires LLM credentials (e.g. `GIGACHAT_API_KEY`) as configured for the QA
-generator. The command fails if `--output-file` already exists to avoid
-accidental appends to stale datasets.
+- `postgres`, `redis`, `qdrant`
+- `dvc-pull` for downloading `data.dvc` into the shared `rag-corpus` volume
+- `migrations` for `alembic upgrade head`
+- `backend` for `uvicorn cadence_md.backend.main:app`
+- `rag-worker` for the Celery RAG queue
+- `frontend` for the Vite dev server
+- `prometheus`, `grafana`
 
-### `metrics-eval-full`
+The inference server is intentionally external to `docker-compose-dev.yml`.
+Configure it with `MODEL_INFERENCE_BASE_URL` and `MODEL_INFERENCE_API_KEY`.
 
-Full RAG evaluation: answer generation, RAGAS metrics, retrieval metrics, and
-reports under the output directory.
+## Frontend
 
-| Option                          | Default                                             | Description                                    |
-| ------------------------------- | --------------------------------------------------- | ---------------------------------------------- |
-| `--dataset-file`                | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Evaluation QA JSONL                            |
-| `--output-dir`                  | `metrics/results/`                                  | Reports and metric files                       |
-| `--sample-size`                 | —                                                   | Limit the number of test cases                 |
-| `--k`                           | `5`                                                 | K for recall@K / precision@K                   |
-| `--enable-text-matcher-metrics` | off                                                 | Also compute diagnostic `text_match_*` metrics |
-
-Example:
+Run the frontend locally:
 
 ```bash
-poetry run python commands.py metrics-eval-full --sample-size 20
+npm --prefix frontend install
+VITE_API_BASE_URL= VITE_API_PROXY_TARGET=http://127.0.0.1:8000 npm --prefix frontend run dev
 ```
 
-Expects a running Qdrant instance, an indexed corpus, and the rest of the stack
-described in the setup guide.
+The app talks to `/api/v1`. Leaving `VITE_API_BASE_URL` empty enables the Vite
+same-origin proxy and avoids local CORS requirements. Auth stores only the
+short-lived access token in `sessionStorage`; logout and API `401` responses
+clear client state and require re-login.
 
-### `metrics-eval-retriever`
+## Quality Checks
 
-Retriever-only evaluation (retrieve + rerank): no RAGAS and no full answer
-generation.
-
-Same options as `metrics-eval-full`, plus:
-
-| Option | Default          | Description                  |
-| ------ | ---------------- | ---------------------------- |
-| `--k`  | pipeline default | K for recall@K / precision@K |
-
-Both `full` and `retriever` modes now create a dedicated run directory under
-`--output-dir`:
-
-```text
-metrics/results/<run_id>/
-  run_manifest.json
-  summary_metrics.json
-  report.md
-  errors.jsonl
-  # full mode
-  cases.jsonl
-  ragas_scores.parquet
-  # retriever mode
-  retrieval_cases.jsonl
-```
-
-Primary retrieval metrics are section-based and require `section_id` in both the
-QA dataset and indexed Qdrant metadata. Regenerate the QA dataset and reindex
-the corpus after this change. Use `--enable-text-matcher-metrics` only for
-optional diagnostic text-overlap metrics; they are written separately as
-`text_match_*`.
-
-Example:
+Backend unit tests:
 
 ```bash
-poetry run python commands.py metrics-eval-retriever --k 5
+poetry run pytest -m "not integration"
 ```
 
-See `poetry run python commands.py metrics-eval-full --help` and
-`metrics-eval-retriever --help` for all evaluation flags.
+Backend lint and format checks:
+
+```bash
+poetry run ruff check cadence_md tests metrics commands.py
+poetry run ruff format --check cadence_md tests metrics commands.py
+```
+
+Frontend checks:
+
+```bash
+npm --prefix frontend test
+npm --prefix frontend run lint
+npm --prefix frontend run build
+```
+
+Integration dependencies are defined in `docker-compose-test.yml`:
+
+```bash
+docker compose -f docker-compose-test.yml up -d postgres-test redis-test
+INTEGRATION_DATABASE_URL=postgresql+asyncpg://cadence_md:cadence_md_dev@127.0.0.1:55432/cadence_md_test \
+INTEGRATION_REDIS_URL=redis://127.0.0.1:56379/0 \
+poetry run pytest -m integration
+```
 
 ## License
 
-Proprietary - See [LICENSE.md](LICENSE.md) for details.
-
----
-
-**Disclaimer**: This is a research project. Not for direct clinical use without
-validation.
+Proprietary - see [`LICENSE.md`](LICENSE.md).

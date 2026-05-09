@@ -26,6 +26,7 @@ def render_validation_report(
     lines: list[str] = ["# RAG Validation Report\n\n"]
     lines.extend(_render_run_section(manifest=manifest, mode=mode))
     lines.extend(_render_rag_config_section(manifest=manifest, mode=mode))
+    lines.extend(_render_rag_graph_profile_section(manifest=manifest))
     lines.extend(_render_execution_summary_section(summary_metrics=summary_metrics))
     lines.extend(_render_retriever_metrics_section(summary_metrics=summary_metrics))
     lines.extend(_render_text_match_retriever_metrics_section(summary_metrics=summary_metrics))
@@ -86,6 +87,37 @@ def _render_rag_config_section(*, manifest: dict[str, Any], mode: str) -> list[s
     if mode == "full":
         lines.insert(1, f"- LLM: `{rag_cfg['llm_model']}`\n")
     return lines
+
+
+def _render_rag_graph_profile_section(*, manifest: dict[str, Any]) -> list[str]:
+    """
+    Render the effective optional RAG graph profile section.
+
+    Args:
+        manifest: Manifest for the run
+    Returns:
+        List of strings containing the rendered RAG graph profile section
+    """
+    graph_profile = manifest.get("rag_graph_profile")
+    if not graph_profile:
+        return []
+
+    configured = graph_profile["configured"]
+    effective_nodes = graph_profile.get("effective_optional_nodes", [])
+    inactive_nodes = graph_profile.get("inactive_configured_nodes", [])
+    effective_nodes_text = ", ".join(f"`{node}`" for node in effective_nodes) or "`none`"
+    inactive_nodes_text = ", ".join(f"`{node}`" for node in inactive_nodes) or "`none`"
+    return [
+        "## RAG graph profile\n",
+        f"- Query rewriter: `{configured['enable_query_rewriter']}`\n",
+        f"- Context relevance grader: `{configured['enable_context_relevance_grader']}`\n",
+        f"- Answer formatter: `{configured['enable_answer_formatter']}`\n",
+        f"- Output guardrails: `{configured['enable_output_guardrails']}`\n",
+        f"- Query clarification: `{configured['enable_query_clarification']}`\n",
+        f"- Max query rewrite iterations: `{configured['max_query_rewrite_iterations']}`\n",
+        f"- Effective optional nodes: {effective_nodes_text}\n",
+        f"- Inactive configured nodes: {inactive_nodes_text}\n\n",
+    ]
 
 
 def _render_execution_summary_section(*, summary_metrics: dict[str, Any]) -> list[str]:

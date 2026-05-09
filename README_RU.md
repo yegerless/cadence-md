@@ -1,168 +1,177 @@
-# CADENCE-MD 🏥
+# CADENCE-MD
 
-**C**linical **A**ssistant for **D**iagnosis, **E**vidence **N**avigation &
-**C**ase **E**valuation for **M**edical **D**octors
+**Clinical Assistant for Diagnosis, Evidence Navigation & Case Evaluation for
+Medical Doctors**
 
-> Интеллектуальная система поддержки врачебных решений
+CADENCE-MD — RAG-ассистент для российских врачей. Проект ищет доказательные
+фрагменты в клинических рекомендациях Минздрава РФ, принимает асинхронные
+chat-запросы через FastAPI backend и Celery worker, а для пользователя
+предоставляет React SPA.
 
-## Обзор
+Это исследовательский проект. Он не предназначен для прямого клинического
+использования без валидации.
 
-CADENCE-MD — это AI-ассистент для врачей, помогающий принимать доказательные
-решения путем предоставления мгновенного доступа к клиническим рекомендациям и
-новейшим медицинским исследованиям через продвинутую RAG-архитектуру и
-интеграцию с PubMed.
+## Что входит в проект
 
-## Ключевые возможности
+- Retrieval по клиническим рекомендациям из DVC-корпуса PDF, индексированного в
+  Qdrant.
+- LangGraph RAG pipeline с optional query rewriting, context relevance grading,
+  query clarification, answer formatting и контролируемыми fallback-сценариями.
+- FastAPI backend с JWT auth, per-user историей чатов, async chat lifecycle,
+  health checks, Prometheus metrics и optional Langfuse tracing.
+- Celery/Redis worker для асинхронной генерации RAG-ответов.
+- React + Vite frontend для login, registration, истории чатов, profile,
+  уточнений, отображения источников и авторизованного скачивания PDF.
+- Metrics pipeline для full RAG evaluation и retriever-only evaluation; batch
+  validation не использует пользовательскую историю чатов.
 
-- **RAG по клиническим рекомендациям**: Семантический поиск по медицинским
-  протоколам и руководствам
-- **Интеграция с PubMed**: Доступ к актуальным медицинским исследованиям
-- **Поддержка диагностики**: AI-помощник в дифференциальной диагностике и
-  подборе терапии
-- **Ориентация на врачей**: Разработано для интеграции в клиническую практику
+## Стек
 
-## Технологический стек
+- Python 3.13, Poetry
+- FastAPI, SQLAlchemy/Alembic, Postgres, Redis, Celery
+- LangGraph, LangChain, Qdrant
+- DVC + S3-compatible storage для корпуса клинических рекомендаций
+- React 19, Vite, TypeScript, React Router, TanStack Query, Vitest
+- Docker Compose dev stack с backend, worker, frontend, Qdrant, Postgres, Redis,
+  migrations, Prometheus и Grafana
+- Внешний OpenAI-compatible inference server для embeddings, reranking и LLM
+  generation
 
-- LLM + RAG архитектура
-- Векторные базы данных и семантический поиск
-- Интеграция с PubMed API
-- Медицинская NLP обработка
+## Документация
 
-## Команды CLI
+- Подробная dev-настройка: [`docs/setup_ru.md`](docs/setup_ru.md)
+- Полный CLI-справочник: [`docs/commands_ru.md`](docs/commands_ru.md)
+- Frontend: [`frontend/README_RU.md`](frontend/README_RU.md)
+- English README: [`README.md`](README.md)
 
-Сценарии запуска собраны в [`commands.py`](commands.py). Из корня репозитория:
+## Быстрый старт
+
+Установите Python-зависимости:
+
+```bash
+poetry install --with dev
+```
+
+Создайте локальный env-файл и замените placeholder-значения. Не коммитьте
+`.env.dev`.
+
+```bash
+cp .env.example .env.dev
+```
+
+Запустите внешний OpenAI-compatible inference server, затем проверьте и
+поднимите dev stack:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml config
+docker compose --env-file .env.dev -f docker-compose-dev.yml up --build
+```
+
+Для синхронизации кода с контейнерами во время разработки:
+
+```bash
+docker compose --env-file .env.dev -f docker-compose-dev.yml watch backend rag-worker frontend
+```
+
+Основные локальные URL:
+
+- Frontend: `http://127.0.0.1:5173`
+- Backend API docs: `http://127.0.0.1:8000/docs`
+- Health: `http://127.0.0.1:8000/api/v1/health/ready`
+- Метрики backend: `http://127.0.0.1:8000/metrics`
+- Метрики worker: `http://127.0.0.1:9100/metrics`
+- Prometheus: `http://127.0.0.1:9090`
+- Grafana: `http://127.0.0.1:3000`
+
+## CLI
+
+Проектные команды доступны через [`commands.py`](commands.py):
 
 ```bash
 poetry run python commands.py --help
-poetry run python commands.py <подкоманда> --help
+poetry run python commands.py <subcommand> --help
 ```
 
-### `parse-pdf`
+Доступные подкоманды:
 
-Парсит директорию с клиническими рекомендациями в PDF и сохраняет результат в
-JSONL с секциями (`ClinicalSection`).
+- `parse-pdf`: парсинг PDF клинических рекомендаций в JSONL с секциями.
+- `generate-qa`: генерация синтетического QA-датасета из распарсенных секций.
+- `metrics-eval-full`: генерация ответов, RAGAS и retrieval metrics.
+- `metrics-eval-retriever`: оценка retrieve + rerank без генерации ответа.
 
-| Опция           | По умолчанию | Описание                                     |
-| --------------- | ------------ | -------------------------------------------- |
-| `--pdf-dir`     | —            | Входная директория с файлами `*.pdf`         |
-| `--output-file` | —            | Выходной JSONL-файл с распарсенными секциями |
-| `--max-files`   | —            | Опционально: ограничить число входных PDF    |
+Опции, примеры и форматы артефактов описаны в
+[`docs/commands_ru.md`](docs/commands_ru.md).
 
-Примеры:
+Интерактивного пользовательского RAG CLI нет. Пользовательские запросы идут
+через FastAPI chat API и асинхронно обрабатываются `rag-worker`.
+
+## Docker Compose
+
+Dev compose запускается из корня репозитория:
 
 ```bash
-poetry run python commands.py parse-pdf \
-  --pdf-dir data/main_specialities \
-  --output-file data/clinical_sections.jsonl
+docker compose --env-file .env.dev -f docker-compose-dev.yml up --build
 ```
+
+В stack входят:
+
+- `postgres`, `redis`, `qdrant`
+- `dvc-pull`, который скачивает `data.dvc` в общий volume `rag-corpus`
+- `migrations` для `alembic upgrade head`
+- `backend` с `uvicorn cadence_md.backend.main:app`
+- `rag-worker` с Celery RAG queue
+- `frontend` с Vite dev server
+- `prometheus`, `grafana`
+
+Inference server намеренно не входит в `docker-compose-dev.yml`. Адрес и ключ
+задаются через `MODEL_INFERENCE_BASE_URL` и `MODEL_INFERENCE_API_KEY`.
+
+## Frontend
+
+Локальный запуск frontend:
 
 ```bash
-poetry run python commands.py parse-pdf \
-  --pdf-dir data/main_specialities \
-  --output-file data/clinical_sections_sample.jsonl \
-  --max-files 5
+npm --prefix frontend install
+VITE_API_BASE_URL= VITE_API_PROXY_TARGET=http://127.0.0.1:8000 npm --prefix frontend run dev
 ```
 
-### `generate-qa`
+Приложение обращается к `/api/v1`. Пустой `VITE_API_BASE_URL` включает
+same-origin proxy Vite и не требует CORS в локальной разработке. Auth хранит
+только короткоживущий access token в `sessionStorage`; logout и API `401`
+очищают client state и требуют повторного входа.
 
-Генерация синтетического QA-датасета из JSONL с клиническими секциями (результат
-парсера).
+## Проверки качества
 
-| Опция                | По умолчанию                                        | Описание                                                        |
-| -------------------- | --------------------------------------------------- | --------------------------------------------------------------- |
-| `--sections-file`    | `data/clinical_sections.jsonl`                      | Входной JSONL секций                                            |
-| `--output-file`      | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Выходной QA JSONL                                               |
-| `--model`            | `GigaChat-2-Max`                                    | Имя LLM (например `GigaChat`, `GigaChat-2-Max`, `GigaChat-pro`) |
-| `--temperature`      | `0.0`                                               | Температура сэмплирования                                       |
-| `--max-context`      | `10000`                                             | Максимальная длина контекста (символы)                          |
-| `--sections-per-pdf` | `3`                                                 | Случайно выбрать до N секций на каждый исходный PDF             |
-| `--seed`             | —                                                   | Seed для воспроизводимой случайной выборки                      |
-
-Пример:
+Backend unit-тесты:
 
 ```bash
-poetry run python commands.py generate-qa --sections-file data/clinical_sections.jsonl
+poetry run pytest -m "not integration"
 ```
 
-После успешной генерации рядом с `--output-file` создаётся Markdown-отчёт:
-`{stem}_generation_report.md`, где `{stem}` — имя выходного файла без расширения
-(например `.../qa_dataset.jsonl` → `.../qa_dataset_generation_report.md`). В
-отчёте: параметры запуска, сводка конвейера (загрузка секций, пропуски битых
-строк JSONL, число сгенерированных пар и неудачных секций), распределения по
-типу вопроса и типу секции.
-
-Нужны учётные данные LLM (например `GIGACHAT_API_KEY`), как настроено у
-генератора QA. Команда завершается с ошибкой, если файл `--output-file` уже
-существует.
-
-### `metrics-eval-full`
-
-Полная оценка RAG: генерация ответов, метрики RAGAS, метрики ретрива и отчёты в
-каталоге вывода.
-
-| Опция                           | По умолчанию                                        | Описание                                                     |
-| ------------------------------- | --------------------------------------------------- | ------------------------------------------------------------ |
-| `--dataset-file`                | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | JSONL с вопросами для оценки                                 |
-| `--output-dir`                  | `metrics/results/`                                  | Отчёты и файлы метрик                                        |
-| `--sample-size`                 | —                                                   | Ограничить число тест-кейсов                                 |
-| `--k`                           | `5`                                                 | K для recall@K / precision@K                                 |
-| `--enable-text-matcher-metrics` | выкл.                                               | Дополнительно считать диагностические `text_match_*` метрики |
-
-Пример:
+Backend lint и format checks:
 
 ```bash
-poetry run python commands.py metrics-eval-full --sample-size 20
+poetry run ruff check cadence_md tests metrics commands.py
+poetry run ruff format --check cadence_md tests metrics commands.py
 ```
 
-Нужны запущенный Qdrant, проиндексированный корпус и остальное окружение по
-инструкции развёртывания.
-
-### `metrics-eval-retriever`
-
-Оценка только ретривера (поиск + реранк): без RAGAS и без полной генерации
-ответа.
-
-Те же опции, что у `metrics-eval-full`, плюс:
-
-| Опция | По умолчанию       | Описание                     |
-| ----- | ------------------ | ---------------------------- |
-| `--k` | значение пайплайна | K для recall@K / precision@K |
-
-Оба режима (`full` и `retriever`) создают отдельную директорию прогона в
-`--output-dir`:
-
-```text
-metrics/results/<run_id>/
-  run_manifest.json
-  summary_metrics.json
-  report.md
-  errors.jsonl
-  # режим full
-  cases.jsonl
-  ragas_scores.parquet
-  # режим retriever
-  retrieval_cases.jsonl
-```
-
-Основные метрики ретривера теперь считаются по `section_id`, поэтому для точной
-оценки нужны новый QA-датасет и переиндексация корпуса в Qdrant. Флаг
-`--enable-text-matcher-metrics` включает только дополнительные диагностические
-метрики по текстовому overlap и сохраняет их отдельно как `text_match_*`.
-
-Пример:
+Frontend checks:
 
 ```bash
-poetry run python commands.py metrics-eval-retriever --k 5
+npm --prefix frontend test
+npm --prefix frontend run lint
+npm --prefix frontend run build
 ```
 
-Список флагов: `poetry run python commands.py metrics-eval-full --help` и
-`metrics-eval-retriever --help`.
+Зависимости для integration-тестов описаны в `docker-compose-test.yml`:
+
+```bash
+docker compose -f docker-compose-test.yml up -d postgres-test redis-test
+INTEGRATION_DATABASE_URL=postgresql+asyncpg://cadence_md:cadence_md_dev@127.0.0.1:55432/cadence_md_test \
+INTEGRATION_REDIS_URL=redis://127.0.0.1:56379/0 \
+poetry run pytest -m integration
+```
 
 ## Лицензия
 
-Проприетарная - подробности в [LICENSE_RU.md](LICENSE_RU.md).
-
----
-
-**Важно**: Это исследовательский проект. Не предназначен для прямого
-клинического использования без валидации.
+Проприетарная - см. [`LICENSE_RU.md`](LICENSE_RU.md).

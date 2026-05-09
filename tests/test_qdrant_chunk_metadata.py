@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from langchain_core.documents import Document
 
 from cadence_md.app.pdf_parser.parser import ClinicalSection
@@ -12,6 +14,7 @@ from cadence_md.app.settings import ChunkConfig
 def _manager_with_chunking(cfg: ChunkConfig) -> QdrantManager:
     mgr = object.__new__(QdrantManager)
     mgr.chunking_cfg = cfg
+    mgr.data_dir = Path("data/main_specialities")
     return mgr  # type: ignore[return-value]
 
 
@@ -43,6 +46,7 @@ def test_create_chunks_sets_chunk_metadata_for_split_section() -> None:
         assert meta["document_title"] == "Клинические рекомендации"
         assert meta["section_title"] == "Лечение"
         assert meta["section_id"] == sid
+        assert meta["source_path"] == "main_specialities/rec.pdf"
 
 
 def test_attach_chunk_metadata_fallback_prefix_without_section_id() -> None:

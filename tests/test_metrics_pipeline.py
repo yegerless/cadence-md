@@ -1,12 +1,17 @@
 import json
+import sys
+import time
 from pathlib import Path
 
 import pandas as pd
 import pytest
 from langchain_core.documents import Document
 
-from commands import build_project_cli_parser
-from metrics.evaluation_pipeline import RAGEvaluationPipeline
+from cadence_md.rag import RAGFlags, RAGRequest, RAGResponse, RAGRetrieveResponse, RAGSource
+from commands import _rag_optional_node_overrides, build_project_cli_parser
+from commands import main as commands_main
+from metrics.evaluation_pipeline import RAGEvaluationPipeline, _response_to_test_result_inputs
+from metrics.main import build_rag_optional_nodes_config
 from metrics.schemas import QATestCase, RAGTestResult
 
 
@@ -16,24 +21,51 @@ def _pipeline_without_init() -> RAGEvaluationPipeline:
     return pipeline
 
 
-def _ranked(
-    doc: Document,
+def _source(
+    content: str,
     *,
     rank: int = 1,
+    section_id: str | None = None,
+    source_path: str | None = None,
     retrieval_score: float | None = None,
     rerank_score: float | None = None,
     final_score: float | None = None,
-) -> dict:
-    """Build a ``RankedDocument`` dict for tests."""
-    return {
-        "rank": rank,
-        "doc": doc,
-        "retrieval_score": retrieval_score,
-        "rerank_score": rerank_score,
-        "final_score": final_score,
-        "chunk_id": None,
-        "section_id": None,
-    }
+) -> RAGSource:
+    """Build a ``RAGSource`` fixture for service-contract tests."""
+    return RAGSource(
+        rank=rank,
+        doc_ref=f"[Doc {rank}]",
+        section_id=section_id,
+        source_path=source_path,
+        content=content,
+        score=final_score,
+        retrieval_score=retrieval_score,
+        rerank_score=rerank_score,
+    )
+
+
+def _response(question: str, answer: str, sources: list[RAGSource]) -> RAGResponse:
+    return RAGResponse(query=question, answer=answer, query_hash="hash", sources=sources)
+
+
+def _retrieve_response(
+    question: str,
+    sources: list[RAGSource],
+    *,
+    retrieval_query: str | None = None,
+    rewritten_queries: list[str] | None = None,
+    flags: RAGFlags | None = None,
+    context_relevance_score: float | None = None,
+) -> RAGRetrieveResponse:
+    return RAGRetrieveResponse(
+        query=question,
+        query_hash="hash",
+        sources=sources,
+        flags=flags or RAGFlags(),
+        retrieval_query=retrieval_query,
+        rewritten_queries=rewritten_queries or [],
+        context_relevance_score=context_relevance_score,
+    )
 
 
 def test_load_test_cases_skips_malformed_rows(tmp_path: Path) -> None:
@@ -187,6 +219,18 @@ def test_calculate_text_match_metrics_uses_prefixed_keys() -> None:
     assert "hit_rate" not in metrics
 
 
+def test_response_to_test_result_inputs_preserves_source_path_metadata() -> None:
+    response = _retrieve_response(
+        "q",
+        [_source("ctx", section_id="sec", source_path="main_specialities/guideline.pdf")],
+    )
+
+    docs, _scores, _answer = _response_to_test_result_inputs(response)
+
+    assert docs[0].metadata["source_path"] == "main_specialities/guideline.pdf"
+    assert docs[0].metadata["section_id"] == "sec"
+
+
 def test_metrics_parser_rejects_non_positive_k(tmp_path: Path) -> None:
     parser = build_project_cli_parser()
     with pytest.raises(SystemExit):
@@ -198,6 +242,22 @@ def test_metrics_parser_rejects_non_positive_k(tmp_path: Path) -> None:
                 "--output-dir",
                 str(tmp_path),
                 "--k",
+                "0",
+            ]
+        )
+
+
+def test_metrics_parser_rejects_non_positive_workers(tmp_path: Path) -> None:
+    parser = build_project_cli_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "metrics-eval-retriever",
+                "--dataset-file",
+                "data/metrics_evaluation_datasets/qa_dataset.jsonl",
+                "--output-dir",
+                str(tmp_path),
+                "--workers",
                 "0",
             ]
         )
@@ -217,12 +277,51 @@ def test_metrics_parser_accepts_valid_full_args(tmp_path: Path) -> None:
             "--k",
             "7",
             "--enable-text-matcher-metrics",
+            "--disable-query-rewriter",
+            "--enable-context-relevance-grader",
+            "--disable-answer-formatter",
+            "--enable-output-guardrails",
+            "--enable-query-clarification",
+            "--max-query-rewrite-iterations",
+            "2",
         ]
     )
     assert args.command == "metrics-eval-full"
     assert args.sample_size == 10
     assert args.k == 7
     assert args.enable_text_matcher_metrics is True
+    assert args.enable_query_rewriter is False
+    assert args.enable_context_relevance_grader is True
+    assert args.enable_answer_formatter is False
+    assert args.enable_output_guardrails is True
+    assert args.enable_query_clarification is True
+    assert args.max_query_rewrite_iterations == 2
+
+
+def test_metrics_parser_accepts_retriever_workers(tmp_path: Path) -> None:
+    parser = build_project_cli_parser()
+    args = parser.parse_args(
+        [
+            "metrics-eval-retriever",
+            "--dataset-file",
+            "data/metrics_evaluation_datasets/qa_dataset.jsonl",
+            "--output-dir",
+            str(tmp_path),
+            "--workers",
+            "4",
+            "--enable-query-rewriter",
+            "--disable-context-relevance-grader",
+            "--enable-answer-formatter",
+            "--disable-output-guardrails",
+        ]
+    )
+
+    assert args.command == "metrics-eval-retriever"
+    assert args.workers == 4
+    assert args.enable_query_rewriter is True
+    assert args.enable_context_relevance_grader is False
+    assert args.enable_answer_formatter is True
+    assert args.enable_output_guardrails is False
 
 
 def test_metrics_parser_full_uses_default_k(tmp_path: Path) -> None:
@@ -237,6 +336,198 @@ def test_metrics_parser_full_uses_default_k(tmp_path: Path) -> None:
         ]
     )
     assert args.k == 5
+    assert args.enable_query_rewriter is None
+    assert args.enable_context_relevance_grader is None
+    assert args.enable_answer_formatter is None
+    assert args.enable_output_guardrails is None
+    assert args.enable_query_clarification is None
+    assert args.max_query_rewrite_iterations is None
+
+
+def test_metrics_parser_rejects_negative_max_query_rewrite_iterations() -> None:
+    parser = build_project_cli_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "metrics-eval-full",
+                "--max-query-rewrite-iterations",
+                "-1",
+            ]
+        )
+
+
+def test_metrics_parser_rejects_conflicting_optional_node_flags() -> None:
+    parser = build_project_cli_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "metrics-eval-full",
+                "--enable-query-rewriter",
+                "--disable-query-rewriter",
+            ]
+        )
+
+
+def test_metrics_help_contains_new_flags_and_omits_old_flags(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = build_project_cli_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["metrics-eval-full", "--help"])
+    full_help = capsys.readouterr().out
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["metrics-eval-retriever", "--help"])
+    retriever_help = capsys.readouterr().out
+
+    for help_text in (full_help, retriever_help):
+        assert "--enable-query-rewriter" in help_text
+        assert "--disable-query-rewriter" in help_text
+        assert "--enable-context-relevance-grader" in help_text
+        assert "--disable-context-relevance-grader" in help_text
+        assert "--enable-answer-formatter" in help_text
+        assert "--disable-answer-formatter" in help_text
+        assert "--enable-output-guardrails" in help_text
+        assert "--disable-output-guardrails" in help_text
+        assert "--enable-query-clarification" in help_text
+        assert "--disable-query-clarification" in help_text
+        assert "--max-query-rewrite-iterations" in help_text
+        assert "--max-output-guardrail-iterations" not in help_text
+        assert "--disable-rag-query-rewriter" not in help_text
+        assert "--disable-rag-context-relevance-grader" not in help_text
+        assert "--disable-rag-answer-formatter" not in help_text
+
+
+def test_rag_optional_node_overrides_collects_explicit_values(tmp_path: Path) -> None:
+    parser = build_project_cli_parser()
+    args = parser.parse_args(
+        [
+            "metrics-eval-retriever",
+            "--output-dir",
+            str(tmp_path),
+            "--disable-query-rewriter",
+            "--enable-context-relevance-grader",
+            "--disable-answer-formatter",
+            "--disable-output-guardrails",
+            "--enable-query-clarification",
+            "--max-query-rewrite-iterations",
+            "0",
+        ]
+    )
+
+    assert _rag_optional_node_overrides(args) == {
+        "enable_query_rewriter": False,
+        "enable_context_relevance_grader": True,
+        "enable_answer_formatter": False,
+        "enable_output_guardrails": False,
+        "enable_query_clarification": True,
+        "max_query_rewrite_iterations": 0,
+    }
+    assert "max_output_guardrail_iterations" not in _rag_optional_node_overrides(args)
+
+
+def test_rag_optional_nodes_config_helper_does_not_mutate_settings() -> None:
+    cfg = build_rag_optional_nodes_config(
+        {
+            "enable_query_rewriter": False,
+            "enable_query_clarification": True,
+            "enable_output_guardrails": False,
+            "max_query_rewrite_iterations": 3,
+        }
+    )
+    default_cfg = build_rag_optional_nodes_config()
+
+    assert cfg.enable_query_rewriter is False
+    assert cfg.enable_query_clarification is True
+    assert cfg.enable_output_guardrails is False
+    assert cfg.max_query_rewrite_iterations == 3
+    assert default_cfg.enable_query_rewriter is True
+    assert default_cfg.enable_query_clarification is True
+    assert default_cfg.max_query_rewrite_iterations == 2
+
+
+def test_commands_main_passes_optional_node_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeEvaluationPipeline:
+        def run_full_evaluation(self, **kwargs: object) -> None:
+            captured["run_kwargs"] = kwargs
+
+    def fake_build_evaluation_pipeline(
+        *,
+        optional_nodes_overrides: dict[str, bool | int],
+    ) -> FakeEvaluationPipeline:
+        captured["overrides"] = optional_nodes_overrides
+        return FakeEvaluationPipeline()
+
+    monkeypatch.setattr(
+        "metrics.main.build_evaluation_pipeline",
+        fake_build_evaluation_pipeline,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "commands.py",
+            "metrics-eval-full",
+            "--output-dir",
+            str(tmp_path),
+            "--disable-query-rewriter",
+            "--enable-query-clarification",
+            "--max-query-rewrite-iterations",
+            "2",
+        ],
+    )
+
+    commands_main()
+
+    assert captured["overrides"] == {
+        "enable_query_rewriter": False,
+        "enable_query_clarification": True,
+        "max_query_rewrite_iterations": 2,
+    }
+
+
+def test_commands_main_passes_only_output_guardrails_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeEvaluationPipeline:
+        def run_full_evaluation(self, **kwargs: object) -> None:
+            captured["run_kwargs"] = kwargs
+
+    def fake_build_evaluation_pipeline(
+        *,
+        optional_nodes_overrides: dict[str, bool | int],
+    ) -> FakeEvaluationPipeline:
+        captured["overrides"] = optional_nodes_overrides
+        return FakeEvaluationPipeline()
+
+    monkeypatch.setattr(
+        "metrics.main.build_evaluation_pipeline",
+        fake_build_evaluation_pipeline,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "commands.py",
+            "metrics-eval-full",
+            "--output-dir",
+            str(tmp_path),
+            "--disable-output-guardrails",
+        ],
+    )
+
+    commands_main()
+
+    assert captured["overrides"] == {"enable_output_guardrails": False}
 
 
 def test_run_full_evaluation_writes_run_artifacts(
@@ -244,22 +535,23 @@ def test_run_full_evaluation_writes_run_artifacts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pipeline = _pipeline_without_init()
-    pipeline.rag_pipeline = type(
-        "FakeRagPipeline",
+    pipeline.rag_service = type(
+        "FakeRagService",
         (),
         {
             "run": staticmethod(
-                lambda question: {
-                    "ranked_docs": [
-                        _ranked(
-                            Document(page_content=f"ctx-{question}", metadata={}),
+                lambda request: _response(
+                    request.query,
+                    f"ans-{request.query}",
+                    [
+                        _source(
+                            f"ctx-{request.query}",
                             retrieval_score=0.9,
                             rerank_score=0.9,
                             final_score=0.9,
                         )
                     ],
-                    "answer": f"ans-{question}",
-                }
+                )
             )
         },
     )()
@@ -304,10 +596,16 @@ def test_run_full_evaluation_writes_run_artifacts(
     assert (run_dir / "cases.jsonl").exists()
     assert (run_dir / "ragas_scores.parquet").exists()
     assert (run_dir / "summary_metrics.json").exists()
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["rag_graph_profile"]["configured"]["enable_query_clarification"] is True
+    assert manifest["rag_graph_profile"]["configured"]["max_query_rewrite_iterations"] == 2
+    assert "answer_formatter" in manifest["rag_graph_profile"]["effective_optional_nodes"]
+    assert "output_guardrails" in manifest["rag_graph_profile"]["effective_optional_nodes"]
     report_file = run_dir / "report.md"
     assert report_file.exists()
     report_text = report_file.read_text(encoding="utf-8")
     assert "## Run" in report_text
+    assert "## RAG graph profile" in report_text
     assert "Run ID" in report_text
     assert "## Retriever Metrics" in report_text
     assert "## Artifacts" in report_text
@@ -318,22 +616,23 @@ def test_run_full_evaluation_ignores_non_numeric_ragas_columns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pipeline = _pipeline_without_init()
-    pipeline.rag_pipeline = type(
-        "FakeRagPipeline",
+    pipeline.rag_service = type(
+        "FakeRagService",
         (),
         {
             "run": staticmethod(
-                lambda question: {
-                    "ranked_docs": [
-                        _ranked(
-                            Document(page_content=f"ctx-{question}", metadata={}),
+                lambda request: _response(
+                    request.query,
+                    f"ans-{request.query}",
+                    [
+                        _source(
+                            f"ctx-{request.query}",
                             retrieval_score=0.85,
                             rerank_score=0.85,
                             final_score=0.85,
                         )
                     ],
-                    "answer": f"ans-{question}",
-                }
+                )
             )
         },
     )()
@@ -384,25 +683,24 @@ def test_run_full_evaluation_writes_optional_text_match_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pipeline = _pipeline_without_init()
-    pipeline.rag_pipeline = type(
-        "FakeRagPipeline",
+    pipeline.rag_service = type(
+        "FakeRagService",
         (),
         {
             "run": staticmethod(
-                lambda _question: {
-                    "ranked_docs": [
-                        _ranked(
-                            Document(
-                                page_content="ацетилсалициловая кислота в дозе 75 мг ежедневно",
-                                metadata={"section_id": "wrong"},
-                            ),
+                lambda request: _response(
+                    request.query,
+                    "answer",
+                    [
+                        _source(
+                            "ацетилсалициловая кислота в дозе 75 мг ежедневно",
+                            section_id="wrong",
                             retrieval_score=0.85,
                             rerank_score=0.85,
                             final_score=0.85,
                         )
                     ],
-                    "answer": "answer",
-                }
+                )
             )
         },
     )()
@@ -455,23 +753,25 @@ def test_run_full_evaluation_tracks_rag_and_ragas_failures(
     pipeline = _pipeline_without_init()
     calls = {"n": 0}
 
-    def rag_run(question: str) -> dict:
+    def rag_run(request: RAGRequest) -> RAGResponse:
+        assert request.allow_clarification is False
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("rag boom")
-        return {
-            "ranked_docs": [
-                _ranked(
-                    Document(page_content=f"ctx-{question}", metadata={}),
+        return _response(
+            request.query,
+            f"ans-{request.query}",
+            [
+                _source(
+                    f"ctx-{request.query}",
                     retrieval_score=0.8,
                     rerank_score=0.8,
                     final_score=0.8,
                 )
             ],
-            "answer": f"ans-{question}",
-        }
+        )
 
-    pipeline.rag_pipeline = type("FakeRagPipeline", (), {"run": staticmethod(rag_run)})()
+    pipeline.rag_service = type("FakeRagService", (), {"run": staticmethod(rag_run)})()
     test_cases = [
         QATestCase("q1", "a1", "ctx-q1", "factoid", "therapy", "", [], {}),
         QATestCase("q2", "a2", "ctx-q2", "procedural", "diagnostics", "", [], {}),
@@ -524,19 +824,34 @@ def test_run_full_evaluation_tracks_rag_and_ragas_failures(
 
 def test_run_retriever_evaluation_writes_artifacts(tmp_path: Path) -> None:
     pipeline = _pipeline_without_init()
-    pipeline.run_retriever_pipeline = lambda *_args, **_kwargs: [
-        RAGTestResult(
-            question="q",
-            ground_truth_answer="a",
-            ground_truth_context="ctx",
-            retrieved_contexts=[Document(page_content="ctx", metadata={})],
-            retrieval_scores=[0.9],
-            generated_answer="",
-            question_type="factoid",
-            section_type="therapy",
-            test_case_id=0,
-        )
-    ]
+    captured: dict[str, int] = {}
+
+    def run_retriever_pipeline(
+        _test_cases: list[QATestCase],
+        _sample_size: int | None,
+        *,
+        workers: int = 1,
+    ) -> list[RAGTestResult]:
+        captured["workers"] = workers
+        return [
+            RAGTestResult(
+                question="q",
+                ground_truth_answer="a",
+                ground_truth_context="ctx",
+                retrieved_contexts=[Document(page_content="ctx", metadata={})],
+                retrieval_scores=[0.9],
+                generated_answer="",
+                question_type="factoid",
+                section_type="therapy",
+                test_case_id=0,
+                retrieval_query="rewritten q",
+                rewritten_queries=["rewritten q"],
+                rag_flags={"query_rewritten": True, "requires_clarification": False},
+                context_relevance_score=0.82,
+            )
+        ]
+
+    pipeline.run_retriever_pipeline = run_retriever_pipeline
     pipeline.load_test_cases = lambda _: [
         QATestCase("q", "a", "ctx", "factoid", "therapy", "", [], {})
     ]
@@ -554,16 +869,32 @@ def test_run_retriever_evaluation_writes_artifacts(tmp_path: Path) -> None:
         output_dir=tmp_path,
         sample_size=None,
         k=5,
+        workers=3,
     )
 
     run_dir = next(path for path in tmp_path.iterdir() if path.is_dir())
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["run_parameters"]["workers"] == 3
+    assert manifest["rag_graph_profile"]["mode"] == "retriever"
+    assert "answer_formatter" in manifest["rag_graph_profile"]["inactive_configured_nodes"]
+    assert "output_guardrails" in manifest["rag_graph_profile"]["inactive_configured_nodes"]
+    assert captured["workers"] == 3
     assert (run_dir / "run_manifest.json").exists()
     assert (run_dir / "retrieval_cases.jsonl").exists()
+    retrieval_case = json.loads(
+        (run_dir / "retrieval_cases.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert retrieval_case["question"] == "q"
+    assert retrieval_case["retrieval_query"] == "rewritten q"
+    assert retrieval_case["rewritten_queries"] == ["rewritten q"]
+    assert retrieval_case["rag_flags"]["query_rewritten"] is True
+    assert retrieval_case["context_relevance_score"] == 0.82
     assert (run_dir / "summary_metrics.json").exists()
     report_file = run_dir / "report.md"
     assert report_file.exists()
     report_text = report_file.read_text(encoding="utf-8")
     assert "## Run" in report_text
+    assert "## RAG graph profile" in report_text
     assert "## Retriever Metrics" in report_text
     assert "## Artifacts" in report_text
 
@@ -818,22 +1149,17 @@ def test_run_rag_pipeline_sample_and_error_skips(
 ) -> None:
     pipeline = _pipeline_without_init()
 
-    def rag_run(question: str) -> dict:
-        if question == "q1":
+    def rag_run(request: RAGRequest) -> RAGResponse:
+        assert request.allow_clarification is False
+        if request.query == "q1":
             raise RuntimeError("fail case")
-        return {
-            "ranked_docs": [
-                _ranked(
-                    Document(page_content=question, metadata={}),
-                    retrieval_score=0.5,
-                    rerank_score=0.5,
-                    final_score=0.5,
-                )
-            ],
-            "answer": f"a-{question}",
-        }
+        return _response(
+            request.query,
+            f"a-{request.query}",
+            [_source(request.query, retrieval_score=0.5, rerank_score=0.5, final_score=0.5)],
+        )
 
-    pipeline.rag_pipeline = type("R", (), {"run": staticmethod(rag_run)})()
+    pipeline.rag_service = type("R", (), {"run": staticmethod(rag_run)})()
     cases = [QATestCase(f"q{i}", f"a{i}", "c", "f", "s", "", [], {}) for i in range(10)]
     monkeypatch.setattr(
         "metrics.evaluation_pipeline.random.sample",
@@ -850,45 +1176,17 @@ def test_run_retriever_pipeline_scores_and_errors() -> None:
     pipeline = _pipeline_without_init()
     calls = {"n": 0}
 
-    def retrieve_node(state):
+    def retrieve(request: RAGRequest) -> RAGRetrieveResponse:
+        assert request.allow_clarification is False
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("retrieve fail")
-        return {
-            **state,
-            "ranked_docs": [
-                _ranked(
-                    Document("d", metadata={}),
-                    retrieval_score=0.1,
-                    final_score=0.1,
-                )
-            ],
-        }
+        return _retrieve_response(
+            request.query,
+            [_source("d", retrieval_score=0.1, rerank_score=0.99, final_score=0.99)],
+        )
 
-    def reranker_node(state):
-        ranked = state["ranked_docs"]
-        return {
-            **state,
-            "ranked_docs": [
-                _ranked(
-                    rd["doc"],
-                    rank=rd["rank"],
-                    retrieval_score=rd["retrieval_score"],
-                    rerank_score=0.99,
-                    final_score=0.99,
-                )
-                for rd in ranked
-            ],
-        }
-
-    pipeline.rag_pipeline = type(
-        "R",
-        (),
-        {
-            "retrieve_node": staticmethod(retrieve_node),
-            "reranker_node": staticmethod(reranker_node),
-        },
-    )()
+    pipeline.rag_service = type("R", (), {"retrieve": staticmethod(retrieve)})()
     cases = [
         QATestCase("q0", "a0", "c0", "f", "s", "", [], {}),
         QATestCase("q1", "a1", "c1", "f", "s", "", [], {}),
@@ -896,64 +1194,105 @@ def test_run_retriever_pipeline_scores_and_errors() -> None:
     ]
     results = pipeline.run_retriever_pipeline(cases, sample_size=None)
     assert len(results) == 2
+    assert calls["n"] == len(cases)
     assert results[0].retrieval_scores == [0.99]
     assert results[0].test_case_id == 0
     assert results[1].question == "q2"
 
 
-def test_run_retriever_pipeline_uses_ranked_docs_final_score() -> None:
-    """``run_retriever_pipeline`` must read ``final_score`` from ``ranked_docs`` after rerank."""
+def test_run_retriever_pipeline_parallel_preserves_case_order() -> None:
     pipeline = _pipeline_without_init()
 
-    def retrieve_node(state):
-        return {
-            **state,
-            "ranked_docs": [
-                _ranked(
-                    Document("d", metadata={}),
-                    retrieval_score=0.42,
-                    final_score=0.42,
-                )
-            ],
-        }
+    def retrieve(request: RAGRequest) -> RAGRetrieveResponse:
+        assert request.allow_clarification is False
+        if request.query == "q0":
+            time.sleep(0.03)
+        return _retrieve_response(
+            request.query,
+            [_source(f"d-{request.query}", retrieval_score=0.5, final_score=0.5)],
+        )
 
-    def reranker_node(state):
-        # Rerank fallback path: keep ranked_docs untouched (final_score == retrieval_score).
-        return state
+    pipeline.rag_service = type("R", (), {"retrieve": staticmethod(retrieve)})()
+    cases = [
+        QATestCase("q0", "a0", "c0", "f", "s", "", [], {}),
+        QATestCase("q1", "a1", "c1", "f", "s", "", [], {}),
+        QATestCase("q2", "a2", "c2", "f", "s", "", [], {}),
+    ]
 
-    pipeline.rag_pipeline = type(
+    results = pipeline.run_retriever_pipeline(cases, workers=3)
+
+    assert [result.test_case_id for result in results] == [0, 1, 2]
+    assert [result.question for result in results] == ["q0", "q1", "q2"]
+
+
+def test_run_retriever_pipeline_rejects_non_positive_workers() -> None:
+    pipeline = _pipeline_without_init()
+
+    with pytest.raises(ValueError, match="positive integer"):
+        pipeline.run_retriever_pipeline([], workers=0)
+
+
+def test_run_retriever_pipeline_uses_ranked_docs_final_score() -> None:
+    """``run_retriever_pipeline`` must read ``score`` from ``RAGSource``."""
+    pipeline = _pipeline_without_init()
+
+    pipeline.rag_service = type(
         "R",
         (),
         {
-            "retrieve_node": staticmethod(retrieve_node),
-            "reranker_node": staticmethod(reranker_node),
+            "retrieve": staticmethod(
+                lambda request: _retrieve_response(
+                    request.query,
+                    [_source("d", retrieval_score=0.42, final_score=0.42)],
+                    retrieval_query="rewritten question",
+                    rewritten_queries=["rewritten question"],
+                    flags=RAGFlags(query_rewritten=True),
+                    context_relevance_score=0.7,
+                )
+            )
         },
     )()
     cases = [QATestCase("q", "a", "c", "f", "s", "", [], {})]
     results = pipeline.run_retriever_pipeline(cases)
     assert results[0].retrieval_scores == [0.42]
+    assert results[0].retrieval_query == "rewritten question"
+    assert results[0].rewritten_queries == ["rewritten question"]
+    assert results[0].rag_flags["query_rewritten"] is True
+    assert results[0].context_relevance_score == 0.7
 
 
 def test_run_full_evaluation_uses_ranked_docs_aligned_scores(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Full RAG path must record final scores aligned with the post-rerank doc order."""
+    """Full RAG path must record source scores aligned with source order."""
     pipeline = _pipeline_without_init()
     captured: dict[str, list[float]] = {}
 
-    def rag_run(question: str) -> dict:
-        d1 = Document(page_content=f"ctx1-{question}", metadata={})
-        d2 = Document(page_content=f"ctx2-{question}", metadata={})
-        return {
-            "ranked_docs": [
-                _ranked(d1, rank=1, retrieval_score=0.2, rerank_score=0.9, final_score=0.9),
-                _ranked(d2, rank=2, retrieval_score=0.1, rerank_score=0.5, final_score=0.5),
+    def rag_run(request: RAGRequest) -> RAGResponse:
+        assert request.allow_clarification is False
+        return _response(
+            request.query,
+            f"ans-{request.query}",
+            [
+                _source(
+                    f"ctx1-{request.query}",
+                    rank=1,
+                    retrieval_score=0.2,
+                    rerank_score=0.9,
+                    final_score=0.9,
+                ),
+                _source(
+                    f"ctx2-{request.query}",
+                    rank=2,
+                    retrieval_score=0.1,
+                    rerank_score=0.5,
+                    final_score=0.5,
+                ),
             ],
-            "answer": f"ans-{question}",
-        }
+        )
 
-    pipeline.rag_pipeline = type("R", (), {"run": staticmethod(rag_run)})()
+    pipeline.rag_service = type("R", (), {"run": staticmethod(rag_run)})()
     pipeline.load_test_cases = lambda _: [
         QATestCase("q1", "a1", "ctx1-q1", "factoid", "therapy", "", [], {})
     ]

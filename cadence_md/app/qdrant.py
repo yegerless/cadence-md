@@ -399,6 +399,7 @@ class QdrantManager:
             try:
                 section_dict = section.to_dict()
                 content = section_dict.pop("content")
+                section_dict["source_path"] = self._source_path_for_filename(section.filename)
                 doc = Document(page_content=content, metadata=section_dict)
                 documents.append(doc)
             except Exception as e:
@@ -423,6 +424,14 @@ class QdrantManager:
 
         logger.info(f"Split {len(sections)} sections into {len(chunks)} chunks")
         return chunks
+
+    def _source_path_for_filename(self, filename: str) -> str:
+        """Return corpus-root-relative source path for a parsed PDF filename."""
+        safe_filename = Path(filename).name
+        data_dir_name = Path(self.data_dir).name
+        if data_dir_name:
+            return str(Path(data_dir_name) / safe_filename)
+        return safe_filename
 
     def _index_chunks(self, pdf_dir: Path) -> None:
         """End-to-end path from PDFs to uploaded Qdrant points (dense + sparse in parallel)."""

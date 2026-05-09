@@ -1,0 +1,6 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cadence-md-config
+data:
+  MODEL_INFERENCE_BASE_URL: "http://inference-gateway:8080/v1"
