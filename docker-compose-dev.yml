@@ -250,6 +250,44 @@ services:
       start_period: 120s
     restart: unless-stopped
 
+  flower:
+    image: mher/flower:latest
+    command:
+      - sh
+      - -c
+      - >
+        celery --broker="$${CELERY_BROKER_URL}" flower --address=0.0.0.0
+        --port=5555 $${FLOWER_BASIC_AUTH:+--basic-auth="$${FLOWER_BASIC_AUTH}"}
+    environment:
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      FLOWER_BASIC_AUTH: ${FLOWER_BASIC_AUTH:-}
+    ports:
+      - 127.0.0.1:${FLOWER_PORT:-5555}:5555
+    networks:
+      - backend-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      rag-worker:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import base64, os, urllib.request; req =
+          urllib.request.Request(''http://localhost:5555/''); auth =
+          os.environ.get(''FLOWER_BASIC_AUTH'', '''');
+          req.add_header(''Authorization'', ''Basic '' +
+          base64.b64encode(auth.encode()).decode()) if auth else None;
+          urllib.request.urlopen(req, timeout=5).read()"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend
