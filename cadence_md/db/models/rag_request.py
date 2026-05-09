@@ -110,7 +110,7 @@ class RAGRequestLog(CreatedAtMixin, Base):
         uselist=False,
     )
     original_request: Mapped[RAGRequestLog | None] = relationship(
-        remote_side=[id],
+        remote_side=lambda: [RAGRequestLog.id],
         back_populates="retry_requests",
     )
     retry_requests: Mapped[list[RAGRequestLog]] = relationship(back_populates="original_request")

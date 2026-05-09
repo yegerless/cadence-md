@@ -132,7 +132,7 @@ async def integration_app(
     app = create_app()
     app.dependency_overrides[get_async_session] = override_session
     app.dependency_overrides[get_backend_settings] = lambda: integration_settings
-    app.dependency_overrides[get_rag_enqueue] = lambda: NoopRAGEnqueueService()
+    app.dependency_overrides[get_rag_enqueue] = NoopRAGEnqueueService
     app.state.settings = integration_settings
 
     yield app

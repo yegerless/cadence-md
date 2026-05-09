@@ -81,7 +81,7 @@ async def chat_app_bundle() -> AsyncIterator[ChatBundle]:
     app = create_app()
     app.dependency_overrides[get_async_session] = override_session
     app.dependency_overrides[get_backend_settings] = lambda: test_settings
-    app.dependency_overrides[get_rag_enqueue] = lambda: NoopRAGEnqueueService()
+    app.dependency_overrides[get_rag_enqueue] = NoopRAGEnqueueService
     app.state.settings = test_settings
 
     yield app, test_settings, session_factory
@@ -361,7 +361,7 @@ async def test_create_chat_message_returns_queued_and_enqueues(chat_app_bundle: 
         async def enqueue(self, request_id: uuid.UUID) -> None:
             enqueue_calls.append(request_id)
 
-    app.dependency_overrides[get_rag_enqueue] = lambda: RecordingEnqueue()
+    app.dependency_overrides[get_rag_enqueue] = RecordingEnqueue
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -402,8 +402,8 @@ async def test_create_chat_message_still_queues_when_rag_health_unavailable(
                 checks={"qdrant": HealthStatus.UNAVAILABLE},
             )
 
-    app.dependency_overrides[get_rag_enqueue] = lambda: RecordingEnqueue()
-    app.dependency_overrides[get_health_service] = lambda: UnreadyHealthService()
+    app.dependency_overrides[get_rag_enqueue] = RecordingEnqueue
+    app.dependency_overrides[get_health_service] = UnreadyHealthService
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -516,7 +516,7 @@ async def test_submit_clarification_requeues_and_enqueues(chat_app_bundle: ChatB
             enqueue_calls.append((request_id, task_id))
             return task_id or make_rag_task_id(request_id)
 
-    app.dependency_overrides[get_rag_enqueue] = lambda: RecordingEnqueue()
+    app.dependency_overrides[get_rag_enqueue] = RecordingEnqueue
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -602,7 +602,7 @@ async def test_submit_clarification_enqueue_error_keeps_answer(
             await repo.mark_awaiting_clarification(rid, question="Уточните?")
             await session.commit()
 
-        app.dependency_overrides[get_rag_enqueue] = lambda: FailingEnqueue()
+        app.dependency_overrides[get_rag_enqueue] = FailingEnqueue
         submitted = await client.post(
             f"/api/v1/chat/messages/{rid}/clarification",
             headers={"Authorization": f"Bearer {token}"},
@@ -737,7 +737,7 @@ async def test_retry_after_failed_creates_new_request(chat_app_bundle: ChatBundl
         async def enqueue(self, request_id: uuid.UUID) -> None:
             enqueue_calls.append(request_id)
 
-    app.dependency_overrides[get_rag_enqueue] = lambda: RecordingEnqueue()
+    app.dependency_overrides[get_rag_enqueue] = RecordingEnqueue
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -835,7 +835,7 @@ async def test_idempotency_returns_same_request_without_double_enqueue(
         async def enqueue(self, request_id: uuid.UUID) -> None:
             enqueue_calls.append(request_id)
 
-    app.dependency_overrides[get_rag_enqueue] = lambda: RecordingEnqueue()
+    app.dependency_overrides[get_rag_enqueue] = RecordingEnqueue
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
