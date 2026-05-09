@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-llm
+  labels:
+    app.kubernetes.io/name: cadence-md
+    app.kubernetes.io/component: vllm-llm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cadence-md
+      app.kubernetes.io/component: vllm-llm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cadence-md
+        app.kubernetes.io/component: vllm-llm
+    spec:
+      hostIPC: true
+      nodeSelector:
+        accelerator: nvidia-gpu
+      containers:
+        - name: vllm-llm
+          image: vllm/vllm-openai:latest
+          command:
+            - sh
+            - -c
+            - >
+              exec vllm serve "${VLLM_LLM_MODEL}" --host 0.0.0.0 --port 8080
+              --runner generate --served-model-name
+              "${VLLM_LLM_SERVED_MODEL_NAME}" --max-model-len
+              "${VLLM_LLM_MAX_MODEL_LEN}" --max-num-batched-tokens
+              "${VLLM_LLM_MAX_NUM_BATCHED_TOKENS}" --ubatch-size
+              "${VLLM_LLM_UBATCH_SIZE}" --gpu-memory-utilization
+              "${VLLM_LLM_GPU_MEMORY_UTILIZATION}" --api-key
+              "${MODEL_INFERENCE_API_KEY}" ${VLLM_LLM_EXTRA_ARGS}
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: vllm-config
+          env:
+            - name: HF_HOME
+              value: /root/.cache/huggingface
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cadence-md-secret
+                  key: HF_TOKEN
+            - name: MODEL_INFERENCE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cadence-md-secret
+                  key: MODEL_INFERENCE_API_KEY
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - >
+                  python3 -c "import os, urllib.request;
+                  req=urllib.request.Request('http://localhost:8080/v1/models',
+                  headers={'Authorization':'Bearer ' +
+                  os.environ.get('MODEL_INFERENCE_API_KEY','')});
+                  urllib.request.urlopen(req, timeout=5).read()"
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - >
+                  python3 -c "import os, urllib.request;
+                  req=urllib.request.Request('http://localhost:8080/v1/models',
+                  headers={'Authorization':'Bearer ' +
+                  os.environ.get('MODEL_INFERENCE_API_KEY','')});
+                  urllib.request.urlopen(req, timeout=5).read()"
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: vllm-cache
+              mountPath: /root/.cache/huggingface
+      volumes:
+        - name: vllm-cache
+          persistentVolumeClaim:
+            claimName: vllm-cache

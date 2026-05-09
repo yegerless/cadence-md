@@ -1,8 +1,8 @@
 # CADENCE-MD Deployment
 
-This guide describes production deployment for CADENCE-MD. The current
-production path is Docker Compose. Kubernetes deployment is intentionally left
-as a future section.
+This guide describes production deployment for CADENCE-MD. The repository ships
+two production deployment paths: Docker Compose for a single host and Kubernetes
+manifests under `infra/k8s/` for cluster deployments.
 
 Inference can run in two modes: an external OpenAI-compatible service, or the
 optional Docker Compose `inference` profile with vLLM containers on a Linux
@@ -343,5 +343,232 @@ backups.
 
 ## Kubernetes Deploy
 
-Planned. This section will describe manifests, secrets, ingress, persistent
-volumes, jobs for migrations and DVC corpus loading, and horizontal scaling.
+The Kubernetes manifests live in `infra/k8s/` and mirror the production Compose
+topology: a single public edge nginx, internal application and data services,
+Jobs for `dvc-pull` and database migrations, and optional in-cluster vLLM
+inference.
+
+### 1. Build And Push Images
+
+Build the three application images and push them to the registry your cluster
+can pull from:
+
+```bash
+docker build -f infra/docker/backend.Dockerfile \
+  -t <registry>/cadence-md-backend:<tag> .
+docker build -f infra/docker/rag-worker.Dockerfile \
+  -t <registry>/cadence-md-rag-worker:<tag> .
+docker build -f infra/docker/frontend.prod.Dockerfile \
+  --build-arg VITE_API_BASE_URL= \
+  -t <registry>/cadence-md-frontend:<tag> .
+
+docker push <registry>/cadence-md-backend:<tag>
+docker push <registry>/cadence-md-rag-worker:<tag>
+docker push <registry>/cadence-md-frontend:<tag>
+```
+
+Update `infra/k8s/overlays/prod/kustomization.yaml` with your registry and tag,
+or use `kustomize edit set image` from that directory.
+
+### 2. Prepare The Cluster
+
+Required cluster components:
+
+- A default `StorageClass` for PVCs, or explicit storage class patches.
+- An Ingress controller if you use `overlays/prod/ingress.yaml`.
+- DNS for the production hostname.
+- NVIDIA device plugin and GPU nodes only when using `overlays/inference`.
+
+The base manifests create namespace `cadence-md`. Review PVC sizes in
+`infra/k8s/base/storage/` and StatefulSet volume templates before applying them.
+The self-hosted Postgres, Redis, and Qdrant resources are a Compose-equivalent
+baseline. For a higher-availability production setup, use managed Postgres or
+Redis and replace `DATABASE_URL`, `REDIS_URL`, `CELERY_BROKER_URL`, and
+`CELERY_RESULT_BACKEND` in the secret/config instead of applying those
+StatefulSets.
+
+### 3. Create Secrets
+
+Create production secrets outside git. The expected keys are documented in
+`infra/k8s/base/secrets/README.md`:
+
+```bash
+kubectl apply -f infra/k8s/base/namespace.yaml
+
+kubectl -n cadence-md create secret generic cadence-md-secret \
+  --from-literal=POSTGRES_PASSWORD='<postgres-password>' \
+  --from-literal=DATABASE_URL='postgresql+asyncpg://cadence_md:<postgres-password>@postgres:5432/cadence_md' \
+  --from-literal=JWT_SECRET='<random-secret-at-least-32-characters>' \
+  --from-literal=QDRANT__SERVICE__API_KEY='<qdrant-api-key>' \
+  --from-literal=MODEL_INFERENCE_API_KEY='<inference-api-key>' \
+  --from-literal=S3_KEY_ID='<yandex-s3-access-key-id>' \
+  --from-literal=S3_KEY='<yandex-s3-secret-access-key>' \
+  --from-literal=GRAFANA_ADMIN_PASSWORD='<grafana-admin-password>' \
+  --from-literal=FLOWER_BASIC_AUTH='admin:<flower-password>' \
+  --from-literal=LANGFUSE_PUBLIC_KEY='' \
+  --from-literal=LANGFUSE_SECRET_KEY='' \
+  --from-literal=HF_TOKEN=''
+```
+
+For external inference, keep
+`MODEL_INFERENCE_BASE_URL=https://inference.example.com/v1` in
+`infra/k8s/base/configmaps/app-config.yaml` or patch it in your production
+overlay. The endpoint must expose `/v1/models`, `/v1/embeddings`, `/v1/rerank`,
+and `/v1/chat/completions` with model ids `bge-m3`, `bge-reranker-v2-m3`, and
+`medgemma`.
+
+### 4. Render And Apply
+
+Inspect the rendered manifests before applying:
+
+```bash
+kubectl kustomize infra/k8s/overlays/prod
+kubectl apply --dry-run=client -k infra/k8s/overlays/prod
+```
+
+Apply the persistent services first:
+
+```bash
+kubectl apply -k infra/k8s/overlays/prod
+kubectl -n cadence-md rollout status statefulset/postgres
+kubectl -n cadence-md rollout status statefulset/redis
+kubectl -n cadence-md rollout status statefulset/qdrant
+```
+
+The base overlay includes `dvc-pull` and `migrations` Jobs. Wait for both before
+expecting backend and worker readiness:
+
+```bash
+kubectl -n cadence-md wait --for=condition=complete job/dvc-pull --timeout=30m
+kubectl -n cadence-md wait --for=condition=complete job/migrations --timeout=10m
+kubectl -n cadence-md rollout status deployment/backend
+kubectl -n cadence-md rollout status deployment/rag-worker
+kubectl -n cadence-md rollout status deployment/frontend
+kubectl -n cadence-md rollout status deployment/nginx
+```
+
+If you need to rerun `dvc-pull` or `migrations`, delete the completed Job first
+and apply the overlay again:
+
+```bash
+kubectl -n cadence-md delete job dvc-pull migrations
+kubectl apply -k infra/k8s/overlays/prod
+```
+
+### 5. Optional In-Cluster vLLM
+
+Use `infra/k8s/overlays/inference` when the cluster has NVIDIA GPU nodes and you
+want Kubernetes to run vLLM. The overlay adds `vllm-embeddings`,
+`vllm-reranker`, `vllm-llm`, `inference-gateway`, a shared `vllm-cache` PVC, and
+patches `MODEL_INFERENCE_BASE_URL` to `http://inference-gateway:8080/v1`.
+
+Before applying it:
+
+- Install the NVIDIA device plugin.
+- Adjust `nodeSelector`, tolerations, GPU counts, and `VLLM_*` values in the
+  overlay.
+- Ensure the `vllm-cache` PVC access mode matches your storage backend. If
+  `ReadWriteMany` is unavailable, use separate cache PVCs or pin the workloads
+  to one node with storage that supports the chosen mode.
+- Set `HF_TOKEN` in `cadence-md-secret` when the model checkpoints require it.
+
+Render and apply:
+
+```bash
+kubectl kustomize infra/k8s/overlays/inference
+kubectl apply -k infra/k8s/overlays/inference
+kubectl -n cadence-md rollout status deployment/vllm-embeddings --timeout=30m
+kubectl -n cadence-md rollout status deployment/vllm-reranker --timeout=30m
+kubectl -n cadence-md rollout status deployment/vllm-llm --timeout=45m
+kubectl -n cadence-md rollout status deployment/inference-gateway
+```
+
+### 6. Health Checks
+
+Check the public edge:
+
+```bash
+curl -fsS "https://cadence.example.com/nginx-health"
+curl -fsS "https://cadence.example.com/api/v1/health/ready"
+curl -fsS "https://cadence.example.com/" >/dev/null
+```
+
+Check internal services:
+
+```bash
+kubectl -n cadence-md get pods
+kubectl -n cadence-md logs deployment/backend
+kubectl -n cadence-md logs deployment/rag-worker
+kubectl -n cadence-md port-forward svc/prometheus 9090:9090
+kubectl -n cadence-md port-forward svc/grafana 3000:3000
+kubectl -n cadence-md port-forward svc/flower 5555:5555
+```
+
+With in-cluster vLLM, verify the gateway from the namespace:
+
+```bash
+kubectl -n cadence-md run inference-smoke --rm -i --restart=Never \
+  --image=python:3.13-slim -- python -c \
+  "import urllib.request; print(urllib.request.urlopen('http://inference-gateway:8080/v1/models', timeout=5).read().decode())"
+```
+
+### 7. Scaling And Updates
+
+Scale stateless workloads through Deployments:
+
+```bash
+kubectl -n cadence-md scale deployment/backend --replicas=3
+kubectl -n cadence-md scale deployment/rag-worker --replicas=2
+kubectl -n cadence-md scale deployment/frontend --replicas=2
+kubectl -n cadence-md scale deployment/nginx --replicas=2
+```
+
+Do not scale the included single-node Postgres, Redis, or Qdrant manifests
+without replacing them with an HA design or managed services.
+
+Deploy a new application image:
+
+```bash
+cd infra/k8s/overlays/prod
+kustomize edit set image cadence-md-backend=<registry>/cadence-md-backend:<tag>
+kustomize edit set image cadence-md-rag-worker=<registry>/cadence-md-rag-worker:<tag>
+kustomize edit set image cadence-md-frontend=<registry>/cadence-md-frontend:<tag>
+cd -
+
+kubectl apply -k infra/k8s/overlays/prod
+kubectl -n cadence-md delete job migrations
+kubectl apply -k infra/k8s/overlays/prod
+kubectl -n cadence-md wait --for=condition=complete job/migrations --timeout=10m
+kubectl -n cadence-md rollout status deployment/backend
+kubectl -n cadence-md rollout status deployment/rag-worker
+kubectl -n cadence-md rollout status deployment/frontend
+```
+
+Rollback stateless workloads with Kubernetes rollout history:
+
+```bash
+kubectl -n cadence-md rollout undo deployment/backend
+kubectl -n cadence-md rollout undo deployment/rag-worker
+kubectl -n cadence-md rollout undo deployment/frontend
+```
+
+Database migrations are not automatically reversible. Review Alembic downgrade
+steps before rolling back across schema changes.
+
+### 8. Backups And Security
+
+Back up the Postgres PVC or use `pg_dump` from a trusted internal pod. Back up
+Qdrant storage and trigger Qdrant snapshots through the internal API using the
+API key from `cadence-md-secret`. The `rag-corpus` PVC can be recreated by the
+`dvc-pull` Job unless your operational policy requires volume-level backups.
+
+Security checklist:
+
+- Publish only the edge nginx Service through Ingress or a LoadBalancer.
+- Keep Postgres, Redis, Qdrant, backend, frontend, Prometheus, Grafana, and
+  Flower as private ClusterIP services unless protected by VPN or admin auth.
+- Terminate TLS at Ingress or an external load balancer.
+- Keep `LANGFUSE_TRACE_QUERY_MODE=redacted` unless full medical text tracing is
+  explicitly approved.
+- Store real secrets in a Kubernetes Secret manager integration when available;
+  do not commit generated Secret YAML.
