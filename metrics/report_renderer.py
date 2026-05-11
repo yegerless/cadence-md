@@ -55,6 +55,7 @@ def _render_run_section(*, manifest: dict[str, Any], mode: str) -> list[str]:
         f"- Timestamp (UTC): `{manifest['timestamp_utc']}`\n",
         f"- Dataset: `{manifest['paths']['dataset_file']}`\n",
         f"- Sample size: `{manifest['run_parameters']['sample_size']}`\n",
+        f"- Sample seed: `{manifest['run_parameters'].get('sample_seed')}`\n",
         f"- K: `{manifest['run_parameters']['k']}`\n",
     ]
 

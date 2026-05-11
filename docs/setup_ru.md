@@ -72,7 +72,7 @@ cp .env.example .env.dev
 | Observability | `LOG_*`, `PROMETHEUS_*`, `WORKER_METRICS_PORT`, `GRAFANA_*`                                                                                                    |
 | Langfuse      | `LANGFUSE_ENABLED`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`, `LANGFUSE_HOST`, `LANGFUSE_TRACE_QUERY_MODE`, `LANGFUSE_PROMPT_VERSION` |
 | Corpus/DVC    | `S3_KEY_ID`, `S3_KEY`, `RAG_CORPUS_DIR`, `RAG_CONFIG__QDRANT_CONFIG__DATA_DIR`                                                                                 |
-| QA generation | `GIGACHAT_API_KEY`, `GIGACHAT_MIN_INTERVAL_SEC`                                                                                                                |
+| QA generation | `GIGACHAT_API_KEY`, `GIGACHAT_MIN_INTERVAL_SEC`, `GIGACHAT_EMBEDDINGS_MAX_*`                                                                                   |
 | Frontend      | `FRONTEND_PORT`, `VITE_API_BASE_URL`, `VITE_API_PROXY_TARGET`                                                                                                  |
 
 Langfuse выключен по умолчанию. Если включаете его, храните реальные ключи

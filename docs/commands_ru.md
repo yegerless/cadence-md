@@ -85,24 +85,28 @@ JSONL, сгенерированные пары, неудачные секции 
 | `--dataset-file`                                                           | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | QA JSONL-файл для оценки.                                                |
 | `--output-dir`                                                             | `metrics/results/`                                  | Директория для артефактов прогона.                                       |
 | `--sample-size`                                                            | нет                                                 | Опциональное ограничение числа тест-кейсов.                              |
+| `--seed`                                                                   | нет                                                 | Опциональный seed для воспроизводимой выборки `--sample-size`.           |
 | `--k`                                                                      | `5`                                                 | K для recall@K и precision@K.                                            |
 | `--enable-text-matcher-metrics`                                            | выкл.                                               | Дополнительно считать диагностические `text_match_*` метрики.            |
 | `--enable-query-rewriter` / `--disable-query-rewriter`                     | settings default                                    | Переопределить optional query rewriting для этого metrics run.           |
 | `--enable-context-relevance-grader` / `--disable-context-relevance-grader` | settings default                                    | Переопределить optional context relevance grading для этого metrics run. |
 | `--enable-answer-formatter` / `--disable-answer-formatter`                 | settings default                                    | Переопределить optional answer formatting для этого metrics run.         |
+| `--enable-output-guardrails` / `--disable-output-guardrails`               | settings default                                    | Переопределить optional output guardrails для этого metrics run.         |
 | `--enable-query-clarification` / `--disable-query-clarification`           | settings default                                    | Переопределить optional query clarification для этого metrics run.       |
 | `--max-query-rewrite-iterations`                                           | settings default                                    | Переопределить максимум context relevance rewrite iterations.            |
 
 Пример:
 
 ```bash
-poetry run python commands.py metrics-eval-full --sample-size 20
+poetry run python commands.py metrics-eval-full --sample-size 20 --seed 42
 ```
 
 Команде нужны запущенный Qdrant, проиндексированный корпус и доступный
 OpenAI-compatible inference server. Offline metrics runs передают в RAG service
 `allow_clarification=false`, чтобы batch-оценка не останавливалась в ожидании
-ответа человека.
+ответа человека. GigaChat embeddings для RAGAS ограничиваются
+`GIGACHAT_EMBEDDINGS_MAX_TEXT_CHARS` и `GIGACHAT_EMBEDDINGS_MAX_BATCH_CHARS`,
+чтобы длинные контексты или ответы не падали с oversized payload.
 
 ## `metrics-eval-retriever`
 
@@ -114,19 +118,25 @@ OpenAI-compatible inference server. Offline metrics runs передают в RAG
 | `--dataset-file`                                                           | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | QA JSONL-файл для оценки.                                                |
 | `--output-dir`                                                             | `metrics/results/`                                  | Директория для артефактов прогона.                                       |
 | `--sample-size`                                                            | нет                                                 | Опциональное ограничение числа тест-кейсов.                              |
+| `--seed`                                                                   | нет                                                 | Опциональный seed для воспроизводимой выборки `--sample-size`.           |
 | `--k`                                                                      | pipeline default                                    | K для recall@K и precision@K.                                            |
 | `--workers`                                                                | `1`                                                 | Параллельные потоки для независимых retrieve + rerank кейсов.            |
 | `--enable-text-matcher-metrics`                                            | выкл.                                               | Дополнительно считать диагностические `text_match_*` метрики.            |
 | `--enable-query-rewriter` / `--disable-query-rewriter`                     | settings default                                    | Переопределить optional query rewriting для этого metrics run.           |
 | `--enable-context-relevance-grader` / `--disable-context-relevance-grader` | settings default                                    | Переопределить optional context relevance grading для этого metrics run. |
 | `--enable-answer-formatter` / `--disable-answer-formatter`                 | settings default                                    | Переопределить optional answer formatting для этого metrics run.         |
+| `--enable-output-guardrails` / `--disable-output-guardrails`               | settings default                                    | Переопределить optional output guardrails для этого metrics run.         |
 | `--enable-query-clarification` / `--disable-query-clarification`           | settings default                                    | Переопределить optional query clarification для этого metrics run.       |
 | `--max-query-rewrite-iterations`                                           | settings default                                    | Переопределить максимум context relevance rewrite iterations.            |
 
 Пример:
 
 ```bash
-poetry run python commands.py metrics-eval-retriever --k 5 --workers 4
+poetry run python commands.py metrics-eval-retriever \
+  --sample-size 100 \
+  --seed 42 \
+  --k 5 \
+  --workers 4
 ```
 
 ## Артефакты metrics
@@ -154,4 +164,6 @@ metadata нужно заново сгенерировать QA-датасет и
 
 Артефакты прогона содержат effective optional-node profile и additive latency
 fields, если они есть: `query_rewrite`, `qdrant`, `rerank`, `context_relevance`,
-`llm`, `answer_format` и `total_ms`.
+`llm`, `answer_format` и `total_ms`. Если передан `--seed`, `run_manifest.json`
+и `report.md` сохраняют его как `sample_seed`, чтобы сэмплированный прогон можно
+было повторить.

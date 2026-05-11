@@ -127,6 +127,69 @@ async def _retry_async[T](
 
 
 GIGACHAT_API_THROTTLE = GigaChatApiThrottle(GIGACHAT_MIN_INTERVAL_SEC)
+GIGACHAT_EMBEDDINGS_MAX_TEXT_CHARS = metrics_settings.GIGACHAT_EMBEDDINGS_MAX_TEXT_CHARS
+GIGACHAT_EMBEDDINGS_MAX_BATCH_CHARS = metrics_settings.GIGACHAT_EMBEDDINGS_MAX_BATCH_CHARS
+EMBEDDING_TRUNCATION_SUFFIX = "\n[...truncated]"
+
+
+def _truncate_embedding_text(text: str, max_chars: int) -> str:
+    """
+    Trim a text before sending it to GigaChat embeddings.
+
+    Args:
+        text: Text to trim
+        max_chars: Maximum allowed characters
+    Returns:
+        Text that fits within the configured limit
+    """
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= len(EMBEDDING_TRUNCATION_SUFFIX):
+        return text[:max_chars]
+    prefix_limit = max_chars - len(EMBEDDING_TRUNCATION_SUFFIX)
+    return text[:prefix_limit].rstrip() + EMBEDDING_TRUNCATION_SUFFIX
+
+
+def _embedding_text_batches(
+    texts: list[str],
+    *,
+    max_text_chars: int | None = None,
+    max_batch_chars: int | None = None,
+) -> list[list[str]]:
+    """
+    Build small embeddings batches to avoid GigaChat 413 payload errors.
+
+    Args:
+        texts: Texts to send to embeddings
+        max_text_chars: Optional per-text character limit
+        max_batch_chars: Optional per-request character limit
+    Returns:
+        Ordered batches of trimmed texts
+    """
+    resolved_batch_chars = max_batch_chars or GIGACHAT_EMBEDDINGS_MAX_BATCH_CHARS
+    resolved_text_chars = min(
+        max_text_chars or GIGACHAT_EMBEDDINGS_MAX_TEXT_CHARS,
+        resolved_batch_chars,
+    )
+
+    batches: list[list[str]] = []
+    current_batch: list[str] = []
+    current_chars = 0
+
+    for text in texts:
+        trimmed_text = _truncate_embedding_text(text, resolved_text_chars)
+        text_chars = len(trimmed_text)
+        if current_batch and current_chars + text_chars > resolved_batch_chars:
+            batches.append(current_batch)
+            current_batch = []
+            current_chars = 0
+        current_batch.append(trimmed_text)
+        current_chars += text_chars
+
+    if current_batch:
+        batches.append(current_batch)
+
+    return batches
 
 
 class ThrottledGigaChat(GigaChat):
@@ -230,13 +293,28 @@ class ThrottledGigaChatEmbeddings(GigaChatEmbeddings):
         Returns:
             Embeddings for the texts
         """
-        GIGACHAT_API_THROTTLE.wait()
+        embeddings: list[list[float]] = []
+        for batch in _embedding_text_batches(texts):
+            GIGACHAT_API_THROTTLE.wait()
 
-        # Call the parent class to embed the texts
-        def _call() -> list[list[float]]:
-            return super(ThrottledGigaChatEmbeddings, self).embed_documents(texts)
+            # Call the parent class to embed the texts
+            def _call(batch_: list[str] = batch) -> list[list[float]]:
+                return super(ThrottledGigaChatEmbeddings, self).embed_documents(batch_)
 
-        return _retry_sync(_call, logger_=logger)
+            embeddings.extend(_retry_sync(_call, logger_=logger))
+
+        return embeddings
+
+    def embed_query(self, text: str) -> list[float]:
+        """
+        Embed one query text using the same size limits as document embeddings.
+
+        Args:
+            text: Query text to embed
+        Returns:
+            Embedding for the query text
+        """
+        return self.embed_documents([text])[0]
 
     async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
         """
@@ -247,10 +325,26 @@ class ThrottledGigaChatEmbeddings(GigaChatEmbeddings):
         Returns:
             Embeddings for the texts
         """
-        await asyncio.to_thread(GIGACHAT_API_THROTTLE.wait)
+        embeddings: list[list[float]] = []
+        for batch in _embedding_text_batches(texts):
+            await asyncio.to_thread(GIGACHAT_API_THROTTLE.wait)
 
-        # Call the parent class to embed the texts asynchronously
-        async def _call() -> list[list[float]]:
-            return await super(ThrottledGigaChatEmbeddings, self).aembed_documents(texts)
+            # Call the parent class to embed the texts asynchronously
+            async def _call(batch_: list[str] = batch) -> list[list[float]]:
+                return await super(ThrottledGigaChatEmbeddings, self).aembed_documents(batch_)
 
-        return await _retry_async(_call, logger_=logger)
+            embeddings.extend(await _retry_async(_call, logger_=logger))
+
+        return embeddings
+
+    async def aembed_query(self, text: str) -> list[float]:
+        """
+        Embed one query text asynchronously using the same size limits.
+
+        Args:
+            text: Query text to embed
+        Returns:
+            Embedding for the query text
+        """
+        embeddings = await self.aembed_documents([text])
+        return embeddings[0]

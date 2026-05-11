@@ -29,6 +29,7 @@ from cadence_md.app.rag import (
 )
 from cadence_md.app.reranker import RerankerAPIError, RerankerWrapper
 from cadence_md.app.settings import RAGOptionalNodesConfig, settings
+from cadence_md.observability.settings import observability_settings
 
 
 def _minimal_qdrant_manager() -> QdrantManager:
@@ -48,6 +49,12 @@ def _optional_nodes_disabled() -> RAGOptionalNodesConfig:
         enable_answer_formatter=False,
         enable_output_guardrails=False,
     )
+
+
+@pytest.fixture
+def enable_prometheus_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Enable Prometheus for tests that assert emitted metric samples."""
+    monkeypatch.setattr(observability_settings, "PROMETHEUS_ENABLED", True)
 
 
 def _make_state(**overrides: Any) -> RAGState:
@@ -230,7 +237,9 @@ def test_retrieve_node_calls_qdrant_and_sets_latency() -> None:
     assert out["ranked_docs"][0]["final_score"] == 0.42
 
 
-def test_retrieve_node_graceful_fallback_on_qdrant_error() -> None:
+def test_retrieve_node_graceful_fallback_on_qdrant_error(
+    enable_prometheus_metrics: None,
+) -> None:
     llm = MagicMock()
     reranker = MagicMock(spec=RerankerWrapper)
     qm = _minimal_qdrant_manager()
@@ -599,7 +608,9 @@ def test_disabled_query_rewrite_preserves_retrieval_query_for_guardrail_retry() 
     assert out["output_guardrail_should_retry"] is False
 
 
-def test_query_rewrite_node_clarification_stop_state() -> None:
+def test_query_rewrite_node_clarification_stop_state(
+    enable_prometheus_metrics: None,
+) -> None:
     llm = MagicMock()
     llm.invoke_messages.return_value = (
         '{"action":"clarify","rewritten_query":"","clarification_question":'
@@ -655,7 +666,9 @@ def test_query_rewrite_node_disallows_repeated_clarification() -> None:
     assert out["retrieval_query"] == "q"
 
 
-def test_query_rewrite_node_fallback_on_invalid_json() -> None:
+def test_query_rewrite_node_fallback_on_invalid_json(
+    enable_prometheus_metrics: None,
+) -> None:
     llm = MagicMock()
     llm.invoke_messages.return_value = "not json"
     reranker = MagicMock(spec=RerankerWrapper)

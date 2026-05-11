@@ -199,6 +199,7 @@ class RAGEvaluationPipeline:
         self,
         test_cases: list[QATestCase],
         sample_size: int | None = None,
+        sample_seed: int | None = None,
     ) -> list[RAGTestResult]:
         """
         Running the RAG pipeline for all test cases
@@ -206,14 +207,16 @@ class RAGEvaluationPipeline:
         Args:
             test_cases: List of test cases
             sample_size: Number of test cases to sample
+            sample_seed: Optional random seed for reproducible sampling
         Returns:
             List of RAG test results
         """
 
         # If sample size is provided, sample the test cases
         if sample_size and sample_size < len(test_cases):
-            test_cases = random.sample(test_cases, sample_size)
-            logger.info(f"A sample of {sample_size} cases is used")
+            rng = random.Random(sample_seed) if sample_seed is not None else random
+            test_cases = rng.sample(test_cases, sample_size)
+            logger.info("A sample of %s cases is used (seed=%s)", sample_size, sample_seed)
 
         results: list[RAGTestResult] = []
 
@@ -255,6 +258,7 @@ class RAGEvaluationPipeline:
         self,
         test_cases: list[QATestCase],
         sample_size: int | None = None,
+        sample_seed: int | None = None,
         workers: int = 1,
     ) -> list[RAGTestResult]:
         """
@@ -263,6 +267,7 @@ class RAGEvaluationPipeline:
         Args:
             test_cases: List of test cases
             sample_size: Number of test cases to sample
+            sample_seed: Optional random seed for reproducible sampling
             workers: Number of parallel worker threads for independent retriever cases
         Returns:
             List of RAG test results
@@ -272,8 +277,9 @@ class RAGEvaluationPipeline:
 
         # If sample size is provided, sample the test cases
         if sample_size and sample_size < len(test_cases):
-            test_cases = random.sample(test_cases, sample_size)
-            logger.info(f"A sample of {sample_size} cases is used")
+            rng = random.Random(sample_seed) if sample_seed is not None else random
+            test_cases = rng.sample(test_cases, sample_size)
+            logger.info("A sample of %s cases is used (seed=%s)", sample_size, sample_seed)
 
         logger.info(
             "Running retriever (retrieve + rerank) for %s cases with %s worker(s)...",
@@ -638,6 +644,7 @@ class RAGEvaluationPipeline:
         dataset_file: Path,
         output_dir: Path,
         sample_size: int | None = None,
+        sample_seed: int | None = None,
         k: int | None = None,
         enable_text_matcher_metrics: bool = False,
         workers: int = 1,
@@ -649,6 +656,7 @@ class RAGEvaluationPipeline:
             dataset_file: Path to the dataset file
             output_dir: Path to the output directory
             sample_size: Number of test cases to sample
+            sample_seed: Optional random seed for reproducible sampling
             k: Number of retrieved documents to evaluate
             enable_text_matcher_metrics: Whether to enable text matcher metrics
             workers: Number of parallel worker threads for independent retriever cases
@@ -658,7 +666,12 @@ class RAGEvaluationPipeline:
         logger.info("Starting retriever-only evaluation...")
 
         test_cases = self.load_test_cases(dataset_file)
-        results = self.run_retriever_pipeline(test_cases, sample_size, workers=workers)
+        results = self.run_retriever_pipeline(
+            test_cases,
+            sample_size,
+            sample_seed=sample_seed,
+            workers=workers,
+        )
         retrieval_metrics = self.calculate_retrieval_metrics(results, k=k)
         resolved_k = int(retrieval_metrics.get("k", settings.rag_config.retrieval.dense_top_k))
         text_match_retrieval_metrics = (
@@ -684,6 +697,7 @@ class RAGEvaluationPipeline:
             run_dir=run_dir,
             dataset_file=dataset_file,
             sample_size=sample_size,
+            sample_seed=sample_seed,
             k=resolved_k,
             ragas_metric_names=[metric.name for metric in self.ragas_metrics],
             enable_text_matcher_metrics=enable_text_matcher_metrics,
@@ -774,6 +788,7 @@ class RAGEvaluationPipeline:
         dataset_file: Path,
         output_dir: Path,
         sample_size: int | None = None,
+        sample_seed: int | None = None,
         k: int = 5,
         enable_text_matcher_metrics: bool = False,
     ) -> tuple[pd.DataFrame, dict[str, float | int]]:
@@ -784,6 +799,7 @@ class RAGEvaluationPipeline:
             dataset_file: Path to the dataset file
             output_dir: Path to the output directory
             sample_size: Number of test cases to sample
+            sample_seed: Optional random seed for reproducible sampling
             k: Number of retrieved documents to evaluate
             enable_text_matcher_metrics: Whether to enable text matcher metrics
         Returns:
@@ -795,8 +811,9 @@ class RAGEvaluationPipeline:
         # Loading test cases
         test_cases = self.load_test_cases(dataset_file)
         if sample_size and sample_size < len(test_cases):
-            test_cases = random.sample(test_cases, sample_size)
-            logger.info("A sample of %s cases is used", sample_size)
+            rng = random.Random(sample_seed) if sample_seed is not None else random
+            test_cases = rng.sample(test_cases, sample_size)
+            logger.info("A sample of %s cases is used (seed=%s)", sample_size, sample_seed)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         run_dir, run_id, timestamp_iso = build_run_directory(output_dir=output_dir, mode="full")
@@ -808,6 +825,7 @@ class RAGEvaluationPipeline:
             run_dir=run_dir,
             dataset_file=dataset_file,
             sample_size=sample_size,
+            sample_seed=sample_seed,
             k=k,
             ragas_metric_names=[metric.name for metric in self.ragas_metrics],
             enable_text_matcher_metrics=enable_text_matcher_metrics,

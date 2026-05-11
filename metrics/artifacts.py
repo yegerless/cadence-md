@@ -113,6 +113,7 @@ def create_run_manifest(
     sample_size: int | None,
     k: int | None,
     ragas_metric_names: list[str],
+    sample_seed: int | None = None,
     enable_text_matcher_metrics: bool = False,
     workers: int | None = None,
     rag_optional_nodes_config: dict[str, Any] | None = None,
@@ -130,6 +131,7 @@ def create_run_manifest(
         sample_size: Number of test cases to evaluate
         k: Number of retrieved documents to evaluate
         ragas_metric_names: List of RAGAS metric names to evaluate
+        sample_seed: Random seed used for sampling, when provided
         enable_text_matcher_metrics: Whether to enable text matcher metrics
         workers: Number of parallel retriever workers, when applicable
         rag_optional_nodes_config: Effective optional RAG node settings, when overridden
@@ -160,6 +162,7 @@ def create_run_manifest(
 
     run_parameters: dict[str, Any] = {
         "sample_size": sample_size,
+        "sample_seed": sample_seed,
         "k": k,
         "enable_text_matcher_metrics": enable_text_matcher_metrics,
     }
@@ -184,6 +187,12 @@ def create_run_manifest(
         "evaluation_config": {
             "ragas_metrics": ragas_metric_names,
             "gigachat_min_interval_sec": metrics_settings.GIGACHAT_MIN_INTERVAL_SEC,
+            "gigachat_embeddings_max_text_chars": (
+                metrics_settings.GIGACHAT_EMBEDDINGS_MAX_TEXT_CHARS
+            ),
+            "gigachat_embeddings_max_batch_chars": (
+                metrics_settings.GIGACHAT_EMBEDDINGS_MAX_BATCH_CHARS
+            ),
         },
     }
 

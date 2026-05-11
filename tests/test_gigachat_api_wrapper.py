@@ -10,9 +10,11 @@ from gigachat.exceptions import ResponseError
 
 from metrics.gigachat_api_wrapper import (
     GigaChatApiThrottle,
+    _embedding_text_batches,
     _is_gigachat_rate_limit,
     _retry_async,
     _retry_sync,
+    _truncate_embedding_text,
 )
 
 
@@ -44,6 +46,25 @@ def test_gigachat_api_throttle_second_wait_blocks(monkeypatch: pytest.MonkeyPatc
     throttle.wait()
     assert sleeps, "second wait() should sleep to respect min interval"
     assert sleeps[0] > 0
+
+
+def test_truncate_embedding_text_keeps_payload_under_limit() -> None:
+    text = "x" * 80
+
+    trimmed = _truncate_embedding_text(text, max_chars=20)
+
+    assert len(trimmed) <= 20
+    assert trimmed.endswith("[...truncated]")
+
+
+def test_embedding_text_batches_trim_and_split_by_total_chars() -> None:
+    batches = _embedding_text_batches(
+        ["a" * 12, "b" * 8, "ccc"],
+        max_text_chars=5,
+        max_batch_chars=10,
+    )
+
+    assert batches == [["a" * 5, "b" * 5], ["ccc"]]
 
 
 def test_retry_sync_returns_without_retry() -> None:

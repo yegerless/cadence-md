@@ -199,6 +199,12 @@ def build_project_cli_parser() -> argparse.ArgumentParser:
         help="Optional cap on number of test cases",
     )
     metrics_full.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional random seed for reproducible sampling",
+    )
+    metrics_full.add_argument(
         "--k",
         type=_positive_int,
         default=5,
@@ -233,6 +239,12 @@ def build_project_cli_parser() -> argparse.ArgumentParser:
         type=_positive_int,
         default=None,
         help="Optional cap on number of test cases",
+    )
+    metrics_ret.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional random seed for reproducible sampling",
     )
     metrics_ret.add_argument(
         "--k",
@@ -347,6 +359,7 @@ def main() -> None:
                 dataset_file=args.dataset_file,
                 output_dir=args.output_dir,
                 sample_size=args.sample_size,
+                sample_seed=args.seed,
                 k=args.k,
                 enable_text_matcher_metrics=args.enable_text_matcher_metrics,
             )
@@ -355,6 +368,7 @@ def main() -> None:
                 dataset_file=args.dataset_file,
                 output_dir=args.output_dir,
                 sample_size=args.sample_size,
+                sample_seed=args.seed,
                 k=args.k,
                 enable_text_matcher_metrics=args.enable_text_matcher_metrics,
                 workers=args.workers,

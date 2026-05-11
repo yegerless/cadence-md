@@ -1,4 +1,5 @@
 import json
+import random
 import sys
 import time
 from pathlib import Path
@@ -274,6 +275,8 @@ def test_metrics_parser_accepts_valid_full_args(tmp_path: Path) -> None:
             str(tmp_path),
             "--sample-size",
             "10",
+            "--seed",
+            "123",
             "--k",
             "7",
             "--enable-text-matcher-metrics",
@@ -288,6 +291,7 @@ def test_metrics_parser_accepts_valid_full_args(tmp_path: Path) -> None:
     )
     assert args.command == "metrics-eval-full"
     assert args.sample_size == 10
+    assert args.seed == 123
     assert args.k == 7
     assert args.enable_text_matcher_metrics is True
     assert args.enable_query_rewriter is False
@@ -307,6 +311,10 @@ def test_metrics_parser_accepts_retriever_workers(tmp_path: Path) -> None:
             "data/metrics_evaluation_datasets/qa_dataset.jsonl",
             "--output-dir",
             str(tmp_path),
+            "--sample-size",
+            "5",
+            "--seed",
+            "321",
             "--workers",
             "4",
             "--enable-query-rewriter",
@@ -317,6 +325,8 @@ def test_metrics_parser_accepts_retriever_workers(tmp_path: Path) -> None:
     )
 
     assert args.command == "metrics-eval-retriever"
+    assert args.sample_size == 5
+    assert args.seed == 321
     assert args.workers == 4
     assert args.enable_query_rewriter is True
     assert args.enable_context_relevance_grader is False
@@ -392,6 +402,7 @@ def test_metrics_help_contains_new_flags_and_omits_old_flags(
         assert "--disable-output-guardrails" in help_text
         assert "--enable-query-clarification" in help_text
         assert "--disable-query-clarification" in help_text
+        assert "--seed" in help_text
         assert "--max-query-rewrite-iterations" in help_text
         assert "--max-output-guardrail-iterations" not in help_text
         assert "--disable-rag-query-rewriter" not in help_text
@@ -476,6 +487,8 @@ def test_commands_main_passes_optional_node_overrides(
             "metrics-eval-full",
             "--output-dir",
             str(tmp_path),
+            "--seed",
+            "77",
             "--disable-query-rewriter",
             "--enable-query-clarification",
             "--max-query-rewrite-iterations",
@@ -490,6 +503,7 @@ def test_commands_main_passes_optional_node_overrides(
         "enable_query_clarification": True,
         "max_query_rewrite_iterations": 2,
     }
+    assert captured["run_kwargs"]["sample_seed"] == 77
 
 
 def test_commands_main_passes_only_output_guardrails_override(
@@ -528,6 +542,52 @@ def test_commands_main_passes_only_output_guardrails_override(
     commands_main()
 
     assert captured["overrides"] == {"enable_output_guardrails": False}
+
+
+def test_commands_main_passes_retriever_sample_seed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeEvaluationPipeline:
+        def run_retriever_evaluation(self, **kwargs: object) -> None:
+            captured["run_kwargs"] = kwargs
+
+    def fake_build_evaluation_pipeline(
+        *,
+        optional_nodes_overrides: dict[str, bool | int],
+    ) -> FakeEvaluationPipeline:
+        captured["overrides"] = optional_nodes_overrides
+        return FakeEvaluationPipeline()
+
+    monkeypatch.setattr(
+        "metrics.main.build_evaluation_pipeline",
+        fake_build_evaluation_pipeline,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "commands.py",
+            "metrics-eval-retriever",
+            "--output-dir",
+            str(tmp_path),
+            "--sample-size",
+            "3",
+            "--seed",
+            "99",
+            "--workers",
+            "2",
+        ],
+    )
+
+    commands_main()
+
+    assert captured["overrides"] == {}
+    assert captured["run_kwargs"]["sample_size"] == 3
+    assert captured["run_kwargs"]["sample_seed"] == 99
+    assert captured["run_kwargs"]["workers"] == 2
 
 
 def test_run_full_evaluation_writes_run_artifacts(
@@ -609,6 +669,69 @@ def test_run_full_evaluation_writes_run_artifacts(
     assert "Run ID" in report_text
     assert "## Retriever Metrics" in report_text
     assert "## Artifacts" in report_text
+
+
+def test_run_full_evaluation_uses_sample_seed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = _pipeline_without_init()
+    selected_questions: list[str] = []
+
+    def rag_run(request: RAGRequest) -> RAGResponse:
+        selected_questions.append(request.query)
+        return _response(
+            request.query,
+            f"ans-{request.query}",
+            [
+                _source(
+                    f"ctx-{request.query}",
+                    retrieval_score=0.9,
+                    rerank_score=0.9,
+                    final_score=0.9,
+                )
+            ],
+        )
+
+    pipeline.rag_service = type("FakeRagService", (), {"run": staticmethod(rag_run)})()
+    test_cases = [
+        QATestCase(f"q{i}", f"a{i}", "ctx", "factoid", "therapy", "", [], {}) for i in range(6)
+    ]
+    pipeline.load_test_cases = lambda _: test_cases
+    pipeline.evaluate_with_ragas = lambda results: pd.DataFrame(
+        [
+            {
+                "faithfulness": 1.0,
+                "question_type": result.question_type,
+                "section_type": result.section_type,
+                "test_case_id": result.test_case_id,
+            }
+            for result in results
+        ]
+    )
+    pipeline.calculate_retrieval_metrics = lambda *_args, **_kwargs: {
+        "hit_rate": 1.0,
+        "mrr": 1.0,
+        "avg_score": 0.9,
+        "recall_at_k": 1.0,
+        "precision_at_k": 1.0,
+        "k": 5,
+    }
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", lambda self, path, index=False: path.touch())
+
+    pipeline.run_full_evaluation(
+        dataset_file=Path("ignored.jsonl"),
+        output_dir=tmp_path,
+        sample_size=2,
+        sample_seed=17,
+        k=5,
+    )
+
+    expected_questions = [case.question for case in random.Random(17).sample(test_cases, 2)]
+    assert selected_questions == expected_questions
+    run_dir = next(path for path in tmp_path.iterdir() if path.is_dir())
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["run_parameters"]["sample_seed"] == 17
 
 
 def test_run_full_evaluation_ignores_non_numeric_ragas_columns(
@@ -824,15 +947,17 @@ def test_run_full_evaluation_tracks_rag_and_ragas_failures(
 
 def test_run_retriever_evaluation_writes_artifacts(tmp_path: Path) -> None:
     pipeline = _pipeline_without_init()
-    captured: dict[str, int] = {}
+    captured: dict[str, int | None] = {}
 
     def run_retriever_pipeline(
         _test_cases: list[QATestCase],
         _sample_size: int | None,
         *,
+        sample_seed: int | None = None,
         workers: int = 1,
     ) -> list[RAGTestResult]:
         captured["workers"] = workers
+        captured["sample_seed"] = sample_seed
         return [
             RAGTestResult(
                 question="q",
@@ -868,6 +993,7 @@ def test_run_retriever_evaluation_writes_artifacts(tmp_path: Path) -> None:
         dataset_file=Path("ignored.jsonl"),
         output_dir=tmp_path,
         sample_size=None,
+        sample_seed=23,
         k=5,
         workers=3,
     )
@@ -875,10 +1001,12 @@ def test_run_retriever_evaluation_writes_artifacts(tmp_path: Path) -> None:
     run_dir = next(path for path in tmp_path.iterdir() if path.is_dir())
     manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["run_parameters"]["workers"] == 3
+    assert manifest["run_parameters"]["sample_seed"] == 23
     assert manifest["rag_graph_profile"]["mode"] == "retriever"
     assert "answer_formatter" in manifest["rag_graph_profile"]["inactive_configured_nodes"]
     assert "output_guardrails" in manifest["rag_graph_profile"]["inactive_configured_nodes"]
     assert captured["workers"] == 3
+    assert captured["sample_seed"] == 23
     assert (run_dir / "run_manifest.json").exists()
     assert (run_dir / "retrieval_cases.jsonl").exists()
     retrieval_case = json.loads(
@@ -1172,6 +1300,28 @@ def test_run_rag_pipeline_sample_and_error_skips(
     assert results[1].question == "q2"
 
 
+def test_run_rag_pipeline_uses_sample_seed() -> None:
+    pipeline = _pipeline_without_init()
+    selected_questions: list[str] = []
+
+    def rag_run(request: RAGRequest) -> RAGResponse:
+        selected_questions.append(request.query)
+        return _response(
+            request.query,
+            f"a-{request.query}",
+            [_source(request.query, retrieval_score=0.5, rerank_score=0.5, final_score=0.5)],
+        )
+
+    pipeline.rag_service = type("R", (), {"run": staticmethod(rag_run)})()
+    cases = [QATestCase(f"q{i}", f"a{i}", "c", "f", "s", "", [], {}) for i in range(8)]
+
+    results = pipeline.run_rag_pipeline(cases, sample_size=3, sample_seed=31)
+
+    expected_questions = [case.question for case in random.Random(31).sample(cases, 3)]
+    assert selected_questions == expected_questions
+    assert [result.question for result in results] == expected_questions
+
+
 def test_run_retriever_pipeline_scores_and_errors() -> None:
     pipeline = _pipeline_without_init()
     calls = {"n": 0}
@@ -1198,6 +1348,25 @@ def test_run_retriever_pipeline_scores_and_errors() -> None:
     assert results[0].retrieval_scores == [0.99]
     assert results[0].test_case_id == 0
     assert results[1].question == "q2"
+
+
+def test_run_retriever_pipeline_uses_sample_seed() -> None:
+    pipeline = _pipeline_without_init()
+
+    def retrieve(request: RAGRequest) -> RAGRetrieveResponse:
+        assert request.allow_clarification is False
+        return _retrieve_response(
+            request.query,
+            [_source(f"d-{request.query}", retrieval_score=0.5, final_score=0.5)],
+        )
+
+    pipeline.rag_service = type("R", (), {"retrieve": staticmethod(retrieve)})()
+    cases = [QATestCase(f"q{i}", f"a{i}", "c", "f", "s", "", [], {}) for i in range(8)]
+
+    results = pipeline.run_retriever_pipeline(cases, sample_size=3, sample_seed=31)
+
+    expected_questions = [case.question for case in random.Random(31).sample(cases, 3)]
+    assert [result.question for result in results] == expected_questions
 
 
 def test_run_retriever_pipeline_parallel_preserves_case_order() -> None:

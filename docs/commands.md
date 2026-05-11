@@ -84,24 +84,28 @@ and Markdown/JSON/Parquet artifacts.
 | `--dataset-file`                                                           | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Evaluation QA JSONL file.                                         |
 | `--output-dir`                                                             | `metrics/results/`                                  | Directory for run artifacts.                                      |
 | `--sample-size`                                                            | none                                                | Optional cap on the number of test cases.                         |
+| `--seed`                                                                   | none                                                | Optional random seed for reproducible `--sample-size` sampling.   |
 | `--k`                                                                      | `5`                                                 | K for recall@K and precision@K.                                   |
 | `--enable-text-matcher-metrics`                                            | off                                                 | Also compute diagnostic `text_match_*` metrics.                   |
 | `--enable-query-rewriter` / `--disable-query-rewriter`                     | settings default                                    | Override optional query rewriting for this metrics run.           |
 | `--enable-context-relevance-grader` / `--disable-context-relevance-grader` | settings default                                    | Override optional context relevance grading for this metrics run. |
 | `--enable-answer-formatter` / `--disable-answer-formatter`                 | settings default                                    | Override optional answer formatting for this metrics run.         |
+| `--enable-output-guardrails` / `--disable-output-guardrails`               | settings default                                    | Override optional output guardrails for this metrics run.         |
 | `--enable-query-clarification` / `--disable-query-clarification`           | settings default                                    | Override optional query clarification for this metrics run.       |
 | `--max-query-rewrite-iterations`                                           | settings default                                    | Override the maximum context relevance rewrite iterations.        |
 
 Example:
 
 ```bash
-poetry run python commands.py metrics-eval-full --sample-size 20
+poetry run python commands.py metrics-eval-full --sample-size 20 --seed 42
 ```
 
 The command expects a running Qdrant instance, an indexed corpus, and an
 available OpenAI-compatible inference server. Offline metrics runs pass
 `allow_clarification=false` to the RAG service so batch evaluation cannot pause
-waiting for human input.
+waiting for human input. RAGAS GigaChat embeddings are capped by
+`GIGACHAT_EMBEDDINGS_MAX_TEXT_CHARS` and `GIGACHAT_EMBEDDINGS_MAX_BATCH_CHARS`
+to avoid oversized payload errors on long contexts or answers.
 
 ## `metrics-eval-retriever`
 
@@ -113,19 +117,25 @@ generation.
 | `--dataset-file`                                                           | `data/metrics_evaluation_datasets/qa_dataset.jsonl` | Evaluation QA JSONL file.                                         |
 | `--output-dir`                                                             | `metrics/results/`                                  | Directory for run artifacts.                                      |
 | `--sample-size`                                                            | none                                                | Optional cap on the number of test cases.                         |
+| `--seed`                                                                   | none                                                | Optional random seed for reproducible `--sample-size` sampling.   |
 | `--k`                                                                      | pipeline default                                    | K for recall@K and precision@K.                                   |
 | `--workers`                                                                | `1`                                                 | Parallel worker threads for independent retrieve + rerank cases.  |
 | `--enable-text-matcher-metrics`                                            | off                                                 | Also compute diagnostic `text_match_*` metrics.                   |
 | `--enable-query-rewriter` / `--disable-query-rewriter`                     | settings default                                    | Override optional query rewriting for this metrics run.           |
 | `--enable-context-relevance-grader` / `--disable-context-relevance-grader` | settings default                                    | Override optional context relevance grading for this metrics run. |
 | `--enable-answer-formatter` / `--disable-answer-formatter`                 | settings default                                    | Override optional answer formatting for this metrics run.         |
+| `--enable-output-guardrails` / `--disable-output-guardrails`               | settings default                                    | Override optional output guardrails for this metrics run.         |
 | `--enable-query-clarification` / `--disable-query-clarification`           | settings default                                    | Override optional query clarification for this metrics run.       |
 | `--max-query-rewrite-iterations`                                           | settings default                                    | Override the maximum context relevance rewrite iterations.        |
 
 Example:
 
 ```bash
-poetry run python commands.py metrics-eval-retriever --k 5 --workers 4
+poetry run python commands.py metrics-eval-retriever \
+  --sample-size 100 \
+  --seed 42 \
+  --k 5 \
+  --workers 4
 ```
 
 ## Metrics Artifacts
@@ -153,4 +163,6 @@ only for diagnostic text-overlap metrics; they are written separately as
 
 Run artifacts include the effective optional-node profile and additive latency
 fields when present: `query_rewrite`, `qdrant`, `rerank`, `context_relevance`,
-`llm`, `answer_format`, and `total_ms`.
+`llm`, `answer_format`, and `total_ms`. When `--seed` is provided,
+`run_manifest.json` and `report.md` record it as `sample_seed` so sampled runs
+can be repeated.
