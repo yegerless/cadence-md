@@ -83,6 +83,9 @@ class RAGService:
 
     def _state_to_flags(self, state: dict[str, Any]) -> RAGFlags:
         return RAGFlags(
+            input_guardrail_passed=bool(state.get("input_guardrail_passed", False)),
+            input_guardrail_blocked=bool(state.get("input_guardrail_blocked", False)),
+            input_guardrail_fallback=bool(state.get("input_guardrail_fallback", False)),
             rerank_fallback=bool(state.get("rerank_fallback", False)),
             retrieval_failed=bool(state.get("retrieval_failed", False)),
             generate_fallback=bool(state.get("generate_fallback", False)),
@@ -109,6 +112,7 @@ class RAGService:
         latency: dict[str, float] = state.get("latency_ms") or {}
         total_ms = sum(latency.values()) if latency else None
         return RAGLatency(
+            input_guardrails=latency.get("input_guardrails"),
             query_rewrite=latency.get("query_rewrite"),
             qdrant=latency.get("qdrant"),
             rerank=latency.get("rerank"),
@@ -141,6 +145,8 @@ class RAGService:
             rewritten_queries=list(state.get("rewritten_queries") or []),
             clarification_question=state.get("clarification_question"),
             raw_answer=state.get("raw_answer"),
+            input_guardrail_score=state.get("input_guardrail_score"),
+            input_guardrail_reason=state.get("input_guardrail_reason"),
             context_relevance_score=state.get("context_relevance_score"),
             output_guardrail_score=state.get("output_guardrail_score"),
             output_guardrail_reason=state.get("output_guardrail_reason"),
@@ -169,6 +175,8 @@ class RAGService:
             "answer_word_count": response.answer_word_count,
             "retrieval_query": response.retrieval_query,
             "rewritten_queries": response.rewritten_queries,
+            "input_guardrail_score": response.input_guardrail_score,
+            "input_guardrail_reason": response.input_guardrail_reason,
             "context_relevance_score": response.context_relevance_score,
             "output_guardrail_score": response.output_guardrail_score,
             "output_guardrail_reason": response.output_guardrail_reason,

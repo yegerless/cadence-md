@@ -103,12 +103,12 @@ class RetrievalConfig(BaseModel):
 class LLMConfig(BaseModel):
     """Chat model decoding parameters and HTTP retry policy for :mod:`llm`."""
 
-    model_name: str = "medgemma"
+    model_name: str = "gemma-4-26b-a4b"
     max_new_tokens: int = 10000
     temperature: float = 0.2
     top_p: float = 0.8
     streaming: bool = False
-    timeout_seconds: float = Field(default=300.0, gt=0)
+    timeout_seconds: float = Field(default=600.0, gt=0)
     max_retries: int = Field(default=6, ge=0)
     backoff_base_seconds: float = Field(default=1.0, gt=0)
     backoff_max_seconds: float = Field(default=120.0, gt=0)
@@ -117,6 +117,7 @@ class LLMConfig(BaseModel):
 class RAGOptionalNodesConfig(BaseModel):
     """Feature flags and thresholds for optional LangGraph RAG nodes."""
 
+    enable_input_guardrails: bool = True
     enable_query_rewriter: bool = True
     enable_query_clarification: bool = True
     enable_context_relevance_grader: bool = True
@@ -124,6 +125,7 @@ class RAGOptionalNodesConfig(BaseModel):
     enable_output_guardrails: bool = True
     max_query_rewrite_iterations: int = Field(default=2, ge=0)
     max_output_guardrail_iterations: int = Field(default=1, ge=0)
+    input_guardrail_min_score: float = Field(default=0.7, ge=0.0, le=1.0)
     context_relevance_min_score: float = Field(default=0.6, ge=0.0, le=1.0)
     context_relevance_min_supported_docs: int = Field(default=1, ge=0)
     output_guardrail_min_score: float = Field(default=0.7, ge=0.0, le=1.0)

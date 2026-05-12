@@ -965,6 +965,7 @@ async def test_get_succeeded_returns_answer(chat_app_bundle: ChatBundle) -> None
                     }
                 ],
                 latency_ms={
+                    "input_guardrails": 0.5,
                     "query_rewrite": 2.0,
                     "context_relevance": 3.0,
                     "answer_format": 4.0,
@@ -972,6 +973,7 @@ async def test_get_succeeded_returns_answer(chat_app_bundle: ChatBundle) -> None
                     "llm": 1.0,
                 },
                 flags={
+                    "input_guardrail_passed": True,
                     "context_truncated": False,
                     "output_guardrail_passed": True,
                     "output_guardrail_failed": False,
@@ -991,10 +993,12 @@ async def test_get_succeeded_returns_answer(chat_app_bundle: ChatBundle) -> None
         assert data["answer"]["answer"] == "Краткий вывод: ответ."
         assert len(data["answer"]["sources"]) == 1
         assert data["answer"]["sources"][0]["doc_ref"] == "[Doc 1]"
+        assert data["answer"]["latency_ms"]["input_guardrails"] == 0.5
         assert data["answer"]["latency_ms"]["query_rewrite"] == 2.0
         assert data["answer"]["latency_ms"]["context_relevance"] == 3.0
         assert data["answer"]["latency_ms"]["answer_format"] == 4.0
         assert data["answer"]["latency_ms"]["output_guardrails"] == 5.0
+        assert data["answer"]["flags"]["input_guardrail_passed"] is True
         assert data["answer"]["flags"]["output_guardrail_passed"] is True
         assert data["answer"]["flags"]["output_guardrail_failed"] is False
 

@@ -36,6 +36,11 @@ def _base_state(**overrides: object) -> dict:
         "rewritten_queries": [],
         "clarification_answer": None,
         "allow_clarification": True,
+        "input_guardrail_passed": False,
+        "input_guardrail_blocked": False,
+        "input_guardrail_fallback": False,
+        "input_guardrail_score": None,
+        "input_guardrail_reason": None,
         "query_rewritten": False,
         "query_rewrite_fallback": False,
         "requires_clarification": False,
@@ -109,6 +114,7 @@ def test_run_maps_optional_node_latency_fields() -> None:
     pipeline = MagicMock()
     pipeline.run.return_value = _base_state(
         latency_ms={
+            "input_guardrails": 1.0,
             "query_rewrite": 3.0,
             "qdrant": 12.0,
             "rerank": 7.0,
@@ -122,6 +128,7 @@ def test_run_maps_optional_node_latency_fields() -> None:
 
     response = service.run(RAGRequest(query="query"))
 
+    assert response.latency.input_guardrails == 1.0
     assert response.latency.query_rewrite == 3.0
     assert response.latency.qdrant == 12.0
     assert response.latency.rerank == 7.0
@@ -129,7 +136,7 @@ def test_run_maps_optional_node_latency_fields() -> None:
     assert response.latency.llm == 55.0
     assert response.latency.answer_format == 4.0
     assert response.latency.output_guardrails == 2.0
-    assert response.latency.total_ms == 88.0
+    assert response.latency.total_ms == 89.0
 
 
 def test_run_preserves_flags_and_errors_on_retrieval_failed() -> None:
@@ -166,6 +173,11 @@ def test_run_maps_optional_fields_and_flags() -> None:
     pipeline.run.return_value = _base_state(
         retrieval_query="rewritten",
         rewritten_queries=["rewritten"],
+        input_guardrail_passed=True,
+        input_guardrail_blocked=True,
+        input_guardrail_fallback=True,
+        input_guardrail_score=0.91,
+        input_guardrail_reason="non-medical",
         query_rewritten=True,
         query_rewrite_fallback=True,
         requires_clarification=True,
@@ -192,11 +204,16 @@ def test_run_maps_optional_fields_and_flags() -> None:
     assert response.retrieval_query == "rewritten"
     assert response.rewritten_queries == ["rewritten"]
     assert response.clarification_question == "Уточните?"
+    assert response.input_guardrail_score == 0.91
+    assert response.input_guardrail_reason == "non-medical"
     assert response.context_relevance_score == 0.2
     assert response.raw_answer == "raw"
     assert response.output_guardrail_score == 0.42
     assert response.output_guardrail_reason == "unsupported"
     assert response.output_guardrail_unsupported_claims == ["claim"]
+    assert response.flags.input_guardrail_passed is True
+    assert response.flags.input_guardrail_blocked is True
+    assert response.flags.input_guardrail_fallback is True
     assert response.flags.query_rewritten is True
     assert response.flags.query_rewrite_fallback is True
     assert response.flags.requires_clarification is True
@@ -210,6 +227,8 @@ def test_run_maps_optional_fields_and_flags() -> None:
     assert response.flags.output_guardrail_fallback is True
     assert response.flags.max_output_guardrail_iterations_reached is True
     metadata = service._trace_summary(response)["metadata"]
+    assert metadata["input_guardrail_score"] == 0.91
+    assert metadata["input_guardrail_reason"] == "non-medical"
     assert metadata["output_guardrail_score"] == 0.42
     assert metadata["output_guardrail_reason"] == "unsupported"
     assert metadata["output_guardrail_unsupported_claims"] == ["claim"]
@@ -233,10 +252,15 @@ def test_run_handles_empty_context_and_empty_docs() -> None:
     assert response.answer == ""
 
 
-def test_run_does_not_require_output_guardrail_state_fields() -> None:
+def test_run_does_not_require_guardrail_state_fields() -> None:
     pipeline = MagicMock()
     state = _base_state()
     for key in (
+        "input_guardrail_passed",
+        "input_guardrail_blocked",
+        "input_guardrail_fallback",
+        "input_guardrail_score",
+        "input_guardrail_reason",
         "output_guardrail_passed",
         "output_guardrail_failed",
         "output_guardrail_fallback",
@@ -251,6 +275,12 @@ def test_run_does_not_require_output_guardrail_state_fields() -> None:
 
     response = service.run(RAGRequest(query="query"))
 
+    assert response.flags.input_guardrail_passed is False
+    assert response.flags.input_guardrail_blocked is False
+    assert response.flags.input_guardrail_fallback is False
+    assert response.input_guardrail_score is None
+    assert response.input_guardrail_reason is None
+    assert response.latency.input_guardrails is None
     assert response.flags.output_guardrail_passed is False
     assert response.flags.output_guardrail_failed is False
     assert response.flags.output_guardrail_fallback is False
@@ -334,6 +364,8 @@ def test_retrieve_does_not_require_output_guardrail_state_fields() -> None:
     response = service.retrieve(RAGRequest(query="query"))
 
     assert response.sources == []
+    assert response.latency.input_guardrails is None
+    assert response.flags.input_guardrail_blocked is False
     assert response.latency.output_guardrails is None
     assert response.flags.output_guardrail_failed is False
     assert not hasattr(response, "output_guardrail_score")

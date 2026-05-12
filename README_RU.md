@@ -15,8 +15,9 @@ chat-запросы через FastAPI backend и Celery worker, а для по�
 
 - Retrieval по клиническим рекомендациям из DVC-корпуса PDF, индексированного в
   Qdrant.
-- LangGraph RAG pipeline с optional query rewriting, context relevance grading,
-  query clarification, answer formatting и контролируемыми fallback-сценариями.
+- LangGraph RAG pipeline с optional input guardrails, query rewriting, context
+  relevance grading, query clarification, answer formatting, output guardrails и
+  контролируемыми fallback-сценариями.
 - FastAPI backend с JWT auth, per-user историей чатов, async chat lifecycle,
   health checks, Prometheus metrics и optional Langfuse tracing.
 - Celery/Redis worker для асинхронной генерации RAG-ответов.

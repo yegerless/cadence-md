@@ -88,6 +88,7 @@ JSONL, сгенерированные пары, неудачные секции 
 | `--seed`                                                                   | нет                                                 | Опциональный seed для воспроизводимой выборки `--sample-size`.           |
 | `--k`                                                                      | `5`                                                 | K для recall@K и precision@K.                                            |
 | `--enable-text-matcher-metrics`                                            | выкл.                                               | Дополнительно считать диагностические `text_match_*` метрики.            |
+| `--enable-input-guardrails` / `--disable-input-guardrails`                 | settings default                                    | Переопределить optional input guardrails для этого metrics run.          |
 | `--enable-query-rewriter` / `--disable-query-rewriter`                     | settings default                                    | Переопределить optional query rewriting для этого metrics run.           |
 | `--enable-context-relevance-grader` / `--disable-context-relevance-grader` | settings default                                    | Переопределить optional context relevance grading для этого metrics run. |
 | `--enable-answer-formatter` / `--disable-answer-formatter`                 | settings default                                    | Переопределить optional answer formatting для этого metrics run.         |
@@ -104,7 +105,10 @@ poetry run python commands.py metrics-eval-full --sample-size 20 --seed 42
 Команде нужны запущенный Qdrant, проиндексированный корпус и доступный
 OpenAI-compatible inference server. Offline metrics runs передают в RAG service
 `allow_clarification=false`, чтобы batch-оценка не останавливалась в ожидании
-ответа человека. GigaChat embeddings для RAGAS ограничиваются
+ответа человека. Optional input guardrails запускаются до retrieval и могут
+завершить немедицинский кейс шаблонным ответом; используйте
+`--disable-input-guardrails`, если оценочный датасет должен обходить этот
+классификатор. GigaChat embeddings для RAGAS ограничиваются
 `GIGACHAT_EMBEDDINGS_MAX_TEXT_CHARS` и `GIGACHAT_EMBEDDINGS_MAX_BATCH_CHARS`,
 чтобы длинные контексты или ответы не падали с oversized payload.
 
@@ -122,6 +126,7 @@ OpenAI-compatible inference server. Offline metrics runs передают в RAG
 | `--k`                                                                      | pipeline default                                    | K для recall@K и precision@K.                                            |
 | `--workers`                                                                | `1`                                                 | Параллельные потоки для независимых retrieve + rerank кейсов.            |
 | `--enable-text-matcher-metrics`                                            | выкл.                                               | Дополнительно считать диагностические `text_match_*` метрики.            |
+| `--enable-input-guardrails` / `--disable-input-guardrails`                 | settings default                                    | Переопределить optional input guardrails для этого metrics run.          |
 | `--enable-query-rewriter` / `--disable-query-rewriter`                     | settings default                                    | Переопределить optional query rewriting для этого metrics run.           |
 | `--enable-context-relevance-grader` / `--disable-context-relevance-grader` | settings default                                    | Переопределить optional context relevance grading для этого metrics run. |
 | `--enable-answer-formatter` / `--disable-answer-formatter`                 | settings default                                    | Переопределить optional answer formatting для этого metrics run.         |
@@ -163,7 +168,9 @@ metadata нужно заново сгенерировать QA-датасет и
 метрик; они записываются отдельно как `text_match_*`.
 
 Артефакты прогона содержат effective optional-node profile и additive latency
-fields, если они есть: `query_rewrite`, `qdrant`, `rerank`, `context_relevance`,
-`llm`, `answer_format` и `total_ms`. Если передан `--seed`, `run_manifest.json`
-и `report.md` сохраняют его как `sample_seed`, чтобы сэмплированный прогон можно
-было повторить.
+fields, если они есть: `input_guardrails`, `query_rewrite`, `qdrant`, `rerank`,
+`context_relevance`, `llm`, `answer_format`, `output_guardrails` и `total_ms`.
+Graph profile показывает `input_guardrails` как effective и в full, и в
+retriever mode, если узел включен, потому что он запускается до retrieval. Если
+передан `--seed`, `run_manifest.json` и `report.md` сохраняют его как
+`sample_seed`, чтобы сэмплированный прогон можно было повторить.

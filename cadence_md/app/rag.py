@@ -18,7 +18,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.output_parsers import JsonOutputParser
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from cadence_md.app.enums import VectorSearchType
 from cadence_md.app.llm import LLMWrapper
@@ -29,6 +29,8 @@ from cadence_md.app.rag_prompts import (
     load_answer_formatter_user_prompt_template,
     load_context_relevance_system_prompt,
     load_context_relevance_user_prompt_template,
+    load_input_guardrails_system_prompt,
+    load_input_guardrails_user_prompt_template,
     load_output_guardrails_system_prompt,
     load_output_guardrails_user_prompt_template,
     load_query_rewriter_system_prompt,
@@ -47,6 +49,15 @@ logger = logging.getLogger(__name__)
 # Safe answers used when the graph has to short-circuit a node because of an unrecoverable error.
 # Keep them aligned with the system prompt format ("Краткий вывод:" + "Подробнее:") so downstream
 # consumers (CLI, metrics) get a structurally-similar payload.
+INPUT_GUARDRAIL_REJECTION_ANSWER = (
+    "Краткий вывод:\n"
+    "CADENCE-MD поддерживает только медицинские вопросы.\n\n"
+    "Подробнее:\n"
+    "- Пожалуйста, задайте вопрос, связанный с клинической практикой, диагностикой, "
+    "лечением, профилактикой или медицинскими рекомендациями.\n"
+    "- Немедицинские темы сервис не обрабатывает."
+)
+
 RETRIEVAL_FALLBACK_ANSWER = (
     "Краткий вывод:\n"
     "В предоставленных фрагментах рекомендаций нет данных: не удалось получить контекст.\n\n"
@@ -91,6 +102,28 @@ class QueryRewriteDecision(BaseModel):
     action: Literal["rewrite", "keep", "clarify"]
     rewritten_query: str = ""
     clarification_question: str | None = None
+    reason: str = ""
+
+    @field_validator("action", mode="before")
+    @classmethod
+    def _normalize_action(cls, value: object) -> object:
+        """Accept harmless casing/whitespace drift from JSON-only LLM responses."""
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @field_validator("rewritten_query", "reason", mode="before")
+    @classmethod
+    def _empty_string_for_json_null(cls, value: object) -> object:
+        """Treat JSON null as an absent optional string for keep/clarify decisions."""
+        return "" if value is None else value
+
+
+class InputGuardrailResult(BaseModel):
+    """Structured verdict returned by the optional input guardrail."""
+
+    is_medical: bool
+    score: float = Field(ge=0.0, le=1.0)
     reason: str = ""
 
 
@@ -255,6 +288,24 @@ def _parse_json_model[JsonModelT: BaseModel](
     return model_type.model_validate(parsed)
 
 
+def _input_guardrail_should_block(
+    result: InputGuardrailResult,
+    *,
+    min_score: float,
+) -> bool:
+    """Return whether a non-medical input verdict is confident enough to short-circuit.
+
+    The prompt defines ``score`` as medical relevance (0.0 clearly non-medical, 1.0 clearly
+    medical). Some local models previously used it as verdict confidence, so high scores on an
+    explicit ``is_medical=false`` verdict are also treated as confident non-medical decisions.
+    Middle-band non-medical scores remain fail-open.
+    """
+    if result.is_medical:
+        return False
+    non_medical_score_cutoff = 1.0 - min_score
+    return result.score <= non_medical_score_cutoff or result.score >= min_score
+
+
 def _doc_refs(text: str) -> set[str]:
     """Extract citation refs like ``[Doc 1]`` from model output."""
     return set(_DOC_REF_RE.findall(text or ""))
@@ -291,6 +342,11 @@ class RAGState(TypedDict):
     rewritten_queries: list[str]
     clarification_answer: str | None
     allow_clarification: bool
+    input_guardrail_passed: bool
+    input_guardrail_blocked: bool
+    input_guardrail_fallback: bool
+    input_guardrail_score: float | None
+    input_guardrail_reason: str | None
     rewrite_iteration: int
     query_rewritten: bool
     query_rewrite_fallback: bool
@@ -386,6 +442,11 @@ class RAGPipeline:
             "rewritten_queries": [],
             "clarification_answer": clarification_answer,
             "allow_clarification": allow_clarification,
+            "input_guardrail_passed": False,
+            "input_guardrail_blocked": False,
+            "input_guardrail_fallback": False,
+            "input_guardrail_score": None,
+            "input_guardrail_reason": None,
             "rewrite_iteration": 0,
             "query_rewritten": False,
             "query_rewrite_fallback": False,
@@ -460,9 +521,141 @@ class RAGPipeline:
             )
             raise
 
+    def input_guardrails_node(self, state: RAGState) -> RAGState:
+        """Optionally classify and block non-medical questions before retrieval."""
+        cfg = self.optional_nodes_config
+        if not cfg.enable_input_guardrails:
+            return state
+
+        effective_question = _query_with_clarification(
+            state["query"],
+            state.get("clarification_answer"),
+        )
+        system = load_input_guardrails_system_prompt()
+        user_tmpl = load_input_guardrails_user_prompt_template()
+        user = user_tmpl.format(question=effective_question)
+        trace_input = {
+            "query": _trace_query_text(state["query"]),
+            "effective_question": _trace_query_text(effective_question),
+        }
+
+        t0 = time.perf_counter()
+        try:
+            result = self._invoke_json_model(
+                node_name="input_guardrails",
+                system_prompt=system,
+                user_prompt=user,
+                model_type=InputGuardrailResult,
+            )
+        except Exception as exc:
+            dt_ms = (time.perf_counter() - t0) * 1000
+            reason = f"fallback: {type(exc).__name__}"
+            state["input_guardrail_passed"] = True
+            state["input_guardrail_blocked"] = False
+            state["input_guardrail_fallback"] = True
+            state["input_guardrail_score"] = None
+            state["input_guardrail_reason"] = reason
+            state.setdefault("latency_ms", {})["input_guardrails"] = dt_ms
+            observe_rag_node("input_guardrails", dt_ms)
+            inc_rag_fallback("input_guardrails_fallback")
+            record_span(
+                "input_guardrails",
+                input_data=trace_input,
+                output_data={
+                    "input_guardrail_fallback": True,
+                    "passed": True,
+                    "blocked": False,
+                    "reason": reason,
+                    "error_type": type(exc).__name__,
+                },
+                metadata={
+                    "query_hash": state["query_hash"],
+                    "latency_ms": round(dt_ms, 2),
+                    "node": "input_guardrails",
+                    "fallback": True,
+                    "passed": True,
+                    "blocked": False,
+                    "prompt_version": settings.rag_config.prompt_version,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            logger.warning(
+                "rag.input_guardrails_fallback",
+                extra={
+                    "event": "rag.input_guardrails_fallback",
+                    "node": "input_guardrails",
+                    "query_hash": state["query_hash"],
+                    "latency_ms": round(dt_ms, 2),
+                    "error_type": type(exc).__name__,
+                    "input_guardrail_fallback": True,
+                    "prompt_version": settings.rag_config.prompt_version,
+                },
+            )
+            return state
+
+        blocked = _input_guardrail_should_block(
+            result,
+            min_score=cfg.input_guardrail_min_score,
+        )
+        state["input_guardrail_score"] = result.score
+        state["input_guardrail_reason"] = result.reason
+        state["input_guardrail_fallback"] = False
+        state["input_guardrail_passed"] = not blocked
+        state["input_guardrail_blocked"] = blocked
+        if blocked:
+            state["answer"] = INPUT_GUARDRAIL_REJECTION_ANSWER
+            state["answer_word_count"] = len(state["answer"].split())
+            state["ranked_docs"] = []
+            state["sources"] = []
+            state["context"] = ""
+            state["context_chars"] = 0
+            inc_rag_fallback("input_guardrails_blocked")
+
+        dt_ms = (time.perf_counter() - t0) * 1000
+        state.setdefault("latency_ms", {})["input_guardrails"] = dt_ms
+        observe_rag_node("input_guardrails", dt_ms)
+        record_span(
+            "input_guardrails",
+            input_data=trace_input,
+            output_data={
+                "is_medical": result.is_medical,
+                "score": result.score,
+                "passed": state["input_guardrail_passed"],
+                "blocked": state["input_guardrail_blocked"],
+                "reason": result.reason,
+            },
+            metadata={
+                "query_hash": state["query_hash"],
+                "latency_ms": round(dt_ms, 2),
+                "node": "input_guardrails",
+                "score": result.score,
+                "passed": state["input_guardrail_passed"],
+                "blocked": state["input_guardrail_blocked"],
+                "prompt_version": settings.rag_config.prompt_version,
+            },
+        )
+        logger.info(
+            "rag.input_guardrails",
+            extra={
+                "event": "rag.input_guardrails",
+                "node": "input_guardrails",
+                "query_hash": state["query_hash"],
+                "score": result.score,
+                "passed": state["input_guardrail_passed"],
+                "blocked": state["input_guardrail_blocked"],
+                "latency_ms": round(dt_ms, 2),
+                "prompt_version": settings.rag_config.prompt_version,
+            },
+        )
+        return state
+
     def query_rewrite_node(self, state: RAGState) -> RAGState:
         """Optionally rewrite the retrieval query while preserving the original user question."""
         cfg = self.optional_nodes_config
+        retry_requested = bool(
+            state.get("context_relevance_should_rewrite")
+            or state.get("output_guardrail_should_retry")
+        )
         state["context_relevance_should_rewrite"] = False
         state["output_guardrail_should_retry"] = False
         effective_question = _query_with_clarification(
@@ -480,7 +673,11 @@ class RAGPipeline:
             question=effective_question,
             retrieval_query=state.get("retrieval_query") or effective_question,
             rewrite_iteration=state.get("rewrite_iteration", 0),
-            context_relevance_score=state.get("context_relevance_score"),
+            context_relevance_score=(
+                ""
+                if state.get("context_relevance_score") is None
+                else state["context_relevance_score"]
+            ),
             context_relevance_reason=state.get("context_relevance_reason") or "",
             output_guardrail_score=(
                 ""
@@ -519,6 +716,8 @@ class RAGPipeline:
             dt_ms = (time.perf_counter() - t0) * 1000
             state["query_rewrite_fallback"] = True
             state["retrieval_query"] = effective_question
+            if retry_requested:
+                state["rewrite_iteration"] = int(state.get("rewrite_iteration", 0)) + 1
             state.setdefault("latency_ms", {})["query_rewrite"] = dt_ms
             observe_rag_node("query_rewrite", dt_ms)
             inc_rag_fallback("query_rewrite_fallback")
@@ -553,6 +752,7 @@ class RAGPipeline:
             return state
 
         current_retrieval_query = state.get("retrieval_query") or effective_question
+        previous_iteration = int(state.get("rewrite_iteration", 0))
         if (
             decision.action == "clarify"
             and cfg.enable_query_clarification
@@ -580,6 +780,13 @@ class RAGPipeline:
                 state["rewritten_queries"] = [*state.get("rewritten_queries", []), fallback_query]
                 state["rewrite_iteration"] = int(state.get("rewrite_iteration", 0)) + 1
                 state["query_rewritten"] = True
+
+        if (
+            retry_requested
+            and not state.get("requires_clarification")
+            and state["rewrite_iteration"] == previous_iteration
+        ):
+            state["rewrite_iteration"] = previous_iteration + 1
 
         dt_ms = (time.perf_counter() - t0) * 1000
         state.setdefault("latency_ms", {})["query_rewrite"] = dt_ms
@@ -1596,6 +1803,11 @@ class RAGPipeline:
         return state
 
     @staticmethod
+    def _input_guardrails_route(state: RAGState) -> Literal["continue", "end"]:
+        """Route to the rest of the graph unless the input guardrail blocked the query."""
+        return "end" if state.get("input_guardrail_blocked") else "continue"
+
+    @staticmethod
     def _query_rewrite_route(state: RAGState) -> Literal["retrieve", "end"]:
         """Route to retrieval unless the rewriter produced a clarification stop-state."""
         return "end" if state.get("requires_clarification") else "retrieve"
@@ -1613,6 +1825,7 @@ class RAGPipeline:
     def _node_handlers(self) -> dict[str, Callable[[RAGState], RAGState]]:
         """Return all graph node handlers keyed by stable node names."""
         return {
+            "input_guardrails": self.input_guardrails_node,
             "query_rewrite": self.query_rewrite_node,
             "retrieve": self.retrieve_node,
             "rerank": self.reranker_node,
@@ -1652,6 +1865,8 @@ class RAGPipeline:
             or cfg.enable_output_guardrails
         )
 
+        if cfg.enable_input_guardrails:
+            workflow.add_node("input_guardrails", self.input_guardrails_node)
         if needs_query_rewrite_node:
             workflow.add_node("query_rewrite", self.query_rewrite_node)
         workflow.add_node("retrieve", self.retrieve_node)
@@ -1665,17 +1880,25 @@ class RAGPipeline:
         if cfg.enable_output_guardrails:
             workflow.add_node("output_guardrails", self.output_guardrails_node)
 
+        first_retrieval_node = "query_rewrite" if cfg.enable_query_rewriter else "retrieve"
+        if cfg.enable_input_guardrails:
+            workflow.add_edge(START, "input_guardrails")
+            workflow.add_conditional_edges(
+                "input_guardrails",
+                self._input_guardrails_route,
+                {"continue": first_retrieval_node, "end": END},
+            )
+        else:
+            workflow.add_edge(START, first_retrieval_node)
+
         if cfg.enable_query_rewriter:
-            workflow.add_edge(START, "query_rewrite")
             workflow.add_conditional_edges(
                 "query_rewrite",
                 self._query_rewrite_route,
                 {"retrieve": "retrieve", "end": END},
             )
-        else:
-            workflow.add_edge(START, "retrieve")
-            if needs_query_rewrite_node:
-                workflow.add_edge("query_rewrite", "retrieve")
+        elif needs_query_rewrite_node:
+            workflow.add_edge("query_rewrite", "retrieve")
 
         workflow.add_edge("retrieve", "rerank")
         workflow.add_edge("rerank", "context")
@@ -1723,6 +1946,9 @@ class RAGPipeline:
             clarification_answer=clarification_answer,
             allow_clarification=allow_clarification,
         )
+        state = self.input_guardrails_node(state)
+        if state.get("input_guardrail_blocked"):
+            return state
         state = self.query_rewrite_node(state)
         while not state.get("requires_clarification"):
             state = self.retrieve_node(state)

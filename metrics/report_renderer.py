@@ -110,6 +110,7 @@ def _render_rag_graph_profile_section(*, manifest: dict[str, Any]) -> list[str]:
     inactive_nodes_text = ", ".join(f"`{node}`" for node in inactive_nodes) or "`none`"
     return [
         "## RAG graph profile\n",
+        f"- Input guardrails: `{configured['enable_input_guardrails']}`\n",
         f"- Query rewriter: `{configured['enable_query_rewriter']}`\n",
         f"- Context relevance grader: `{configured['enable_context_relevance_grader']}`\n",
         f"- Answer formatter: `{configured['enable_answer_formatter']}`\n",

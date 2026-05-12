@@ -14,8 +14,9 @@ validation.
 ## What Is Included
 
 - Clinical guideline retrieval over a DVC-tracked PDF corpus stored in Qdrant.
-- LangGraph RAG pipeline with optional query rewriting, context relevance
-  grading, query clarification, answer formatting, and structured fallbacks.
+- LangGraph RAG pipeline with optional input guardrails, query rewriting,
+  context relevance grading, query clarification, answer formatting, output
+  guardrails, and structured fallbacks.
 - FastAPI backend with JWT auth, persisted per-user chat history, async chat
   request lifecycle, health checks, Prometheus metrics, and optional Langfuse
   tracing.

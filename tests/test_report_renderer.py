@@ -96,6 +96,7 @@ def test_render_validation_report_retriever_skips_ragas_sections() -> None:
         "rag_graph_profile": {
             "mode": "retriever",
             "configured": {
+                "enable_input_guardrails": True,
                 "enable_query_rewriter": True,
                 "enable_context_relevance_grader": True,
                 "enable_answer_formatter": True,
@@ -103,7 +104,11 @@ def test_render_validation_report_retriever_skips_ragas_sections() -> None:
                 "enable_query_clarification": False,
                 "max_query_rewrite_iterations": 1,
             },
-            "effective_optional_nodes": ["query_rewriter", "context_relevance_grader"],
+            "effective_optional_nodes": [
+                "input_guardrails",
+                "query_rewriter",
+                "context_relevance_grader",
+            ],
             "inactive_configured_nodes": ["answer_formatter", "output_guardrails"],
         },
     }
@@ -135,7 +140,9 @@ def test_render_validation_report_retriever_skips_ragas_sections() -> None:
     assert "LLM:" not in text
     assert "0.500" in text or "0.5" in text
     assert "## RAG graph profile" in text
+    assert "Input guardrails: `True`" in text
     assert "Output guardrails: `True`" in text
+    assert "`input_guardrails`" in text
     assert "`answer_formatter`" in text
     assert "`output_guardrails`" in text
 
@@ -166,6 +173,7 @@ def test_render_validation_report_full_includes_ragas_and_breakdown() -> None:
         "rag_graph_profile": {
             "mode": "full",
             "configured": {
+                "enable_input_guardrails": True,
                 "enable_query_rewriter": True,
                 "enable_context_relevance_grader": False,
                 "enable_answer_formatter": True,
@@ -174,6 +182,7 @@ def test_render_validation_report_full_includes_ragas_and_breakdown() -> None:
                 "max_query_rewrite_iterations": 2,
             },
             "effective_optional_nodes": [
+                "input_guardrails",
                 "query_rewriter",
                 "query_clarification",
                 "answer_formatter",
@@ -235,7 +244,9 @@ def test_render_validation_report_full_includes_ragas_and_breakdown() -> None:
     assert "Breakdown by Question Type" in text
     assert "`factoid` (n=1)" in text
     assert "## Text Matcher Retriever Metrics" not in text
+    assert "Input guardrails: `True`" in text
     assert "Output guardrails: `True`" in text
     assert "Effective optional nodes:" in text
+    assert "`input_guardrails`" in text
     assert "`output_guardrails`" in text
     assert "Max query rewrite iterations: `2`" in text

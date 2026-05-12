@@ -10,6 +10,7 @@ from cadence_md.app.settings import settings
 from metrics.config import metrics_settings
 
 RAG_GRAPH_PROFILE_FIELDS = (
+    "enable_input_guardrails",
     "enable_query_rewriter",
     "enable_context_relevance_grader",
     "enable_answer_formatter",
@@ -216,6 +217,9 @@ def build_rag_graph_profile(
     }
     effective_optional_nodes: list[str] = []
     inactive_configured_nodes: list[str] = []
+
+    if bool(configured["enable_input_guardrails"]):
+        effective_optional_nodes.append("input_guardrails")
 
     query_rewriter_enabled = bool(configured["enable_query_rewriter"])
     if query_rewriter_enabled:

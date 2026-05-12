@@ -61,6 +61,13 @@ def _add_rag_optional_node_flags(parser: argparse.ArgumentParser) -> None:
     """Add optional RAG graph override flags to a metrics subcommand."""
     _add_enable_disable_flag(
         parser,
+        dest="enable_input_guardrails",
+        enable_flag="--enable-input-guardrails",
+        disable_flag="--disable-input-guardrails",
+        help_label="input guardrails",
+    )
+    _add_enable_disable_flag(
+        parser,
         dest="enable_query_rewriter",
         enable_flag="--enable-query-rewriter",
         disable_flag="--disable-query-rewriter",
@@ -106,6 +113,7 @@ def _rag_optional_node_overrides(args: argparse.Namespace) -> dict[str, bool | i
     """Translate optional CLI flags into partial RAGOptionalNodesConfig updates."""
     overrides: dict[str, bool | int] = {}
     for field_name in (
+        "enable_input_guardrails",
         "enable_query_rewriter",
         "enable_context_relevance_grader",
         "enable_answer_formatter",

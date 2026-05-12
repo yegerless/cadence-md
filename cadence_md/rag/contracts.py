@@ -35,6 +35,9 @@ class RAGSource(BaseModel):
 class RAGFlags(BaseModel):
     """Operational flags describing pipeline fallbacks and truncation."""
 
+    input_guardrail_passed: bool = False
+    input_guardrail_blocked: bool = False
+    input_guardrail_fallback: bool = False
     rerank_fallback: bool = False
     retrieval_failed: bool = False
     generate_fallback: bool = False
@@ -56,6 +59,7 @@ class RAGFlags(BaseModel):
 class RAGLatency(BaseModel):
     """Per-stage latency telemetry in milliseconds."""
 
+    input_guardrails: float | None = None
     query_rewrite: float | None = None
     qdrant: float | None = None
     rerank: float | None = None
@@ -84,6 +88,8 @@ class RAGResponse(BaseModel):
     rewritten_queries: list[str] = Field(default_factory=list)
     clarification_question: str | None = None
     raw_answer: str | None = None
+    input_guardrail_score: float | None = None
+    input_guardrail_reason: str | None = None
     context_relevance_score: float | None = None
     output_guardrail_score: float | None = None
     output_guardrail_reason: str | None = None

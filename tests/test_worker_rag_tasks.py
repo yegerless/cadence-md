@@ -132,6 +132,7 @@ def _response(
         query_hash="hash",
         sources=[RAGSource(rank=1, doc_ref="[Doc 1]", filename="guideline.pdf", score=0.9)],
         latency=RAGLatency(
+            input_guardrails=0.2,
             query_rewrite=0.5,
             qdrant=1.0,
             rerank=2.0,
@@ -140,7 +141,7 @@ def _response(
             answer_format=0.25,
             output_guardrails=0.4,
         ),
-        flags=flags or RAGFlags(context_truncated=False),
+        flags=flags or RAGFlags(input_guardrail_passed=True, context_truncated=False),
         langfuse_trace_id="trace-1",
         clarification_question=clarification_question,
     )
@@ -205,10 +206,12 @@ async def test_run_rag_request_happy_path(
         assert response is not None
         assert response.answer == "Ответ [Doc 1]."
         assert response.sources_json[0]["doc_ref"] == "[Doc 1]"
+        assert response.latency_ms_json["input_guardrails"] == 0.2
         assert response.latency_ms_json["query_rewrite"] == 0.5
         assert response.latency_ms_json["context_relevance"] == 0.75
         assert response.latency_ms_json["answer_format"] == 0.25
         assert response.latency_ms_json["output_guardrails"] == 0.4
+        assert response.flags_json["input_guardrail_passed"] is True
         assert response.langfuse_trace_id == "trace-1"
         assert row is not None
         assert row.celery_task_id == "task-1"

@@ -43,6 +43,19 @@ def load_query_rewriter_user_prompt_template() -> str:
     return (_PROMPTS_DIR / "query_rewriter_user.txt").read_text(encoding="utf-8").strip()
 
 
+def load_input_guardrails_system_prompt() -> str:
+    """Load the system prompt for optional input guardrails."""
+    return (_PROMPTS_DIR / "input_guardrails_system.txt").read_text(encoding="utf-8").strip()
+
+
+def load_input_guardrails_user_prompt_template() -> str:
+    """Return input guardrails user prompt template.
+
+    Placeholders: ``{question}``.
+    """
+    return (_PROMPTS_DIR / "input_guardrails_user.txt").read_text(encoding="utf-8").strip()
+
+
 def load_context_relevance_system_prompt() -> str:
     """Load the system prompt for context relevance grading."""
     return (_PROMPTS_DIR / "context_relevance_system.txt").read_text(encoding="utf-8").strip()

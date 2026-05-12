@@ -16,12 +16,12 @@ class BackendSettings(BaseSettings):
     CELERY_RAG_QUEUE_NAME: str = "rag"
     CELERY_RAG_TASK_NAME: str = "cadence_md.workers.rag_tasks.run_rag_request"
     CELERY_TASK_SOFT_TIME_LIMIT_SECONDS: int = Field(
-        default=300,
+        default=600,
         ge=1,
         description="Soft timeout for a single RAG Celery task.",
     )
     CELERY_TASK_TIME_LIMIT_SECONDS: int = Field(
-        default=360,
+        default=1200,
         ge=1,
         description="Hard timeout for a single RAG Celery task.",
     )

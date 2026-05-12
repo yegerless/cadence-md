@@ -140,10 +140,13 @@ def test_create_run_manifest_shape() -> None:
     assert "gigachat_min_interval_sec" in manifest["evaluation_config"]
     assert "llm_model" in manifest["rag_config"]
     assert "retrieval" in manifest["rag_config"]
+    assert manifest["rag_config"]["optional_nodes"]["enable_input_guardrails"] is True
     assert manifest["rag_config"]["optional_nodes"]["enable_output_guardrails"] is True
     assert manifest["rag_graph_profile"]["mode"] == "full"
     assert manifest["rag_graph_profile"]["configured"]["max_query_rewrite_iterations"] == 2
+    assert manifest["rag_graph_profile"]["configured"]["enable_input_guardrails"] is True
     assert manifest["rag_graph_profile"]["configured"]["enable_output_guardrails"] is True
+    assert "input_guardrails" in manifest["rag_graph_profile"]["effective_optional_nodes"]
     assert "answer_formatter" in manifest["rag_graph_profile"]["effective_optional_nodes"]
     assert "output_guardrails" in manifest["rag_graph_profile"]["effective_optional_nodes"]
 
@@ -166,8 +169,12 @@ def test_create_run_manifest_retriever_excludes_llm_model() -> None:
     assert manifest["mode"] == "retriever"
     assert "llm_model" not in manifest["rag_config"]
     assert "retrieval" in manifest["rag_config"]
+    assert manifest["rag_config"]["optional_nodes"]["enable_input_guardrails"] is True
     assert manifest["rag_config"]["optional_nodes"]["enable_output_guardrails"] is True
     assert manifest["rag_graph_profile"]["mode"] == "retriever"
+    assert manifest["rag_graph_profile"]["configured"]["enable_input_guardrails"] is True
     assert manifest["rag_graph_profile"]["configured"]["enable_output_guardrails"] is True
+    assert "input_guardrails" in manifest["rag_graph_profile"]["effective_optional_nodes"]
     assert "answer_formatter" in manifest["rag_graph_profile"]["inactive_configured_nodes"]
     assert "output_guardrails" in manifest["rag_graph_profile"]["inactive_configured_nodes"]
+    assert "input_guardrails" not in manifest["rag_graph_profile"]["inactive_configured_nodes"]

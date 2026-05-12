@@ -373,6 +373,7 @@ class TestGetLLM:
                     max_completion_tokens=settings.rag_config.llm.max_new_tokens,
                     top_p=settings.rag_config.llm.top_p,
                     streaming=settings.rag_config.llm.streaming,
+                    timeout_seconds=settings.rag_config.llm.timeout_seconds,
                 )
 
                 call_kwargs = llm_module.ChatOpenAI.call_args[1]

@@ -280,6 +280,7 @@ def test_metrics_parser_accepts_valid_full_args(tmp_path: Path) -> None:
             "--k",
             "7",
             "--enable-text-matcher-metrics",
+            "--disable-input-guardrails",
             "--disable-query-rewriter",
             "--enable-context-relevance-grader",
             "--disable-answer-formatter",
@@ -294,6 +295,7 @@ def test_metrics_parser_accepts_valid_full_args(tmp_path: Path) -> None:
     assert args.seed == 123
     assert args.k == 7
     assert args.enable_text_matcher_metrics is True
+    assert args.enable_input_guardrails is False
     assert args.enable_query_rewriter is False
     assert args.enable_context_relevance_grader is True
     assert args.enable_answer_formatter is False
@@ -317,6 +319,7 @@ def test_metrics_parser_accepts_retriever_workers(tmp_path: Path) -> None:
             "321",
             "--workers",
             "4",
+            "--enable-input-guardrails",
             "--enable-query-rewriter",
             "--disable-context-relevance-grader",
             "--enable-answer-formatter",
@@ -328,6 +331,7 @@ def test_metrics_parser_accepts_retriever_workers(tmp_path: Path) -> None:
     assert args.sample_size == 5
     assert args.seed == 321
     assert args.workers == 4
+    assert args.enable_input_guardrails is True
     assert args.enable_query_rewriter is True
     assert args.enable_context_relevance_grader is False
     assert args.enable_answer_formatter is True
@@ -346,6 +350,7 @@ def test_metrics_parser_full_uses_default_k(tmp_path: Path) -> None:
         ]
     )
     assert args.k == 5
+    assert args.enable_input_guardrails is None
     assert args.enable_query_rewriter is None
     assert args.enable_context_relevance_grader is None
     assert args.enable_answer_formatter is None
@@ -392,6 +397,8 @@ def test_metrics_help_contains_new_flags_and_omits_old_flags(
     retriever_help = capsys.readouterr().out
 
     for help_text in (full_help, retriever_help):
+        assert "--enable-input-guardrails" in help_text
+        assert "--disable-input-guardrails" in help_text
         assert "--enable-query-rewriter" in help_text
         assert "--disable-query-rewriter" in help_text
         assert "--enable-context-relevance-grader" in help_text
@@ -417,6 +424,7 @@ def test_rag_optional_node_overrides_collects_explicit_values(tmp_path: Path) ->
             "metrics-eval-retriever",
             "--output-dir",
             str(tmp_path),
+            "--disable-input-guardrails",
             "--disable-query-rewriter",
             "--enable-context-relevance-grader",
             "--disable-answer-formatter",
@@ -428,6 +436,7 @@ def test_rag_optional_node_overrides_collects_explicit_values(tmp_path: Path) ->
     )
 
     assert _rag_optional_node_overrides(args) == {
+        "enable_input_guardrails": False,
         "enable_query_rewriter": False,
         "enable_context_relevance_grader": True,
         "enable_answer_formatter": False,
@@ -441,6 +450,7 @@ def test_rag_optional_node_overrides_collects_explicit_values(tmp_path: Path) ->
 def test_rag_optional_nodes_config_helper_does_not_mutate_settings() -> None:
     cfg = build_rag_optional_nodes_config(
         {
+            "enable_input_guardrails": False,
             "enable_query_rewriter": False,
             "enable_query_clarification": True,
             "enable_output_guardrails": False,
@@ -449,10 +459,12 @@ def test_rag_optional_nodes_config_helper_does_not_mutate_settings() -> None:
     )
     default_cfg = build_rag_optional_nodes_config()
 
+    assert cfg.enable_input_guardrails is False
     assert cfg.enable_query_rewriter is False
     assert cfg.enable_query_clarification is True
     assert cfg.enable_output_guardrails is False
     assert cfg.max_query_rewrite_iterations == 3
+    assert default_cfg.enable_input_guardrails is True
     assert default_cfg.enable_query_rewriter is True
     assert default_cfg.enable_query_clarification is True
     assert default_cfg.max_query_rewrite_iterations == 2
