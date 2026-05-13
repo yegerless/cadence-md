@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rag-corpus
+  labels:
+    app.kubernetes.io/name: cadence-md
+    app.kubernetes.io/component: rag-corpus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi

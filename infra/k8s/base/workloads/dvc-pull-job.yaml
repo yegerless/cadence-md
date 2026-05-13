@@ -1,0 +1,48 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dvc-pull
+  labels:
+    app.kubernetes.io/name: cadence-md
+    app.kubernetes.io/component: dvc-pull
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cadence-md
+        app.kubernetes.io/component: dvc-pull
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: dvc-pull
+          image: cadence-md-rag-worker:prod
+          command:
+            - sh
+            - -c
+            - >
+              printf '[core]\n    no_scm = true\n' > .dvc/config.local && dvc
+              pull data.dvc
+          envFrom:
+            - configMapRef:
+                name: cadence-md-config
+            - secretRef:
+                name: cadence-md-secret
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cadence-md-secret
+                  key: S3_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cadence-md-secret
+                  key: S3_KEY
+          volumeMounts:
+            - name: rag-corpus
+              mountPath: /app/data
+      volumes:
+        - name: rag-corpus
+          persistentVolumeClaim:
+            claimName: rag-corpus

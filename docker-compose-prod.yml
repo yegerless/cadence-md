@@ -1,0 +1,621 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cadence_md}
+      POSTGRES_USER: ${POSTGRES_USER:-cadence_md}
+      POSTGRES_PASSWORD:
+        ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.prod}
+    networks:
+      - backend-network
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    networks:
+      - backend-network
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.16.3
+    environment:
+      QDRANT__SERVICE__API_KEY:
+        ${QDRANT__SERVICE__API_KEY:?Set QDRANT__SERVICE__API_KEY in .env.prod}
+    networks:
+      - backend-network
+    volumes:
+      - qdrant:/qdrant/storage
+      - qdrant-snapshots:/qdrant/snapshots
+    configs:
+      - source: qdrant_config
+        target: /qdrant/config/config.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q '18BD' /proc/net/tcp || kill 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  dvc-pull:
+    image: cadence-md-rag-worker:${CADENCE_IMAGE_TAG:-prod}
+    build:
+      context: .
+      dockerfile: infra/docker/rag-worker.Dockerfile
+    command:
+      - sh
+      - -c
+      - >
+        printf '[core]\n    no_scm = true\n' > .dvc/config.local && dvc pull
+        data.dvc
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_KEY_ID:?Set S3_KEY_ID in .env.prod}
+      AWS_SECRET_ACCESS_KEY: ${S3_KEY:?Set S3_KEY in .env.prod}
+    networks:
+      - backend-network
+    volumes:
+      - rag-corpus:/app/data
+    restart: "no"
+
+  migrations:
+    image: cadence-md-backend:${CADENCE_IMAGE_TAG:-prod}
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    command:
+      - alembic
+      - upgrade
+      - head
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env.prod}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+    networks:
+      - backend-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    image: cadence-md-backend:${CADENCE_IMAGE_TAG:-prod}
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    command:
+      - uvicorn
+      - cadence_md.backend.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+      - --workers
+      - ${BACKEND_UVICORN_WORKERS:-2}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env.prod}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      CELERY_RAG_QUEUE_NAME: ${CELERY_RAG_QUEUE_NAME:-rag}
+      CELERY_RAG_TASK_NAME: ${CELERY_RAG_TASK_NAME:-cadence_md.workers.rag_tasks.run_rag_request}
+      CELERY_TASK_SOFT_TIME_LIMIT_SECONDS: ${CELERY_TASK_SOFT_TIME_LIMIT_SECONDS:-300}
+      CELERY_TASK_TIME_LIMIT_SECONDS: ${CELERY_TASK_TIME_LIMIT_SECONDS:-360}
+      CELERY_TASK_MAX_RETRIES: ${CELERY_TASK_MAX_RETRIES:-3}
+      CELERY_TASK_RETRY_BACKOFF_SECONDS: ${CELERY_TASK_RETRY_BACKOFF_SECONDS:-5}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env.prod}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TOKEN_EXPIRE_SECONDS: ${JWT_ACCESS_TOKEN_EXPIRE_SECONDS:-3600}
+      AUTH_REGISTER_RATE_LIMIT_IP: ${AUTH_REGISTER_RATE_LIMIT_IP:-10/minute}
+      AUTH_LOGIN_RATE_LIMIT_IP: ${AUTH_LOGIN_RATE_LIMIT_IP:-10/minute}
+      CHAT_RATE_LIMIT_USER: ${CHAT_RATE_LIMIT_USER:-30/minute}
+      GLOBAL_RAG_QUEUE_MAX: ${GLOBAL_RAG_QUEUE_MAX:-1000}
+      HEALTH_CHECK_TIMEOUT_SECONDS: ${HEALTH_CHECK_TIMEOUT_SECONDS:-3}
+      QDRANT_BASE_URL: ${QDRANT_BASE_URL:-http://qdrant:6333}
+      QDRANT__SERVICE__API_KEY:
+        ${QDRANT__SERVICE__API_KEY:?Set QDRANT__SERVICE__API_KEY in .env.prod}
+      QDRANT_HTTPS: ${QDRANT_HTTPS:-false}
+      RAG_CONFIG__QDRANT_CONFIG__DATA_DIR: ${RAG_CONFIG__QDRANT_CONFIG__DATA_DIR:-/app/data/main_specialities}
+      RAG_CORPUS_DIR: ${RAG_CORPUS_DIR:-/app/data}
+      MODEL_INFERENCE_BASE_URL:
+        ${MODEL_INFERENCE_BASE_URL:?Set MODEL_INFERENCE_BASE_URL in .env.prod}
+      MODEL_INFERENCE_API_KEY:
+        ${MODEL_INFERENCE_API_KEY:?Set MODEL_INFERENCE_API_KEY in .env.prod}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LOG_REDACT_MEDICAL_QUERY: ${LOG_REDACT_MEDICAL_QUERY:-true}
+      PROMETHEUS_ENABLED: ${PROMETHEUS_ENABLED:-true}
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      LANGFUSE_TRACE_QUERY_MODE: ${LANGFUSE_TRACE_QUERY_MODE:-redacted}
+      LANGFUSE_PROMPT_VERSION: ${LANGFUSE_PROMPT_VERSION:-}
+    expose:
+      - "8000"
+    networks:
+      - edge-network
+      - backend-network
+    volumes:
+      - rag-corpus:/app/data:ro
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      dvc-pull:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import urllib.request;
+          urllib.request.urlopen(''http://localhost:8000/api/v1/health/ready'',
+          timeout=5).read()"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  rag-worker:
+    image: cadence-md-rag-worker:${CADENCE_IMAGE_TAG:-prod}
+    build:
+      context: .
+      dockerfile: infra/docker/rag-worker.Dockerfile
+    command:
+      - sh
+      - -c
+      - >
+        rm -rf "${PROMETHEUS_MULTIPROC_DIR:-/tmp/cadence-prometheus}" && mkdir
+        -p "${PROMETHEUS_MULTIPROC_DIR:-/tmp/cadence-prometheus}" && celery -A
+        cadence_md.workers.celery_app:celery_app worker
+        --loglevel=${WORKER_LOG_LEVEL:-INFO} --queues
+        ${CELERY_RAG_QUEUE_NAME:-rag}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env.prod}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      CELERY_RAG_QUEUE_NAME: ${CELERY_RAG_QUEUE_NAME:-rag}
+      CELERY_RAG_TASK_NAME: ${CELERY_RAG_TASK_NAME:-cadence_md.workers.rag_tasks.run_rag_request}
+      CELERY_TASK_SOFT_TIME_LIMIT_SECONDS: ${CELERY_TASK_SOFT_TIME_LIMIT_SECONDS:-300}
+      CELERY_TASK_TIME_LIMIT_SECONDS: ${CELERY_TASK_TIME_LIMIT_SECONDS:-360}
+      CELERY_TASK_MAX_RETRIES: ${CELERY_TASK_MAX_RETRIES:-3}
+      CELERY_TASK_RETRY_BACKOFF_SECONDS: ${CELERY_TASK_RETRY_BACKOFF_SECONDS:-5}
+      HEALTH_CHECK_TIMEOUT_SECONDS: ${HEALTH_CHECK_TIMEOUT_SECONDS:-3}
+      QDRANT_BASE_URL: ${QDRANT_BASE_URL:-http://qdrant:6333}
+      QDRANT__SERVICE__API_KEY:
+        ${QDRANT__SERVICE__API_KEY:?Set QDRANT__SERVICE__API_KEY in .env.prod}
+      QDRANT_HTTPS: ${QDRANT_HTTPS:-false}
+      RAG_CONFIG__QDRANT_CONFIG__DATA_DIR: ${RAG_CONFIG__QDRANT_CONFIG__DATA_DIR:-/app/data/main_specialities}
+      MODEL_INFERENCE_BASE_URL:
+        ${MODEL_INFERENCE_BASE_URL:?Set MODEL_INFERENCE_BASE_URL in .env.prod}
+      MODEL_INFERENCE_API_KEY:
+        ${MODEL_INFERENCE_API_KEY:?Set MODEL_INFERENCE_API_KEY in .env.prod}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LOG_REDACT_MEDICAL_QUERY: ${LOG_REDACT_MEDICAL_QUERY:-true}
+      PROMETHEUS_ENABLED: ${PROMETHEUS_ENABLED:-true}
+      WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9100}
+      PROMETHEUS_MULTIPROC_DIR: ${PROMETHEUS_MULTIPROC_DIR:-/tmp/cadence-prometheus}
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      LANGFUSE_TRACE_QUERY_MODE: ${LANGFUSE_TRACE_QUERY_MODE:-redacted}
+      LANGFUSE_PROMPT_VERSION: ${LANGFUSE_PROMPT_VERSION:-}
+    expose:
+      - "9100"
+    networks:
+      - backend-network
+    volumes:
+      - rag-corpus:/app/data:ro
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      dvc-pull:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-m",
+          "cadence_md.workers.rag_health",
+          "--timeout",
+          "5",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
+  flower:
+    image: mher/flower:latest
+    command:
+      - sh
+      - -c
+      - >
+        celery --broker="$${CELERY_BROKER_URL}" flower --address=0.0.0.0
+        --port=5555 $${FLOWER_BASIC_AUTH:+--basic-auth="$${FLOWER_BASIC_AUTH}"}
+    environment:
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      FLOWER_BASIC_AUTH: ${FLOWER_BASIC_AUTH:-}
+    ports:
+      - ${FLOWER_BIND_HOST:-127.0.0.1}:${FLOWER_PORT:-5555}:5555
+    networks:
+      - backend-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      rag-worker:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import base64, os, urllib.request; req =
+          urllib.request.Request(''http://localhost:5555/''); auth =
+          os.environ.get(''FLOWER_BASIC_AUTH'', '''');
+          req.add_header(''Authorization'', ''Basic '' +
+          base64.b64encode(auth.encode()).decode()) if auth else None;
+          urllib.request.urlopen(req, timeout=5).read()"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    image: cadence-md-frontend:${CADENCE_IMAGE_TAG:-prod}
+    build:
+      context: .
+      dockerfile: infra/docker/frontend.prod.Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+    expose:
+      - "80"
+    networks:
+      - edge-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/ >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:stable-alpine
+    ports:
+      - ${NGINX_HTTP_PORT:-80}:80
+    networks:
+      - edge-network
+      - backend-network
+    volumes:
+      - ./infra/nginx/prod.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        ["CMD-SHELL", "wget -qO- http://localhost/nginx-health >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  vllm-embeddings:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
+    profiles: ["inference"]
+    command:
+      - sh
+      - -c
+      - >
+        exec vllm serve "$${VLLM_EMBEDDINGS_MODEL}" --host 0.0.0.0 --port 8080
+        --runner pooling --served-model-name
+        "$${VLLM_EMBEDDINGS_SERVED_MODEL_NAME}" --max-model-len
+        "$${VLLM_EMBEDDINGS_MAX_MODEL_LEN}" --max-num-batched-tokens
+        "$${VLLM_EMBEDDINGS_MAX_NUM_BATCHED_TOKENS}" --ubatch-size
+        "$${VLLM_EMBEDDINGS_UBATCH_SIZE}" --gpu-memory-utilization
+        "$${VLLM_EMBEDDINGS_GPU_MEMORY_UTILIZATION}" --api-key
+        "$${MODEL_INFERENCE_API_KEY}" $${VLLM_EMBEDDINGS_EXTRA_ARGS}
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+      MODEL_INFERENCE_API_KEY:
+        ${MODEL_INFERENCE_API_KEY:?Set MODEL_INFERENCE_API_KEY in .env.prod}
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_EMBEDDINGS_VISIBLE_DEVICES:-all}
+      VLLM_EMBEDDINGS_EXTRA_ARGS: ${VLLM_EMBEDDINGS_EXTRA_ARGS:-}
+      VLLM_EMBEDDINGS_GPU_MEMORY_UTILIZATION: ${VLLM_EMBEDDINGS_GPU_MEMORY_UTILIZATION:-0.30}
+      VLLM_EMBEDDINGS_MAX_MODEL_LEN: ${VLLM_EMBEDDINGS_MAX_MODEL_LEN:-4096}
+      VLLM_EMBEDDINGS_MAX_NUM_BATCHED_TOKENS: ${VLLM_EMBEDDINGS_MAX_NUM_BATCHED_TOKENS:-4096}
+      VLLM_EMBEDDINGS_MODEL: ${VLLM_EMBEDDINGS_MODEL:-BAAI/bge-m3}
+      VLLM_EMBEDDINGS_SERVED_MODEL_NAME: ${VLLM_EMBEDDINGS_SERVED_MODEL_NAME:-bge-m3}
+      VLLM_EMBEDDINGS_UBATCH_SIZE: ${VLLM_EMBEDDINGS_UBATCH_SIZE:-2048}
+      VLLM_LOGGING_LEVEL: ${VLLM_LOGGING_LEVEL:-INFO}
+    expose:
+      - "8080"
+    ipc: host
+    networks:
+      - backend-network
+    volumes:
+      - vllm-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'python3 -c "import os, urllib.request;
+          req=urllib.request.Request(''http://localhost:8080/v1/models'',
+          headers={''Authorization'': ''Bearer '' +
+          os.environ.get(''MODEL_INFERENCE_API_KEY'', '''')});
+          urllib.request.urlopen(req, timeout=5).read()"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+    restart: unless-stopped
+
+  vllm-reranker:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
+    profiles: ["inference"]
+    command:
+      - sh
+      - -c
+      - >
+        exec vllm serve "$${VLLM_RERANKER_MODEL}" --host 0.0.0.0 --port 8080
+        --runner pooling --served-model-name
+        "$${VLLM_RERANKER_SERVED_MODEL_NAME}" --max-model-len
+        "$${VLLM_RERANKER_MAX_MODEL_LEN}" --max-num-batched-tokens
+        "$${VLLM_RERANKER_MAX_NUM_BATCHED_TOKENS}" --ubatch-size
+        "$${VLLM_RERANKER_UBATCH_SIZE}" --gpu-memory-utilization
+        "$${VLLM_RERANKER_GPU_MEMORY_UTILIZATION}" --api-key
+        "$${MODEL_INFERENCE_API_KEY}" $${VLLM_RERANKER_EXTRA_ARGS}
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+      MODEL_INFERENCE_API_KEY:
+        ${MODEL_INFERENCE_API_KEY:?Set MODEL_INFERENCE_API_KEY in .env.prod}
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_RERANKER_VISIBLE_DEVICES:-all}
+      VLLM_LOGGING_LEVEL: ${VLLM_LOGGING_LEVEL:-INFO}
+      VLLM_RERANKER_EXTRA_ARGS: ${VLLM_RERANKER_EXTRA_ARGS:-}
+      VLLM_RERANKER_GPU_MEMORY_UTILIZATION: ${VLLM_RERANKER_GPU_MEMORY_UTILIZATION:-0.30}
+      VLLM_RERANKER_MAX_MODEL_LEN: ${VLLM_RERANKER_MAX_MODEL_LEN:-4096}
+      VLLM_RERANKER_MAX_NUM_BATCHED_TOKENS: ${VLLM_RERANKER_MAX_NUM_BATCHED_TOKENS:-4096}
+      VLLM_RERANKER_MODEL: ${VLLM_RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      VLLM_RERANKER_SERVED_MODEL_NAME: ${VLLM_RERANKER_SERVED_MODEL_NAME:-bge-reranker-v2-m3}
+      VLLM_RERANKER_UBATCH_SIZE: ${VLLM_RERANKER_UBATCH_SIZE:-2048}
+    expose:
+      - "8080"
+    ipc: host
+    networks:
+      - backend-network
+    volumes:
+      - vllm-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'python3 -c "import os, urllib.request;
+          req=urllib.request.Request(''http://localhost:8080/v1/models'',
+          headers={''Authorization'': ''Bearer '' +
+          os.environ.get(''MODEL_INFERENCE_API_KEY'', '''')});
+          urllib.request.urlopen(req, timeout=5).read()"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+    restart: unless-stopped
+
+  vllm-llm:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
+    profiles: ["inference"]
+    command:
+      - sh
+      - -c
+      - >
+        exec vllm serve "$${VLLM_LLM_MODEL}" --host 0.0.0.0 --port 8080 --runner
+        generate --served-model-name "$${VLLM_LLM_SERVED_MODEL_NAME}"
+        --max-model-len "$${VLLM_LLM_MAX_MODEL_LEN}" --max-num-batched-tokens
+        "$${VLLM_LLM_MAX_NUM_BATCHED_TOKENS}" --ubatch-size
+        "$${VLLM_LLM_UBATCH_SIZE}" --gpu-memory-utilization
+        "$${VLLM_LLM_GPU_MEMORY_UTILIZATION}" --api-key
+        "$${MODEL_INFERENCE_API_KEY}" $${VLLM_LLM_EXTRA_ARGS}
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+      MODEL_INFERENCE_API_KEY:
+        ${MODEL_INFERENCE_API_KEY:?Set MODEL_INFERENCE_API_KEY in .env.prod}
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_LLM_VISIBLE_DEVICES:-all}
+      VLLM_LLM_EXTRA_ARGS: ${VLLM_LLM_EXTRA_ARGS:-}
+      VLLM_LLM_GPU_MEMORY_UTILIZATION: ${VLLM_LLM_GPU_MEMORY_UTILIZATION:-0.85}
+      VLLM_LLM_MAX_MODEL_LEN: ${VLLM_LLM_MAX_MODEL_LEN:-24576}
+      VLLM_LLM_MAX_NUM_BATCHED_TOKENS: ${VLLM_LLM_MAX_NUM_BATCHED_TOKENS:-2048}
+      VLLM_LLM_MODEL: ${VLLM_LLM_MODEL:-google/medgemma-4b-it}
+      VLLM_LLM_SERVED_MODEL_NAME: ${VLLM_LLM_SERVED_MODEL_NAME:-medgemma}
+      VLLM_LLM_UBATCH_SIZE: ${VLLM_LLM_UBATCH_SIZE:-1024}
+      VLLM_LOGGING_LEVEL: ${VLLM_LOGGING_LEVEL:-INFO}
+    expose:
+      - "8080"
+    ipc: host
+    networks:
+      - backend-network
+    volumes:
+      - vllm-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'python3 -c "import os, urllib.request;
+          req=urllib.request.Request(''http://localhost:8080/v1/models'',
+          headers={''Authorization'': ''Bearer '' +
+          os.environ.get(''MODEL_INFERENCE_API_KEY'', '''')});
+          urllib.request.urlopen(req, timeout=5).read()"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 180s
+    restart: unless-stopped
+
+  inference-gateway:
+    image: nginx:stable-alpine
+    profiles: ["inference"]
+    expose:
+      - "8080"
+    networks:
+      - backend-network
+    volumes:
+      - ./infra/nginx/inference-gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      vllm-embeddings:
+        condition: service_healthy
+      vllm-reranker:
+        condition: service_healthy
+      vllm-llm:
+        condition: service_healthy
+    healthcheck:
+      test:
+        ["CMD-SHELL", "wget -qO- http://localhost:8080/health >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - ${PROMETHEUS_BIND_HOST:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090
+    networks:
+      - backend-network
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      backend:
+        condition: service_started
+      rag-worker:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:9090/-/healthy >/dev/null 2>&1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD:
+        ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env.prod}
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-}
+    ports:
+      - ${GRAFANA_BIND_HOST:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000
+    networks:
+      - backend-network
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:3000/api/health >/dev/null 2>&1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  qdrant:
+  qdrant-snapshots:
+  rag-corpus:
+  prometheus-data:
+  grafana-data:
+  vllm-cache:
+
+configs:
+  qdrant_config:
+    file: ./qdrant/config.yaml
+
+networks:
+  edge-network: {}
+  backend-network: {}

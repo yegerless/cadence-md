@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qdrant-config
+  labels:
+    app.kubernetes.io/name: cadence-md
+    app.kubernetes.io/component: qdrant
+data:
+  config.yaml: |
+    log_level: INFO
+
+    storage:
+      storage_path: /qdrant/storage
+      snapshots_path: /qdrant/snapshots
+      snapshots_config:
+        snapshots_storage: local
+      on_disk_payload: true
+      wal:
+        wal_capacity_mb: 32
+        wal_segments_ahead: 0
+      node_type: "Normal"
+      performance:
+        max_search_threads: 0
+        optimizer_cpu_budget: 0
+      optimizers:
+        deleted_threshold: 0.2
+        vacuum_min_vector_number: 1000
+        default_segment_number: 0
+        indexing_threshold_kb: 10000
+        flush_interval_sec: 5
+      collection:
+        replication_factor: 1
+        write_consistency_factor: 1
+      max_collections: null
+
+    service:
+      max_request_size_mb: 32
+      max_workers: 0
+      host: 0.0.0.0
+      http_port: 6333
+      grpc_port: 6334
+      enable_cors: true
+      enable_tls: false
+
+    cluster:
+      enabled: false
+      p2p:
+        port: 6335
+        enable_tls: false
+
+    telemetry_disabled: false

@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../prod
+  - vllm-config.yaml
+  - inference-gateway-config.yaml
+  - vllm-embeddings-service.yaml
+  - vllm-reranker-service.yaml
+  - vllm-llm-service.yaml
+  - inference-gateway-service.yaml
+  - vllm-cache-pvc.yaml
+  - vllm-embeddings-deployment.yaml
+  - vllm-reranker-deployment.yaml
+  - vllm-llm-deployment.yaml
+  - inference-gateway-deployment.yaml
+
+patches:
+  - path: app-config-patch.yaml
